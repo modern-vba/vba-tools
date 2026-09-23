@@ -1425,6 +1425,8 @@ internal sealed class FakeWorkbookGenerationAutomation : IWorkbookGenerationAuto
     private readonly IReadOnlyList<WorkbookModule> modules;
     private readonly TaskCompletionSource cancelableOpenStarted = new(
         TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource<Exception?> cancelableOpenCompletion = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
 
     public FakeWorkbookGenerationAutomation(params WorkbookModule[] modules)
     {
@@ -1446,6 +1448,8 @@ internal sealed class FakeWorkbookGenerationAutomation : IWorkbookGenerationAuto
     public bool CancellationObserved { get; private set; }
 
     public Task CancelableOpenStarted => cancelableOpenStarted.Task;
+
+    public void FailPendingOpen(Exception failure) => cancelableOpenCompletion.TrySetResult(failure);
 
     public Action? OnImport { get; set; }
 
@@ -1482,18 +1486,10 @@ internal sealed class FakeWorkbookGenerationAutomation : IWorkbookGenerationAuto
         CancellationRequestedAtOpen = cancellationToken.IsCancellationRequested;
         if (WaitForCancellationOnOpen)
         {
-            var cancellationObserved = new TaskCompletionSource(
-                TaskCreationOptions.RunContinuationsAsynchronously);
-            using var registration = cancellationToken.Register(() => cancellationObserved.TrySetResult());
+            using var registration = cancellationToken.Register(() => cancelableOpenCompletion.TrySetResult(null));
             cancelableOpenStarted.TrySetResult();
-            try
-            {
-                await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
-            }
-            catch (TimeoutException error)
-            {
-                throw new InvalidOperationException("Import did not observe cancellation.", error);
-            }
+            var failure = await cancelableOpenCompletion.Task.ConfigureAwait(false);
+            if (failure is not null) throw failure;
 
             CancellationObserved = true;
             throw new WorkbookAutomationCanceledException(
