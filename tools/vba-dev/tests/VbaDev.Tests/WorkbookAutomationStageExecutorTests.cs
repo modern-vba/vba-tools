@@ -87,6 +87,92 @@ public sealed class WorkbookAutomationStageExecutorTests
     }
 
     [Fact]
+    public async Task SaveTimeoutInterruptsBlockedRealStaAndTerminatesOnlyTheAttachedOwner()
+    {
+        var saveStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSave = new ManualResetEventSlim();
+        var owned = new FakeOwnedExcelProcessControl(beforeTerminationReturns: releaseSave.Set);
+        var unrelated = new FakeOwnedExcelProcessControl();
+        using var controller = new OwnedExcelTerminationController();
+        Assert.True(controller.Attach(owned));
+        var dispatcher = new StaComDispatcherFactory().Create();
+        TimeSpan? requestedGrace = null;
+        var executor = new WorkbookAutomationStageExecutor(
+            () => controller.HasAttachedProcessExited,
+            grace =>
+            {
+                requestedGrace = grace;
+                controller.RequestForcedTermination(grace);
+            },
+            getOwnedProcessCompletion: () => controller.AttachedProcessCompletion);
+        var stage = new WorkbookAutomationStage(
+            WorkbookAutomationStageKind.WorkbookSave,
+            "staged.xlsm");
+        Task<bool> save = Task.FromResult(false);
+        var failures = new List<Exception>();
+
+        try
+        {
+            save = dispatcher.InvokeAsync(() =>
+            {
+                saveStarted.TrySetResult();
+                if (!releaseSave.Wait(TimeSpan.FromSeconds(5)))
+                    throw new TimeoutException("The test did not release the blocked Save.");
+                return true;
+            }, CancellationToken.None);
+            // Establish blocked COM work before starting the stage deadline.
+            await saveStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.False(save.IsCompleted);
+
+            var error = await Assert.ThrowsAsync<WorkbookAutomationTimeoutException>(() =>
+                executor.ExecuteAsync(
+                    stage,
+                    TimeSpan.FromMilliseconds(20),
+                    TimeSpan.Zero,
+                    CancellationToken.None,
+                    () => save).WaitAsync(TimeSpan.FromSeconds(5)));
+            await owned.Terminated.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await controller.RequestCleanupAsync(TimeSpan.Zero).WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.True(await save.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Same(stage, error.Stage);
+            Assert.Null(error.InnerException);
+            Assert.Equal(TimeSpan.Zero, requestedGrace);
+            Assert.Equal(1, owned.TerminationCalls);
+            Assert.True(owned.HasExited);
+            Assert.Equal(1, owned.DisposeCalls);
+            Assert.Equal(0, unrelated.TerminationCalls);
+            Assert.Equal(0, unrelated.DisposeCalls);
+            Assert.False(unrelated.HasExited);
+        }
+        catch (Exception failure)
+        {
+            failures.Add(failure);
+        }
+        finally
+        {
+            releaseSave.Set();
+            var cleanup = controller.RequestCleanupAsync(TimeSpan.Zero);
+            var retirement = dispatcher.DisposeAsync().AsTask();
+            // This is harness teardown, not the runtime's 100 ms retirement proof.
+            try
+            {
+                await Task.WhenAll(save, cleanup, retirement).WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (Exception failure)
+            {
+                failures.Add(failure);
+            }
+            if (save.IsCompleted && cleanup.IsCompleted && retirement.IsCompleted)
+                releaseSave.Dispose();
+        }
+
+        if (failures.Count > 0)
+            throw new AggregateException("Blocked real-STA Save timeout or harness cleanup failed.", failures);
+    }
+
+    [Fact]
     public async Task CancellationRequestsTheSameGraceAndReportsTheActiveStage()
     {
         var operationStarted = new TaskCompletionSource(

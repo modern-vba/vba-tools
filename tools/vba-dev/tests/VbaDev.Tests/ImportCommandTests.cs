@@ -1,4 +1,5 @@
 using VbaDev.Infrastructure.FileSystem;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using VbaDev.App.Build;
 using VbaDev.App.Cli;
@@ -644,6 +645,82 @@ public sealed class ImportCommandTests
         Assert.Equal("cancel\n"u8.ToArray(), buffer[..7]);
     }
 
+    [Fact]
+    public async Task ImportCancellationFixtureFailsAndDrainsWhenInputDoesNotRequestCancellation()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "Module1.bas"),
+            "Attribute VB_Name = \"Module1\"",
+            Encoding.UTF8);
+        File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
+        var automation = new FakeWorkbookGenerationAutomation
+        {
+            WaitForCancellationOnOpen = true
+        };
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookGenerationAutomation: automation);
+        using var standardInput = new SignalThenFrameStream(
+            automation.CancelableOpenStarted,
+            "not-cancel\n"u8.ToArray());
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+        var invocation = Task.Run(() => application.InvokeAsync(
+            ["import", "--from", sourceDirectory, "--to", targetWorkbook,
+                "--cancellation-transport", "stdin-v1"],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None));
+        var watchdogFailure = new TimeoutException("The fixture did not receive stdin cancellation.");
+        Exception? testFailure = null;
+        try
+        {
+            await standardInput.FrameDelivered.WaitAsync(TimeSpan.FromSeconds(10));
+            var failure = await Assert.ThrowsAsync<TimeoutException>(() => AwaitImportCancellationFixtureAsync(
+                invocation,
+                automation,
+                Task.FromException(watchdogFailure)));
+
+            Assert.Same(watchdogFailure, failure);
+            Assert.True(invocation.IsCompleted);
+            Assert.Equal(1, await invocation);
+            Assert.False(automation.CancellationRequestedAtOpen);
+            Assert.False(automation.CancellationObserved);
+            Assert.True(standardInput.FrameRead);
+            Assert.DoesNotContain("save", automation.Events);
+            Assert.Equal("workbook", File.ReadAllText(targetWorkbook));
+        }
+        catch (Exception failure)
+        {
+            testFailure = failure;
+        }
+        finally
+        {
+            // Independent fallback also releases the fixture when the helper's cleanup regresses.
+            automation.FailPendingOpen(new InvalidOperationException(
+                "The negative Import fixture released its pending Open.", testFailure));
+            try
+            {
+                await invocation.WaitAsync(TimeSpan.FromSeconds(10));
+            }
+            catch (Exception drainFailure)
+            {
+                testFailure = testFailure is null
+                    ? drainFailure
+                    : new AggregateException(
+                        "The negative Import fixture failed and could not drain its invocation.",
+                        testFailure,
+                        drainFailure);
+            }
+        }
+
+        if (testFailure is not null) ExceptionDispatchInfo.Capture(testFailure).Throw();
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -672,7 +749,7 @@ public sealed class ImportCommandTests
         using var standardOutput = new StringWriter();
         using var standardError = new StringWriter();
 
-        var exitCode = await InvokeThenReleaseInput(
+        var invocation = Task.Run(() => InvokeThenReleaseInput(
             () => application.InvokeAsync(
                 [
                     "import",
@@ -687,7 +764,8 @@ public sealed class ImportCommandTests
                 standardOutput,
                 standardError,
                 CancellationToken.None),
-            releaseInput);
+            releaseInput));
+        var exitCode = await AwaitImportCancellationFixtureAsync(invocation, automation);
 
         Assert.True(exitCode == 130,
             $"Expected cancellation exit 130, actual {exitCode}. "
@@ -1491,6 +1569,57 @@ public sealed class ImportCommandTests
         }
     }
 
+    private static async Task<int> AwaitImportCancellationFixtureAsync(
+        Task<int> invocation,
+        FakeWorkbookGenerationAutomation automation,
+        Task? watchdog = null)
+    {
+        Exception? failure = null;
+        var exitCode = 0;
+        try
+        {
+            if (watchdog is not null &&
+                await Task.WhenAny(invocation, watchdog).WaitAsync(TimeSpan.FromSeconds(10)) == watchdog)
+            {
+                await watchdog;
+                throw new TimeoutException("The Import cancellation fixture watchdog expired.");
+            }
+
+            exitCode = await invocation.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        catch (Exception error)
+        {
+            failure = error;
+        }
+        finally
+        {
+            // Fault-release cannot make a missing stdin cancellation look successful.
+            automation.FailPendingOpen(new InvalidOperationException(
+                "The Import cancellation fixture released its pending Open.", failure));
+            try
+            {
+                await invocation.WaitAsync(TimeSpan.FromSeconds(10));
+            }
+            catch (Exception drainError)
+            {
+                if (failure is null)
+                {
+                    failure = drainError;
+                }
+                else if (!ReferenceEquals(failure, drainError))
+                {
+                    failure = new AggregateException(
+                        "The Import cancellation fixture failed and could not drain its invocation.",
+                        failure,
+                        drainError);
+                }
+            }
+        }
+
+        if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
+        return exitCode;
+    }
+
     private static Task<int> InvokeThenReleaseInput(Func<Task<int>> invoke, TaskCompletionSource releaseInput)
     {
         try
@@ -1546,9 +1675,12 @@ public sealed class ImportCommandTests
 
     private sealed class SignalThenFrameStream(Task signal, byte[] frame, Task? releaseFrame = null) : Stream
     {
+        private readonly TaskCompletionSource frameDelivered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private bool frameRead;
 
         public bool FrameRead => frameRead;
+
+        public Task FrameDelivered => frameDelivered.Task;
 
         public override bool CanRead => true;
         public override bool CanSeek => false;
@@ -1580,6 +1712,7 @@ public sealed class ImportCommandTests
             await (releaseFrame ?? Task.CompletedTask).WaitAsync(cancellationToken).ConfigureAwait(false);
             frame.CopyTo(buffer);
             frameRead = true;
+            frameDelivered.TrySetResult();
             return frame.Length;
         }
 
