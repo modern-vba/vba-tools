@@ -12,6 +12,7 @@ import {
 } from './configuration';
 import { runRestrictedModeExtensionHostTests } from './restrictedModeExtensionHost';
 import { runWithExtensionHostCleanup } from './testRunCleanup';
+import { saveExtensionHostFailureLogs } from './testRunFailureLogs';
 
 async function main(): Promise<void> {
   const extensionDevelopmentPath = path.resolve(__dirname, '..', '..', '..');
@@ -99,6 +100,13 @@ async function main(): Promise<void> {
         VBA_TOOLS_COMPANION_RESOLUTION_TEST: '1'
       }
     });
+  }, async () => {
+    const evidence = await saveExtensionHostFailureLogs([
+      { name: 'primary', userDataPath },
+      { name: 'trusted-host-events', userDataPath: hostEventCatalogUserDataPath },
+      { name: 'restricted-host-events', userDataPath: untrustedHostEventCatalogUserDataPath }
+    ], path.join(extensionDevelopmentPath, '.tmp', 'extension-host-failures'));
+    console.error(`Extension Host failure log snapshot saved: ${evidence}`);
   });
 }
 

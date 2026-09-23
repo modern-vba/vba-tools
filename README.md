@@ -84,6 +84,12 @@ starting a full pass for that individual commit. One latest pass is requested
 after the shared catalog batch settles. Project retirement removes its refresh
 routing, so late background completion cannot restore obsolete work.
 
+If a closed source file is temporarily locked during a save or its bytes cannot
+be read, Problems reports `disk-source-unavailable` for that file instead of
+stopping the language server. Unreadable source is not replaced with empty or
+cached text. Other open documents keep receiving local diagnostics; a later
+readable reload, open editor buffer, or deletion clears the read failure.
+
 ---
 
 ## Getting Started

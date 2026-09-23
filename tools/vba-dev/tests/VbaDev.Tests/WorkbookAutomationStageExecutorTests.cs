@@ -87,6 +87,92 @@ public sealed class WorkbookAutomationStageExecutorTests
     }
 
     [Fact]
+    public async Task SaveTimeoutInterruptsBlockedRealStaAndTerminatesOnlyTheAttachedOwner()
+    {
+        var saveStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSave = new ManualResetEventSlim();
+        var owned = new FakeOwnedExcelProcessControl(beforeTerminationReturns: releaseSave.Set);
+        var unrelated = new FakeOwnedExcelProcessControl();
+        using var controller = new OwnedExcelTerminationController();
+        Assert.True(controller.Attach(owned));
+        var dispatcher = new StaComDispatcherFactory().Create();
+        TimeSpan? requestedGrace = null;
+        var executor = new WorkbookAutomationStageExecutor(
+            () => controller.HasAttachedProcessExited,
+            grace =>
+            {
+                requestedGrace = grace;
+                controller.RequestForcedTermination(grace);
+            },
+            getOwnedProcessCompletion: () => controller.AttachedProcessCompletion);
+        var stage = new WorkbookAutomationStage(
+            WorkbookAutomationStageKind.WorkbookSave,
+            "staged.xlsm");
+        Task<bool> save = Task.FromResult(false);
+        var failures = new List<Exception>();
+
+        try
+        {
+            save = dispatcher.InvokeAsync(() =>
+            {
+                saveStarted.TrySetResult();
+                if (!releaseSave.Wait(TimeSpan.FromSeconds(5)))
+                    throw new TimeoutException("The test did not release the blocked Save.");
+                return true;
+            }, CancellationToken.None);
+            // Establish blocked COM work before starting the stage deadline.
+            await saveStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.False(save.IsCompleted);
+
+            var error = await Assert.ThrowsAsync<WorkbookAutomationTimeoutException>(() =>
+                executor.ExecuteAsync(
+                    stage,
+                    TimeSpan.FromMilliseconds(20),
+                    TimeSpan.Zero,
+                    CancellationToken.None,
+                    () => save).WaitAsync(TimeSpan.FromSeconds(5)));
+            await owned.Terminated.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await controller.RequestCleanupAsync(TimeSpan.Zero).WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.True(await save.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Same(stage, error.Stage);
+            Assert.Null(error.InnerException);
+            Assert.Equal(TimeSpan.Zero, requestedGrace);
+            Assert.Equal(1, owned.TerminationCalls);
+            Assert.True(owned.HasExited);
+            Assert.Equal(1, owned.DisposeCalls);
+            Assert.Equal(0, unrelated.TerminationCalls);
+            Assert.Equal(0, unrelated.DisposeCalls);
+            Assert.False(unrelated.HasExited);
+        }
+        catch (Exception failure)
+        {
+            failures.Add(failure);
+        }
+        finally
+        {
+            releaseSave.Set();
+            var cleanup = controller.RequestCleanupAsync(TimeSpan.Zero);
+            var retirement = dispatcher.DisposeAsync().AsTask();
+            // This is harness teardown, not the runtime's 100 ms retirement proof.
+            try
+            {
+                await Task.WhenAll(save, cleanup, retirement).WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (Exception failure)
+            {
+                failures.Add(failure);
+            }
+            if (save.IsCompleted && cleanup.IsCompleted && retirement.IsCompleted)
+                releaseSave.Dispose();
+        }
+
+        if (failures.Count > 0)
+            throw new AggregateException("Blocked real-STA Save timeout or harness cleanup failed.", failures);
+    }
+
+    [Fact]
     public async Task CancellationRequestsTheSameGraceAndReportsTheActiveStage()
     {
         var operationStarted = new TaskCompletionSource(
@@ -175,22 +261,74 @@ public sealed class WorkbookAutomationStageExecutorTests
         Assert.Equal(1, owned.TerminationCalls);
     }
 
-    [Fact]
-    public async Task CleanupSealWaitsForAnInFlightLaunchAndDisposesItsLateAttachedOwner()
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task CleanupSealWaitsForAnInFlightLaunchAndDisposesItsLateAttachedOwner(
+        bool deferCallerContinuations,
+        bool disposeController)
     {
         var owned = new FakeOwnedExcelProcessControl();
         using var controller = new OwnedExcelTerminationController();
         using var launch = controller.BeginLaunch(CancellationToken.None);
+        var callerContext = SynchronizationContext.Current;
+        var deferredContext = new DeferredCleanupCallerContext();
+        Task cleanup;
+        try
+        {
+            if (deferCallerContinuations)
+                SynchronizationContext.SetSynchronizationContext(deferredContext);
+            if (disposeController)
+                controller.Dispose();
+            else
+                controller.RequestForcedTermination(TimeSpan.Zero);
+            cleanup = controller.RequestCleanupAsync(TimeSpan.Zero);
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(callerContext);
+        }
 
-        controller.RequestForcedTermination(TimeSpan.Zero);
         var launchSettlement = controller.WaitForLaunchSettlementAsync();
+        var poolSentinel = Task.Run(() => { });
+        var failures = new List<Exception>();
+        try
+        {
+            Assert.False(launchSettlement.IsCompleted);
+            controller.Attach(owned);
+            launch.Dispose();
+            await launchSettlement.WaitAsync(TimeSpan.FromSeconds(1));
+            await cleanup.WaitAsync(TimeSpan.FromSeconds(1));
+            await controller.DisposeAttachedProcessAsync().WaitAsync(TimeSpan.FromSeconds(1));
+        }
+        catch (Exception failure)
+        {
+            failures.Add(new InvalidOperationException(
+                $"Deferred caller: {deferCallerContinuations}; dispose controller: {disposeController}; " +
+                $"queued callbacks: {deferredContext.PendingCount}; " +
+                $"caller context: {callerContext?.GetType().FullName ?? "none"}; " +
+                $"cleanup: {cleanup.Status}; launch: {launchSettlement.Status}; pool sentinel: {poolSentinel.Status}; " +
+                $"termination calls: {owned.TerminationCalls}; disposal calls: {owned.DisposeCalls}; " +
+                $"exited: {owned.HasExited}; owner completion: {owned.Completion.Status}.", failure));
+        }
+        finally
+        {
+            launch.Dispose();
+            deferredContext.Release();
+            try
+            {
+                await Task.WhenAll(cleanup, poolSentinel).WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (Exception failure)
+            {
+                failures.Add(new InvalidOperationException("Final owned cleanup drain failed.", failure));
+            }
+        }
 
-        Assert.False(launchSettlement.IsCompleted);
-        controller.Attach(owned);
-        launch.Dispose();
-        await launchSettlement.WaitAsync(TimeSpan.FromSeconds(1));
-        await controller.RequestCleanupAsync(TimeSpan.Zero).WaitAsync(TimeSpan.FromSeconds(1));
-        await controller.DisposeAttachedProcessAsync().WaitAsync(TimeSpan.FromSeconds(1));
+        if (failures.Count > 0)
+            throw new AggregateException("Late-attached owner cleanup failed.", failures);
 
         Assert.Equal(1, owned.TerminationCalls);
         Assert.Equal(1, owned.DisposeCalls);
@@ -539,6 +677,43 @@ public sealed class WorkbookAutomationStageExecutorTests
         Assert.Contains("class=", message, StringComparison.Ordinal);
         Assert.Contains("title=", message, StringComparison.Ordinal);
         Assert.Contains("phase=", message, StringComparison.Ordinal);
+    }
+
+    // A busy caller may defer its own continuations, but must not own process cleanup.
+    private sealed class DeferredCleanupCallerContext : SynchronizationContext
+    {
+        private readonly object gate = new();
+        private readonly Queue<(SendOrPostCallback Callback, object? State)> pending = new();
+        private bool released;
+
+        public int PendingCount
+        {
+            get { lock (gate) { return pending.Count; } }
+        }
+
+        public override void Post(SendOrPostCallback callback, object? state)
+        {
+            lock (gate)
+            {
+                if (!released)
+                {
+                    pending.Enqueue((callback, state));
+                    return;
+                }
+            }
+
+            base.Post(callback, state);
+        }
+
+        public void Release()
+        {
+            lock (gate)
+            {
+                released = true;
+                while (pending.TryDequeue(out var continuation))
+                    base.Post(continuation.Callback, continuation.State);
+            }
+        }
     }
 
     private sealed class FakeOwnedExcelProcessControl(

@@ -7,6 +7,47 @@ import * as path from 'node:path';
 import test, { TestContext } from 'node:test';
 import { runWithExtensionHostCleanup } from './testRunCleanup';
 
+test('Extension Host failure evidence is saved before the owned profile is removed', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'vba-tools-failure-evidence-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const profile = path.join(root, 'profile');
+  const evidence = path.join(root, 'evidence');
+  const failure = new Error('diagnostics=[]');
+  await fs.mkdir(path.join(profile, 'logs'), { recursive: true });
+  await writeFile(path.join(profile, 'logs', 'language-server.log'), 'connection closed');
+
+  await assert.rejects(runWithExtensionHostCleanup([profile], async () => {
+    throw failure;
+  }, async () => {
+    await fs.cp(path.join(profile, 'logs'), evidence, { recursive: true });
+  }), error => error === failure);
+
+  assert.equal(await fs.readFile(path.join(evidence, 'language-server.log'), 'utf8'),
+    'connection closed');
+  await assert.rejects(access(profile), { code: 'ENOENT' });
+});
+
+test('Extension Host evidence failure preserves the run failure and still cleans every root', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'vba-tools-evidence-failure-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const profiles = [path.join(root, 'first'), path.join(root, 'second')];
+  for (const profile of profiles) { await fs.mkdir(profile); }
+  const primary = new Error('test failed');
+  const evidence = new Error('evidence copy failed');
+
+  await assert.rejects(runWithExtensionHostCleanup(profiles, async () => {
+    throw primary;
+  }, async () => { throw evidence; }), (error: unknown) => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.cause, primary);
+    assert.deepEqual(error.errors, [primary, evidence]);
+    return true;
+  });
+  for (const profile of profiles) {
+    await assert.rejects(access(profile), { code: 'ENOENT' });
+  }
+});
+
 test('Extension Host cleanup tolerates a real transient Windows telemetry file lock', {
   skip: process.platform !== 'win32',
   timeout: 15_000
@@ -95,10 +136,40 @@ test('Extension Host cleanup removes all owned roots after a successful run', as
 test('Extension Host cleanup preserves original thrown values when cleanup succeeds', async t => {
   t.mock.method(fs, 'rm', async () => {});
   for (const failure of [new Error('test failed'), undefined, null, false, 0]) {
+    let observed = false;
     await assert.rejects(runWithExtensionHostCleanup(['profile'], async () => {
       throw failure;
-    }), error => error === failure);
+    }, async () => { observed = true; }), error => error === failure);
+    assert.equal(observed, true);
   }
+});
+
+test('Extension Host success does not invoke failure evidence capture', async t => {
+  t.mock.method(fs, 'rm', async () => {});
+  await runWithExtensionHostCleanup(['profile'], async () => {}, async () => {
+    assert.fail('Successful runs must not capture failure logs.');
+  });
+});
+
+test('Extension Host finalization retains evidence and all cleanup failures after the primary', async t => {
+  const primary = new Error('test failed');
+  const evidence = new Error('evidence failed');
+  const cleanup = new Error('cleanup failed');
+  const attempted: string[] = [];
+  t.mock.method(fs, 'rm', async (directory: string) => {
+    attempted.push(directory);
+    throw cleanup;
+  });
+  await assert.rejects(runWithExtensionHostCleanup(['first', 'second'], async () => {
+    throw primary;
+  }, async () => { throw evidence; }), (error: unknown) => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.cause, primary);
+    assert.deepEqual(error.errors.slice(0, 2), [primary, evidence]);
+    assert.deepEqual(error.errors.slice(2).map(item => item.cause), [cleanup, cleanup]);
+    assert.deepEqual(attempted, ['first', 'second']);
+    return true;
+  });
 });
 
 test('Extension Host cleanup does not retry or hide an unrelated removal error', async t => {
