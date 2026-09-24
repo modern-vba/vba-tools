@@ -269,6 +269,57 @@ public sealed class VbaNameResolutionServiceTests
         Assert.Null(referenceOnlyResolver.Resolve(currentUri, new VbaPosition(1, 0), "Scripting", "Dictionary"));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void SameDocumentFailureIdentifiesTheUnadmittedComparisonSide(bool failingLeft)
+    {
+        var sentinel = new InvalidOperationException("uri-comparison-sentinel");
+        var scheme = "vba415-" + Guid.NewGuid().ToString("N");
+        UriParser.Register(new FailingUriParser(sentinel), scheme, -1);
+        var failingUri = scheme + "://host/Member";
+        const string otherUri = "file:///C:/work/日本語%20Module.bas";
+        var resolver = new VbaNameResolutionService([], null, VbaProjectReferenceCatalogSet.Empty, []);
+
+        var failure = Assert.Throws<InvalidOperationException>(() => resolver.SameDocument(
+            failingLeft ? failingUri : otherUri,
+            failingLeft ? otherUri : failingUri));
+
+        Assert.Same(sentinel, failure);
+        var evidence = Assert.IsType<Dictionary<string, object>>(failure.Data["DEBUG-415-uri-v1"]);
+        Assert.Equal("Uri.TryCreate", evidence["phase"]);
+        Assert.Equal("comparison.sameDocument", evidence["stage"]);
+        Assert.Equal(failingLeft ? "left" : "right", evidence["comparisonSide"]);
+        Assert.Equal(otherUri.Length, evidence["comparisonOtherUriCodeUnitLength"]);
+        Assert.Equal(string.Concat(otherUri.Select(character => ((int)character).ToString("X4"))),
+            evidence["comparisonOtherUriUtf16Hex"]);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void StaticSameDocumentFailureIdentifiesTheUnadmittedComparisonSide(bool failingLeft)
+    {
+        var sentinel = new InvalidOperationException("static-uri-comparison-sentinel");
+        var scheme = "vba415-" + Guid.NewGuid().ToString("N");
+        UriParser.Register(new FailingUriParser(sentinel), scheme, -1);
+        var failingUri = scheme + "://host/Member";
+        const string otherUri = "file:///C:/work/日本語%20Module.bas";
+
+        var failure = Assert.Throws<InvalidOperationException>(() => VbaDocumentIdentityPolicy.SameDocument(
+            failingLeft ? failingUri : otherUri,
+            failingLeft ? otherUri : failingUri));
+
+        Assert.Same(sentinel, failure);
+        var evidence = Assert.IsType<Dictionary<string, object>>(failure.Data["DEBUG-415-uri-v1"]);
+        Assert.Equal("Uri.TryCreate", evidence["phase"]);
+        Assert.Equal("comparison.sameDocument", evidence["stage"]);
+        Assert.Equal(failingLeft ? "left" : "right", evidence["comparisonSide"]);
+        Assert.Equal(otherUri.Length, evidence["comparisonOtherUriCodeUnitLength"]);
+        Assert.Equal(string.Concat(otherUri.Select(character => ((int)character).ToString("X4"))),
+            evidence["comparisonOtherUriUtf16Hex"]);
+    }
+
     private static VbaSourceDefinition Definition(
         string name,
         VbaSourceDefinitionKind kind,
@@ -311,5 +362,10 @@ public sealed class VbaNameResolutionServiceTests
             ReferenceGlobalExposure: parentTypeName is null
                 ? ReferenceDefinitionGlobalExposure.LibraryGlobal
                 : ReferenceDefinitionGlobalExposure.None);
+    }
+
+    private sealed class FailingUriParser(Exception failure) : UriParser
+    {
+        protected override UriParser OnNewUri() => throw failure;
     }
 }
