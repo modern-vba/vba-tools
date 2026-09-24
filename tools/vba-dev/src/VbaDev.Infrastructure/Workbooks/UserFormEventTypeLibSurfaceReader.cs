@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
+using VbaDev.Infrastructure.References;
 
 namespace VbaDev.Infrastructure.Workbooks;
 
@@ -544,10 +545,10 @@ internal static class UserFormEventTypeLibSurfaceReader
         }
 
         var result = new List<ObservedHostEventParameter>(function.cParams);
-        var elementSize = Marshal.SizeOf<ELEMDESC>();
         for (var index = 0; index < function.cParams; index++)
         {
-            var pointer = nint.Add(function.lprgelemdescParam, index * elementSize);
+            var pointer = TypeLibElementDescriptorLayout.At(
+                function.lprgelemdescParam, index);
             var element = Marshal.PtrToStructure<ELEMDESC>(pointer);
             var flags = element.desc.paramdesc.wParamFlags;
             if ((flags & (PARAMFLAG.PARAMFLAG_FRETVAL | PARAMFLAG.PARAMFLAG_FLCID)) != 0)
