@@ -27,6 +27,26 @@ Evidence-copy and cleanup failures remain secondary to the original test
 failure. A cleanup-only failure after successful tests does not produce a log
 snapshot.
 
+## VSIX packaging failure evidence
+
+When `VBA_TOOLS_DIAGNOSTIC_RUN_ROOT` names an absolute local diagnostic run
+directory, a failed `verify:vsix` packaging child saves a bundle under
+`<run-root>/vsix-packaging/failure-*/`. `failure.json` records the shared run ID,
+exact Node/vsce invocation, child PID/exit/signal, platform, package and
+package-lock hashes, Node and vsce file hashes and versions, and bounded
+stdout/stderr tails (at most 65,536 UTF-16 code units each). If the failed
+temporary VSIX is an ordinary file no larger than 64 MiB, it is retained as
+`failed-output.partial`, never as a verified `.vsix`. The normal temporary
+directory is still removed, and the packaging failure remains a failure even
+if evidence collection itself fails. Without the opt-in, ordinary verification
+behavior and cleanup are unchanged.
+
+File hashes are observed after the child exits; they do not prove that no file
+changed during execution. The bundle may contain private paths and tool output,
+stays local, and is not packaged or uploaded. It contains no native dump and
+cannot by itself establish the cause of an access violation. Preserve the
+bundle and use a separately scoped crash-dump investigation when one recurs.
+
 ## Private-desktop Excel feasibility proof
 
 Run the isolated Windows/Excel feasibility proof explicitly:

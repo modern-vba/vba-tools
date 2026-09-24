@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createWriteStream, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import yazl from 'yazl';
 
 import {
@@ -28,7 +29,8 @@ import {
   requiredBundledLanguageServerPath,
   requiredVbaDebugAdapterContractPath,
   requiredVbaDevContractPath,
-  verifyVsixPackaging
+  verifyVsixPackaging,
+  runCommandWithSpawn
 } from './vsixPackagingRules.mjs';
 
 const marketplaceIconPath = 'assets/icon.png';
@@ -54,6 +56,138 @@ const runtimeDependencyPaths = [
   ['vscode-languageclient/node_modules/balanced-match', ['package.json', 'index.js']]
 ].flatMap(([dependency, entries]) => entries.map(entry => `node_modules/${dependency}/${entry}`));
 const requiredContentPaths = [...marketplaceDocumentPaths, ...runtimeDependencyPaths];
+
+test('failed packaging child retains bounded output and exact process completion', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-vsix-child-failure-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const childPath = path.join(root, 'fail.mjs');
+  await fs.writeFile(childPath, [
+    'process.stdout.write("A".repeat(80));',
+    'process.stderr.write("B".repeat(80));',
+    'process.exitCode = 23;'
+  ].join('\n'));
+
+  await assert.rejects(
+    () => runCommandWithSpawn(process.execPath, [childPath], root, { maxOutputCharacters: 32 }),
+    error => {
+      assert.equal(error.file, process.execPath);
+      assert.deepEqual(error.args, [childPath]);
+      assert.equal(error.cwd, root);
+      assert.ok(Number.isInteger(error.pid) && error.pid > 0);
+      assert.equal(error.exitCode, 23);
+      assert.equal(error.signal, null);
+      assert.equal(error.stdout, 'A'.repeat(32));
+      assert.equal(error.stderr, 'B'.repeat(32));
+      assert.equal(error.stdoutCharacters, 80);
+      assert.equal(error.stderrCharacters, 80);
+      assert.equal(error.stdoutTruncated, true);
+      assert.equal(error.stderrTruncated, true);
+      return true;
+    }
+  );
+});
+
+test('opted-in VSIX verification preserves a failed child and partial output as local evidence', async (t) => {
+  const { root, vscePath } = await createPackagingFailureFixture(t);
+  const diagnosticsRoot = path.join(root, 'diagnostics');
+
+  await assert.rejects(
+    () => verifyVsixPackaging({ root, diagnosticsRoot }),
+    /exited with code 23/
+  );
+
+  const entries = await fs.readdir(diagnosticsRoot);
+  assert.equal(entries.length, 1);
+  const evidencePath = path.join(diagnosticsRoot, entries[0]);
+  const evidence = JSON.parse(await fs.readFile(path.join(evidencePath, 'failure.json'), 'utf8'));
+  assert.equal(evidence.kind, 'vsix-packaging-child-failure');
+  assert.equal(evidence.invocation.file, process.execPath);
+  assert.equal(evidence.invocation.cwd, root);
+  assert.deepEqual(evidence.invocation.args.slice(0, 2), [vscePath, 'package']);
+  assert.equal(evidence.invocation.exitCode, 23);
+  assert.equal(evidence.invocation.signal, null);
+  assert.ok(Number.isInteger(evidence.invocation.pid) && evidence.invocation.pid > 0);
+  assert.equal(evidence.output.stdout, 'packaging started\n');
+  assert.equal(evidence.output.stderr, 'controlled child failure\n');
+  assert.equal(evidence.tools.node.version, process.version);
+  assert.equal(evidence.tools.node.sha256, await hashFile(process.execPath));
+  assert.equal(evidence.tools.vsce.sha256, await hashFile(vscePath));
+  assert.equal(evidence.inputs.packageLock.sha256, await hashFile(path.join(root, 'package-lock.json')));
+  assert.equal(evidence.failedOutput.status, 'retained-partial');
+  assert.equal(await fs.readFile(path.join(evidencePath, 'failed-output.partial'), 'utf8'), 'not-a-vsix');
+  assert.equal(await fileExists(evidence.invocation.outputPath), false);
+});
+
+test('evidence storage failure never replaces the packaging child failure', async (t) => {
+  const { root } = await createPackagingFailureFixture(t);
+  const diagnosticsRoot = path.join(root, 'not-a-directory');
+  await fs.writeFile(diagnosticsRoot, 'sentinel');
+
+  await assert.rejects(
+    () => verifyVsixPackaging({ root, diagnosticsRoot }),
+    error => {
+      assert.match(error.message, /exited with code 23/);
+      assert.equal(error.exitCode, 23);
+      assert.equal(error.stderr, 'controlled child failure\n');
+      return true;
+    }
+  );
+  assert.equal(await fs.readFile(diagnosticsRoot, 'utf8'), 'sentinel');
+});
+
+test('unified diagnostic run captures packaging evidence under its shared run root', async (t) => {
+  const { root } = await createPackagingFailureFixture(t);
+  const runRoot = path.join(root, 'diagnostic-run');
+  const originalRoot = process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT;
+  const originalId = process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ID;
+  process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT = runRoot;
+  process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ID = 'run-fixture';
+  try {
+    await assert.rejects(() => verifyVsixPackaging({ root }), /exited with code 23/);
+  } finally {
+    if (originalRoot === undefined) delete process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT;
+    else process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT = originalRoot;
+    if (originalId === undefined) delete process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ID;
+    else process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ID = originalId;
+  }
+
+  const [entry] = await fs.readdir(path.join(runRoot, 'vsix-packaging'));
+  const evidence = JSON.parse(await fs.readFile(
+    path.join(runRoot, 'vsix-packaging', entry, 'failure.json'), 'utf8'));
+  assert.equal(evidence.diagnosticRunId, 'run-fixture');
+});
+
+test('ordinary VSIX verification fails and discards a partial package without diagnostic opt-in', async (t) => {
+  const { root } = await createPackagingFailureFixture(t);
+  const originalRoot = process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT;
+  delete process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT;
+  let failure;
+  try {
+    await assert.rejects(() => verifyVsixPackaging({ root }), error => {
+      failure = error;
+      assert.match(error.message, /exited with code 23/);
+      return true;
+    });
+  } finally {
+    if (originalRoot !== undefined) process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT = originalRoot;
+  }
+  const outputPath = failure.args[failure.args.indexOf('--out') + 1];
+  assert.equal(await fileExists(outputPath), false);
+  assert.equal(await fileExists(path.join(root, 'vsix-packaging')), false);
+});
+
+test('packaging evidence records an absent output when the child fails before writing one', async (t) => {
+  const { root } = await createPackagingFailureFixture(t, { writeOutput: false });
+  const diagnosticsRoot = path.join(root, 'diagnostics');
+
+  await assert.rejects(() => verifyVsixPackaging({ root, diagnosticsRoot }), /exited with code 23/);
+
+  const [entry] = await fs.readdir(diagnosticsRoot);
+  const evidencePath = path.join(diagnosticsRoot, entry);
+  const evidence = JSON.parse(await fs.readFile(path.join(evidencePath, 'failure.json'), 'utf8'));
+  assert.deepEqual(evidence.failedOutput, { status: 'absent' });
+  assert.equal(await fileExists(path.join(evidencePath, 'failed-output.partial')), false);
+});
 
 test('VSIX content rules reject every missing runtime dependency entry including nested transitive entries', () => {
   const manifest = readDistributionManifest();
@@ -1345,4 +1479,55 @@ function writeZip(filePath, entries) {
       .on('error', reject);
     zipFile.end();
   });
+}
+
+async function createPackagingFailureFixture(t, { writeOutput = true } = {}) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-vsix-failure-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const manifest = readDistributionManifest();
+  const paths = [
+    distributionManifestPath,
+    'package.json',
+    'package-lock.json',
+    requiredVbaDevContractPath,
+    requiredVbaDebugAdapterContractPath,
+    ...Object.values(manifest.runtimes).map(runtime => runtime.projectPath)
+  ];
+  for (const relativePath of paths) {
+    const destination = path.join(root, relativePath);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.copyFile(new URL(`../${relativePath}`, import.meta.url), destination);
+  }
+  for (const runtime of Object.values(manifest.runtimes)) {
+    const destination = path.join(root, runtime.executablePath);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.writeFile(destination, '');
+  }
+  const vscePath = path.join(root, 'node_modules', '@vscode', 'vsce', 'vsce');
+  await fs.mkdir(path.dirname(vscePath), { recursive: true });
+  await fs.writeFile(path.join(path.dirname(vscePath), 'package.json'),
+    JSON.stringify({ name: '@vscode/vsce', version: '3.9.2', type: 'commonjs' }));
+  await fs.writeFile(vscePath, [
+    'const fs = require("node:fs");',
+    'const output = process.argv[process.argv.indexOf("--out") + 1];',
+    ...(writeOutput ? ['fs.writeFileSync(output, "not-a-vsix");'] : []),
+    'process.stdout.write("packaging started\\n");',
+    'process.stderr.write("controlled child failure\\n");',
+    'process.exitCode = 23;'
+  ].join('\n'));
+  return { root, vscePath };
+}
+
+async function fileExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function hashFile(filePath) {
+  return createHash('sha256').update(await fs.readFile(filePath)).digest('hex');
 }

@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
-import { promises as fs, readFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream, promises as fs, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { pathToFileURL } from 'node:url';
 import yauzl from 'yauzl';
 import { verifyLanguageServerCapabilityRejection } from './languageServerCapabilitySmoke.mjs';
@@ -40,9 +42,14 @@ export const requiredVbaDebugAdapterContractPath =
   defaultDistributionManifest.runtimes.vbaDebugAdapter.contractPath;
 export const bundledLanguageServerVersionPrefix = defaultDistributionManifest.runtimes.vbaLanguageServer.versionOutputPrefix;
 const activeWindowsCodePageFeatureName = 'sourceSnapshot.activeWindowsCodePage';
+const maximumFailureOutputCharacters = 64 * 1024;
+const maximumFailedPackageBytes = 64 * 1024 * 1024;
 
 export async function verifyVsixPackaging(options = {}) {
   const root = options.root ?? process.cwd();
+  const diagnosticsRoot = options.diagnosticsRoot ?? (process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT
+    ? path.join(process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT, 'vsix-packaging')
+    : undefined);
   const runCommand = options.runCommand ?? runCommandWithSpawn;
   const inspectPackage = options.inspectPackage ?? inspectVsixPackage;
   const verifyLanguageServerAdmission = options.verifyLanguageServerAdmission
@@ -84,14 +91,32 @@ export async function verifyVsixPackaging(options = {}) {
       temporaryDirectory,
       `vba-tools-${targetPlatform}-${extensionPackageJson.version}.vsix`
     );
-    await runCommand(process.execPath, [
+    const packageFile = process.execPath;
+    const packageArgs = [
       path.join(root, 'node_modules', '@vscode', 'vsce', 'vsce'),
       'package',
       '--target',
       targetPlatform,
       '--out',
       vsixPath
-    ], root);
+    ];
+    try {
+      await runCommand(packageFile, packageArgs, root,
+        diagnosticsRoot ? { maxOutputCharacters: maximumFailureOutputCharacters } : undefined);
+    } catch (error) {
+      if (diagnosticsRoot) {
+        try {
+          const evidencePath = await savePackagingFailureEvidence({
+            diagnosticsRoot, root, packageFile, packageArgs, vsixPath,
+            packageVersion: extensionPackageJson.version, error
+          });
+          console.error(`VSIX packaging failure evidence saved: ${evidencePath}`);
+        } catch (captureError) {
+          console.error(`Warning: VSIX packaging failure evidence could not be saved: ${captureError}`);
+        }
+      }
+      throw error;
+    }
     const packaged = await inspectPackage(vsixPath);
     assertVsixContents([...packaged.files.keys()], manifest);
     assertMarketplacePackageMetadata(packaged.packageJson);
@@ -645,29 +670,153 @@ function assertProjectProperty(csprojText, propertyName, expectedValue, projectF
   }
 }
 
-function runCommandWithSpawn(file, args, cwd) {
+export function runCommandWithSpawn(file, args, cwd, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(file, args, { cwd, windowsHide: true });
     child.stdin?.end();
     let stdout = '';
     let stderr = '';
+    let stdoutCharacters = 0;
+    let stderrCharacters = 0;
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+    const maxOutputCharacters = options.maxOutputCharacters ?? Infinity;
+
+    const append = (previous, value) => maxOutputCharacters === Infinity
+      ? previous + value
+      : (previous + value).slice(-maxOutputCharacters);
 
     child.stdout?.on('data', (chunk) => {
-      stdout += chunk.toString('utf8');
+      const value = stdoutDecoder.write(chunk);
+      stdoutCharacters += value.length;
+      stdout = append(stdout, value);
     });
     child.stderr?.on('data', (chunk) => {
-      stderr += chunk.toString('utf8');
+      const value = stderrDecoder.write(chunk);
+      stderrCharacters += value.length;
+      stderr = append(stderr, value);
     });
     child.on('error', reject);
-    child.on('exit', (exitCode) => {
+    child.on('close', (exitCode, signal) => {
+      const finalStdout = stdoutDecoder.end();
+      const finalStderr = stderrDecoder.end();
+      stdoutCharacters += finalStdout.length;
+      stderrCharacters += finalStderr.length;
+      stdout = append(stdout, finalStdout);
+      stderr = append(stderr, finalStderr);
       if (exitCode !== 0) {
-        reject(new Error(`${file} ${args.join(' ')} exited with code ${exitCode}.\n${stderr}`));
+        reject(Object.assign(
+          new Error(`${file} ${args.join(' ')} exited with code ${exitCode}.\n${stderr}`),
+          {
+            file, args: [...args], cwd, pid: child.pid, exitCode, signal,
+            stdout, stderr, stdoutCharacters, stderrCharacters,
+            stdoutTruncated: stdoutCharacters > stdout.length,
+            stderrTruncated: stderrCharacters > stderr.length
+          }
+        ));
         return;
       }
 
       resolve({ stdout, stderr });
     });
   });
+}
+
+async function savePackagingFailureEvidence({
+  diagnosticsRoot, root, packageFile, packageArgs, vsixPath, packageVersion, error
+}) {
+  if (!path.isAbsolute(diagnosticsRoot)) {
+    throw new Error('The diagnostic run root must be an absolute path.');
+  }
+  await fs.mkdir(diagnosticsRoot, { recursive: true });
+  const evidencePath = await fs.mkdtemp(path.join(diagnosticsRoot, 'failure-'));
+  const vscePath = packageArgs[0];
+  const packageLockPath = path.join(root, 'package-lock.json');
+  const packageJsonPath = path.join(root, 'package.json');
+  const vscePackagePath = path.join(path.dirname(vscePath), 'package.json');
+  const vscePackage = JSON.parse(await fs.readFile(vscePackagePath, 'utf8'));
+  const failedOutput = await retainFailedOutput(vsixPath, evidencePath);
+  const stdout = boundedFailureText(error?.stdout);
+  const stderr = boundedFailureText(error?.stderr);
+  const report = {
+    schemaVersion: '1.0',
+    kind: 'vsix-packaging-child-failure',
+    timestampUtc: new Date().toISOString(),
+    invocationId: randomUUID(),
+    diagnosticRunId: process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ID ?? null,
+    environment: {
+      platform: process.platform,
+      architecture: process.arch,
+      osRelease: os.release()
+    },
+    inputs: {
+      packageJson: { path: packageJsonPath, sha256: await hashFile(packageJsonPath), version: packageVersion },
+      packageLock: { path: packageLockPath, sha256: await hashFile(packageLockPath) }
+    },
+    tools: {
+      node: { path: packageFile, version: process.version, sha256: await hashFile(packageFile) },
+      vsce: { path: vscePath, version: vscePackage.version, sha256: await hashFile(vscePath) }
+    },
+    invocation: {
+      file: packageFile,
+      args: [...packageArgs],
+      cwd: root,
+      outputPath: vsixPath,
+      pid: error?.pid ?? null,
+      exitCode: error?.exitCode ?? null,
+      signal: error?.signal ?? null
+    },
+    output: {
+      lengthUnit: 'UTF-16 code units',
+      stdout: stdout.text,
+      stderr: stderr.text,
+      stdoutCharacters: error?.stdoutCharacters ?? stdout.characters,
+      stderrCharacters: error?.stderrCharacters ?? stderr.characters,
+      stdoutTruncated: error?.stdoutTruncated === true || stdout.truncated,
+      stderrTruncated: error?.stderrTruncated === true || stderr.truncated
+    },
+    failedOutput,
+    limitations: 'This is a failed, unverified package attempt. Retained output is never eligible for publication. '
+      + 'File hashes are observed after child exit, not proven at launch. '
+      + 'Only allowlisted process metadata is captured; environment variable values, source contents, and dumps are excluded.'
+  };
+  await fs.writeFile(path.join(evidencePath, 'failure.json'), JSON.stringify(report, null, 2) + '\n',
+    { encoding: 'utf8', flag: 'wx' });
+  return evidencePath;
+}
+
+async function retainFailedOutput(vsixPath, evidencePath) {
+  let entry;
+  try {
+    entry = await fs.lstat(vsixPath);
+  } catch (error) {
+    if (error.code === 'ENOENT') return { status: 'absent' };
+    throw error;
+  }
+  if (!entry.isFile() || entry.isSymbolicLink()) return { status: 'unsafe-entry' };
+  if (entry.size > maximumFailedPackageBytes) {
+    return { status: 'too-large', bytes: entry.size, maximumBytes: maximumFailedPackageBytes };
+  }
+  const copyPath = path.join(evidencePath, 'failed-output.partial');
+  await fs.copyFile(vsixPath, copyPath);
+  return {
+    status: 'retained-partial',
+    file: path.basename(copyPath),
+    bytes: entry.size,
+    sha256: await hashFile(copyPath)
+  };
+}
+
+function boundedFailureText(value) {
+  const input = typeof value === 'string' ? value : '';
+  const text = input.slice(-maximumFailureOutputCharacters);
+  return { text, characters: input.length, truncated: text.length < input.length };
+}
+
+async function hashFile(filePath) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  return hash.digest('hex');
 }
 
 function readZipEntries(vsixPath) {
