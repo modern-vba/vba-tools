@@ -68,35 +68,35 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
                 "textDocument/didOpen",
                 CreateOpenDocument(uri, text));
             await process.WaitForDiagnosticsAsync(uri);
-            var didOpenPath = await WaitForMatchingFileCreatedAsync(
+            var didOpenRecord = await InteractiveTimingRecord.WaitAsync(
                 admissionDirectory,
                 fileName => fileName.EndsWith(
                     "-mutation-textDocument_didOpen-none.completed",
                     StringComparison.Ordinal),
                 TimeSpan.FromSeconds(5));
-            var diagnosticsPath = await WaitForMatchingFileCreatedAsync(
+            var diagnosticsRecord = await InteractiveTimingRecord.WaitAsync(
                 admissionDirectory,
                 fileName => fileName.EndsWith(
                     "-request-textDocument_diagnostic-none.completed",
                     StringComparison.Ordinal),
                 TimeSpan.FromSeconds(5));
-            var refreshPath = await WaitForMatchingFileCreatedAsync(
+            var refreshRecord = await InteractiveTimingRecord.WaitAsync(
                 admissionDirectory,
                 fileName => fileName.EndsWith(
                     "-request-vba_referenceCatalogRefresh-none.completed",
                     StringComparison.Ordinal),
                 TimeSpan.FromSeconds(5));
-            var publicationPath = await WaitForMatchingFileCreatedAsync(
+            var publicationRecord = await InteractiveTimingRecord.WaitAsync(
                 admissionDirectory,
                 fileName => fileName.EndsWith(
                     "-request-vba_referenceCatalogPublication-none.completed",
                     StringComparison.Ordinal),
                 TimeSpan.FromSeconds(5));
-            var didOpenSequence = ReadTimingValue(didOpenPath, "inputSequence");
+            var didOpenSequence = didOpenRecord.ReadValue("inputSequence");
 
-            Assert.Equal(didOpenSequence, ReadTimingValue(diagnosticsPath, "readFence"));
-            Assert.Equal(didOpenSequence, ReadTimingValue(refreshPath, "readFence"));
-            Assert.Equal(didOpenSequence, ReadTimingValue(publicationPath, "readFence"));
+            Assert.Equal(didOpenSequence, diagnosticsRecord.ReadValue("readFence"));
+            Assert.Equal(didOpenSequence, refreshRecord.ReadValue("readFence"));
+            Assert.Equal(didOpenSequence, publicationRecord.ReadValue("readFence"));
 
             await process.ShutdownAsync(2);
         }
@@ -396,15 +396,13 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
                     textDocument = new { uri },
                     position = new { line = 4, character = "Private Sub UserForm_".Length }
                 });
-            var baselineHoverPath = await WaitForMatchingFileCreatedAsync(
+            var baselineHoverRecord = await InteractiveTimingRecord.WaitAsync(
                 admissionDirectory,
                 fileName => fileName.EndsWith(
                     "-request-textDocument_hover-number-2.completed",
                     StringComparison.Ordinal),
                 TimeSpan.FromSeconds(5));
-            var baselineReadFence = ReadTimingValue(
-                baselineHoverPath,
-                "readFence");
+            var baselineReadFence = baselineHoverRecord.ReadValue("readFence");
 
             await process.SendNotificationAsync(
                 "vba/intrinsicHostEventCatalog",
@@ -443,24 +441,22 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
                     textDocument = new { uri },
                     position = new { line = 4, character = "Private Sub UserForm_".Length }
                 });
-            var notificationPath = await WaitForMatchingFileCreatedAsync(
+            var notificationRecord = await InteractiveTimingRecord.WaitAsync(
                 admissionDirectory,
                 fileName => fileName.EndsWith(
                     "-mutation-vba_intrinsicHostEventCatalog-none.completed",
                     StringComparison.Ordinal),
                 TimeSpan.FromSeconds(5));
-            var hoverPath = await WaitForMatchingFileCreatedAsync(
+            var hoverRecord = await InteractiveTimingRecord.WaitAsync(
                 admissionDirectory,
                 fileName => fileName.EndsWith(
                     "-request-textDocument_hover-number-3.completed",
                     StringComparison.Ordinal),
                 TimeSpan.FromSeconds(5));
 
-            var notificationSequence = ReadTimingValue(
-                notificationPath,
-                "inputSequence");
+            var notificationSequence = notificationRecord.ReadValue("inputSequence");
             Assert.True(notificationSequence > baselineReadFence);
-            Assert.Equal(notificationSequence, ReadTimingValue(hoverPath, "readFence"));
+            Assert.Equal(notificationSequence, hoverRecord.ReadValue("readFence"));
 
             await process.ShutdownAsync(4);
         }
@@ -673,7 +669,7 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
                     {
                         textDocument = new { uri }
                     });
-                var newReadAdmissionPath = await WaitForMatchingFileCreatedAsync(
+                var newReadAdmissionRecord = await InteractiveTimingRecord.WaitAsync(
                     admissionDirectory,
                     fileName => fileName.EndsWith("-number-3.admitted", StringComparison.Ordinal),
                     TimeSpan.FromSeconds(5));
@@ -683,7 +679,7 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
                         "-mutation-textDocument_didChange-none.completed",
                         StringComparison.Ordinal),
                     TimeSpan.FromSeconds(5));
-                var newReadCapturePath = await WaitForMatchingFileCreatedAsync(
+                var newReadCaptureRecord = await InteractiveTimingRecord.WaitAsync(
                     admissionDirectory,
                     fileName => fileName.EndsWith(
                         "-request-textDocument_documentSymbol-number-3.captured",
@@ -691,14 +687,14 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
                     TimeSpan.FromSeconds(5));
 
                 Assert.Equal(
-                    ReadTimingValue(newReadAdmissionPath, "inputSequence"),
-                    ReadTimingValue(newReadCapturePath, "inputSequence"));
+                    newReadAdmissionRecord.ReadValue("inputSequence"),
+                    newReadCaptureRecord.ReadValue("inputSequence"));
                 Assert.Equal(
-                    ReadTimingValue(newReadAdmissionPath, "readFence"),
-                    ReadTimingValue(newReadCapturePath, "readFence"));
-                Assert.Contains("requestId=number:3", File.ReadLines(newReadCapturePath));
+                    newReadAdmissionRecord.ReadValue("readFence"),
+                    newReadCaptureRecord.ReadValue("readFence"));
+                Assert.Contains("requestId=number:3", newReadCaptureRecord.Lines);
                 Assert.Contains(
-                    File.ReadLines(newReadCapturePath),
+                    newReadCaptureRecord.Lines,
                     line => line.StartsWith("captureMilliseconds=", StringComparison.Ordinal));
 
                 Assert.False(File.Exists(cancelledFile));
@@ -1460,10 +1456,4 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
     private static int CountCompletedFiles(string directory, string suffix)
         => Directory.EnumerateFiles(directory, "*.completed")
             .Count(path => path.EndsWith(suffix, StringComparison.Ordinal));
-
-    private static long ReadTimingValue(string path, string key)
-        => long.Parse(
-            File.ReadLines(path)
-                .Single(line => line.StartsWith($"{key}=", StringComparison.Ordinal))
-                [(key.Length + 1)..]);
 }
