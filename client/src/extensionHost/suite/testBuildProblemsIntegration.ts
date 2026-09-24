@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { ConfigurationTarget, Range, RelativePattern, TabInputText, Uri, WorkspaceEdit,
   commands, languages, tests, window, workspace } from 'vscode';
@@ -187,6 +187,15 @@ export async function runTestBuildProblemsIntegrationTests(): Promise<void> {
     for (const dir of snapshots) await assert.rejects(stat(dir), { code: 'ENOENT' });
     console.log('Native Test build validation passed: command and Explorer errors, related navigation after cleanup, zero macro on failure, real corrected test execution, scoped clear and byte preservation.');
   } catch (error) {
+    try {
+      const failureRoot = path.join(extensionRoot, '.tmp', 'extension-host-failures', 'native-test-build-fixtures');
+      await mkdir(failureRoot, { recursive: true });
+      const saved = await mkdtemp(path.join(failureRoot, 'run-'));
+      await cp(fixture, path.join(saved, 'fixture'), { recursive: true });
+      console.error(`Native Test build fixture snapshot saved: ${saved}`);
+    } catch (captureError) {
+      console.error('Native Test build fixture snapshot could not be saved:', captureError);
+    }
     console.error(diagnostics.format());
     throw error;
   } finally {

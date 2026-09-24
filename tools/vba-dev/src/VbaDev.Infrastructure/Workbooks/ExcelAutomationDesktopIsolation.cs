@@ -366,8 +366,11 @@ internal sealed class PrivateDesktopOwnedExcelProcessControl(
         var windows = latestWindows.Length == 0
             ? "no exact-PID top-level windows were present in the latest snapshot"
             : string.Join("; ", latestWindows);
+        var exitCode = owner.TryGetExitCode(out var observedExitCode)
+            ? $", exitCode=0x{observedExitCode:X8}"
+            : string.Empty;
         return $"Automation Excel isolation evidence: PID={owner.ProcessId}, " +
-               $"privateDesktop='{desktopIsolation.QualifiedDesktopName}', {windows}.";
+               $"privateDesktop='{desktopIsolation.QualifiedDesktopName}'{exitCode}, {windows}.";
     }
 
     public async ValueTask DisposeAsync()

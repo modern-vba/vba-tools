@@ -117,7 +117,8 @@ internal sealed class SourceAnalysisEvidenceStore(string? directory = null)
         // Keep project and loaded-build identities available even when exception text consumes its budget.
         var identityBudget = new TextBudget(16 * 1024);
         var assemblies = new[] { Assembly.GetEntryAssembly(), typeof(SourceAnalysisEvidenceStore).Assembly,
-                typeof(VbaSyntaxTree).Assembly, typeof(VbaProjectSemanticInputs).Assembly, typeof(object).Assembly }
+                typeof(VbaSyntaxTree).Assembly, typeof(VbaProjectSemanticInputs).Assembly, typeof(object).Assembly,
+                typeof(Uri).Assembly, typeof(Enumerable).Assembly }
             .OfType<Assembly>().Distinct().Select(assembly => CaptureAssembly(assembly, identityBudget)).ToArray();
         var executable = CaptureExecutable(identityBudget);
         var project = new
@@ -184,8 +185,74 @@ internal sealed class SourceAnalysisEvidenceStore(string? directory = null)
             type = budget.Take(error.GetType().FullName),
             hresult = error.HResult,
             details = budget.Take(SafeExceptionText(error, MaximumExceptionCharacters), MaximumExceptionCharacters),
-            stackTrace = budget.Take(SafeStack(error), 8192)
+            stackTrace = budget.Take(SafeStack(error), 8192),
+            uriIdentification = CaptureUriIdentification(error, budget)
         };
+    }
+
+    // [DEBUG-415-uri-v1] Temporary whitelist, not a general Exception.Data serializer.
+    private static object? CaptureUriIdentification(Exception error, TextBudget budget)
+    {
+        try
+        {
+            if (error.Data["DEBUG-415-uri-v1"] is not Dictionary<string, object> evidence) return null;
+            if (evidence.GetValueOrDefault("uriCodeUnitLength") is not int length || length < 0
+                || evidence.GetValueOrDefault("uriUtf16Hex") is not string hex)
+                return new { status = "unavailable" };
+            var capturedHex = budget.TakeHex(hex, 4096 * 4);
+            var phase = budget.Take(evidence.GetValueOrDefault("phase") as string, 128);
+            var stage = budget.Take(evidence.GetValueOrDefault("stage") as string, 128);
+            var rawOrigins = evidence.GetValueOrDefault("origins") as string;
+            var origins = budget.Take(rawOrigins, 128);
+            // [DEBUG-415-uri-v2] Copy only known bounded identifier fields, not arbitrary metadata.
+            var originDetails = new List<Dictionary<string, object>>();
+            var detailsComplete = evidence.GetValueOrDefault("originDetailsComplete") is true;
+            if (evidence.GetValueOrDefault("originDetails") is List<Dictionary<string, object>> rawDetails)
+            {
+                detailsComplete &= rawDetails.Count <= 32;
+                foreach (var rawDetail in rawDetails.Take(32))
+                {
+                    var detail = new Dictionary<string, object>(StringComparer.Ordinal);
+                    var complete = rawDetail.GetValueOrDefault("fieldsComplete") is true;
+                    foreach (var name in new[] { "category", "documentUri", "moduleName", "definitionName",
+                        "definitionKind", "definitionModuleName", "identityOrigin", "identityName", "identitySourceUri", "identityKind",
+                        "referenceName", "parentTypeName", "propertyAccessorKind" })
+                    {
+                        if (rawDetail.GetValueOrDefault(name) is not string value) continue;
+                        var captured = budget.TakeIdentifier(value, 2048);
+                        detail[name] = captured;
+                        complete &= captured == value;
+                    }
+                    foreach (var name in new[] { "documentIndex", "definitionIndex", "startLine",
+                        "startCharacter", "endLine", "endCharacter", "identityStartLine", "identityStartCharacter",
+                        "identityEndLine", "identityEndCharacter" })
+                        if (rawDetail.GetValueOrDefault(name) is int value) detail[name] = value;
+                    detail["fieldsComplete"] = complete;
+                    detailsComplete &= complete;
+                    originDetails.Add(detail);
+                }
+            }
+            else detailsComplete = false;
+            return new
+            {
+                status = "available",
+                uriCodeUnitLength = length,
+                uriCapturedCodeUnits = capturedHex.Length / 4,
+                uriCaptureComplete = capturedHex.Length == (long)length * 4,
+                uriUtf16Hex = capturedHex,
+                phase,
+                stage,
+                origins,
+                originsComplete = evidence.GetValueOrDefault("originsComplete") is true
+                    && rawOrigins is not null && origins == rawOrigins,
+                originDetails,
+                originDetailsComplete = detailsComplete,
+                originScanComplete = evidence.GetValueOrDefault("originScanComplete") is true,
+                originMatchesObserved = evidence.GetValueOrDefault("originMatchesObserved") as int?,
+                inventoryIndex = evidence.GetValueOrDefault("inventoryIndex") as int?
+            };
+        }
+        catch (Exception) { return new { status = "unavailable" }; }
     }
 
     private static object CaptureAssembly(Assembly assembly, TextBudget budget)
@@ -317,6 +384,25 @@ internal sealed class SourceAnalysisEvidenceStore(string? directory = null)
     private sealed class TextBudget(int remaining = 192 * 1024)
     {
         internal bool Truncated { get; private set; }
+
+        // Identifier values remain literal prefixes; completeness flags describe clipping separately.
+        internal string TakeIdentifier(string text, int maximum)
+        {
+            var length = Math.Min(text.Length, Math.Min(maximum, remaining));
+            remaining -= length;
+            if (length != text.Length) Truncated = true;
+            return text[..length];
+        }
+
+        // Keep hex aligned to complete UTF-16 code units and report clipping through the owning record.
+        internal string TakeHex(string text, int maximum)
+        {
+            var length = Math.Min(text.Length, Math.Min(maximum, remaining));
+            length -= length % 4;
+            remaining -= length;
+            if (length != text.Length) Truncated = true;
+            return text[..length];
+        }
 
         internal string? Take(string? text, int maximum = 2048)
         {

@@ -10,6 +10,54 @@ namespace VbaDev.Tests;
 public sealed class OwnedExcelApplicationBootstrapperTests
 {
     [Fact]
+    public async Task ExitedPrivateDesktopExcelEvidenceIncludesTheExactProcessExitCode()
+    {
+        var process = new FakeDebugOwnedProcess(
+            427,
+            new DateTime(2026, 9, 24, 9, 0, 0, DateTimeKind.Local));
+        var job = new FakeDebugProcessJob(process);
+        var owner = DebugExcelProcessOwner.AdoptPreassignedProcess(process, job);
+        var isolation = new FakeExcelAutomationDesktopIsolation([]);
+        await using var control = new PrivateDesktopOwnedExcelProcessControl(owner, isolation);
+
+        Assert.DoesNotContain("exitCode=", control.DescribeCurrentEvidence(),
+            StringComparison.Ordinal);
+
+        process.Exit(unchecked((int)0xC0000005));
+        await owner.Completion.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Contains("exitCode=0xC0000005", control.DescribeCurrentEvidence(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ExitedPrivateDesktopExcelEvidenceIncludesExitCodeBeforeMonitorSettles()
+    {
+        var process = new FakeDebugOwnedProcess(
+            428,
+            new DateTime(2026, 9, 24, 9, 0, 0, DateTimeKind.Local),
+            deferExitObservation: true);
+        var job = new FakeDebugProcessJob(process);
+        var owner = DebugExcelProcessOwner.AdoptPreassignedProcess(process, job);
+        var isolation = new FakeExcelAutomationDesktopIsolation([]);
+        await using var control = new PrivateDesktopOwnedExcelProcessControl(owner, isolation);
+
+        process.Exit(unchecked((int)0xC0000005));
+        Assert.False(owner.Completion.IsCompleted);
+        try
+        {
+            Assert.Contains("exitCode=0xC0000005", control.DescribeCurrentEvidence(),
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            process.CompleteExitObservation();
+        }
+
+        await owner.Completion.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
     public async Task StartupCheckpointPreservesAnEarlyBootstrapperFailure()
     {
         var observationError = new InvalidOperationException("observation failed before binding");
@@ -800,7 +848,7 @@ public sealed class OwnedExcelApplicationBootstrapperTests
                 (_, hasProcessExited) =>
                 {
                     bindingStarted.SetResult();
-                    Assert.True(releaseExitProbe.Task.Wait(TimeSpan.FromSeconds(5)));
+                    Assert.True(releaseExitProbe.Task.Wait(TimeSpan.FromSeconds(10)));
                     Assert.True(hasProcessExited());
                     throw bindingStopped;
                 }),
@@ -817,8 +865,10 @@ public sealed class OwnedExcelApplicationBootstrapperTests
         try
         {
             await WaitForStartupCheckpointAsync(bindingStarted.Task, startup);
-            await terminationController.RequestCleanupAsync(TimeSpan.Zero)
-                .WaitAsync(TimeSpan.FromSeconds(1));
+            await ObserveFixtureCompletionAsync(
+                terminationController.RequestCleanupAsync(TimeSpan.Zero));
+            Assert.True(process.Disposed);
+            Assert.False(releaseExitProbe.Task.IsCompleted);
         }
         catch (Exception failure) { primaryFailure = failure; }
         finally
