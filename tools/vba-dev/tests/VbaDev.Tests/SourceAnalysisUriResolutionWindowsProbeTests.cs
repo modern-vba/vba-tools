@@ -117,7 +117,16 @@ public sealed class SourceAnalysisUriResolutionWindowsProbeTests(ITestOutputHelp
         catch (Exception error)
         {
             probeFailure = ExceptionDispatchInfo.Capture(error);
-            output.WriteLine($"probeException={error}");
+            try
+            {
+                output.WriteLine($"probeException={error}");
+                var uriEvidence = SourceAnalysisUriProbeEvidenceFormatter.Format(error);
+                if (uriEvidence is not null)
+                {
+                    output.WriteLine($"probeUriIdentification={uriEvidence}");
+                }
+            }
+            catch (Exception) { /* Test-output failure must not replace the probe failure. */ }
         }
         finally
         {
