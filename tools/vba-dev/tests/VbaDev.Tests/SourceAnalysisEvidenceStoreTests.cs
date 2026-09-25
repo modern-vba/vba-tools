@@ -13,6 +13,111 @@ namespace VbaDev.Tests;
 public sealed class SourceAnalysisEvidenceStoreTests
 {
     [Fact]
+    public void FailureEvidenceJoinsAnOptInDiagnosticRunWithoutChangingItsFailure()
+    {
+        using var temp = TempDirectory.Create();
+        const string runId = "run-20260925T101530123Z-0123456789abcdef";
+        var runRoot = Path.Combine(temp.Path, runId);
+        var failure = CaptureFailure();
+
+        var output = new SourceAnalysisEvidenceStore(diagnosticRunRootProvider: () => runRoot)
+            .Save(CreateContext(temp.Path), "build", CreateReport(failure));
+
+        var directory = Path.Combine(runRoot, "source-analysis");
+        var path = Assert.Single(Directory.GetFiles(directory));
+        Assert.Equal($"Source-analysis failure evidence saved: {path}{Environment.NewLine}", output);
+        using var saved = JsonDocument.Parse(File.ReadAllText(path));
+        Assert.Equal(runId, saved.RootElement.GetProperty("diagnosticRunId").GetString());
+        Assert.Equal(typeof(InvalidOperationException).FullName,
+            Assert.Single(saved.RootElement.GetProperty("failures").EnumerateArray())
+                .GetProperty("exception").GetProperty("type").GetString());
+        Assert.Contains("root-cause-sentinel", File.ReadAllText(path), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ExplicitEvidenceDirectoryKeepsTheExistingReportShape()
+    {
+        using var temp = TempDirectory.Create();
+        var directory = Path.Combine(temp.Path, "diagnostics");
+        var output = new SourceAnalysisEvidenceStore(directory, () => throw new InvalidOperationException("not consulted"))
+            .Save(CreateContext(temp.Path), "build", CreateReport(CaptureFailure()));
+
+        Assert.StartsWith("Source-analysis failure evidence saved: ", output, StringComparison.Ordinal);
+        using var saved = JsonDocument.Parse(File.ReadAllText(Assert.Single(Directory.GetFiles(directory))));
+        Assert.False(saved.RootElement.TryGetProperty("diagnosticRunId", out _));
+    }
+
+    [Theory]
+    [InlineData("relative/run-20260925T101530123Z-0123456789abcdef")]
+    [InlineData("run-invalid")]
+    [InlineData("run-２０２６０９２５T１０１５３０１２３Z-0123456789abcdef")]
+    public void MalformedRunRootCannotRedirectEvidenceOrHideTheOriginalFailure(string configuredRoot)
+    {
+        using var temp = TempDirectory.Create();
+        var root = configuredRoot.StartsWith("relative/", StringComparison.Ordinal)
+            ? configuredRoot : Path.Combine(temp.Path, configuredRoot);
+        var output = new SourceAnalysisEvidenceStore(diagnosticRunRootProvider: () => root)
+            .Save(CreateContext(temp.Path), "build", CreateReport(CaptureFailure()));
+
+        Assert.Contains("could not be saved", output, StringComparison.Ordinal);
+        Assert.Contains("root-cause-sentinel", output, StringComparison.Ordinal);
+        Assert.Contains("projectSemantics", output, StringComparison.Ordinal);
+        Assert.Empty(Directory.GetFileSystemEntries(temp.Path));
+    }
+
+    [Fact]
+    public void NetworkRunRootIsRejectedWithoutReplacingTheOriginalFailure()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var temp = TempDirectory.Create();
+        var output = new SourceAnalysisEvidenceStore(diagnosticRunRootProvider: () =>
+                "//invalid.example/share/run-20260925T101530123Z-0123456789abcdef")
+            .Save(CreateContext(temp.Path), "build", CreateReport(CaptureFailure()));
+
+        Assert.Contains("could not be saved", output, StringComparison.Ordinal);
+        Assert.Contains("root-cause-sentinel", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("invalid.example", output, StringComparison.Ordinal);
+        Assert.Empty(Directory.GetFileSystemEntries(temp.Path));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void OptInRunCreatesNoEvidenceForSuccessOrCancellationOnly(bool cancellation)
+    {
+        using var temp = TempDirectory.Create();
+        var runRoot = Path.Combine(temp.Path, "run-20260925T101530123Z-0123456789abcdef");
+        var builder = new VbaSourceAnalysisReport.Builder();
+        if (cancellation) builder.FailProject(new OperationCanceledException("cancelled"));
+
+        var output = new SourceAnalysisEvidenceStore(diagnosticRunRootProvider: () => runRoot)
+            .Save(CreateContext(temp.Path), "build", builder.ToReport());
+
+        Assert.Empty(output);
+        Assert.False(Directory.Exists(runRoot));
+    }
+
+    [Fact]
+    public void CorrelatedRunsRetainOnlyTheirOwnNewestFailureReports()
+    {
+        using var temp = TempDirectory.Create();
+        var firstRoot = Path.Combine(temp.Path, "run-20260925T101530123Z-0123456789abcdef");
+        var secondRoot = Path.Combine(temp.Path, "run-20260925T101531123Z-fedcba9876543210");
+        var context = CreateContext(temp.Path);
+        var report = CreateReport(CaptureFailure());
+        var first = new SourceAnalysisEvidenceStore(diagnosticRunRootProvider: () => firstRoot);
+        var second = new SourceAnalysisEvidenceStore(diagnosticRunRootProvider: () => secondRoot);
+
+        first.Save(context, "build", report);
+        for (var index = 0; index < SourceAnalysisEvidenceStore.MaximumReports + 1; index++)
+            second.Save(context, "build", report);
+
+        Assert.Single(Directory.GetFiles(Path.Combine(firstRoot, "source-analysis")));
+        Assert.Equal(SourceAnalysisEvidenceStore.MaximumReports,
+            Directory.GetFiles(Path.Combine(secondRoot, "source-analysis")).Length);
+    }
+
+    [Fact]
     public void UriComparisonEvidenceSerializesTheOtherInputWithoutPrivateExceptionData()
     {
         using var temp = TempDirectory.Create();

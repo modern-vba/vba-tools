@@ -12,7 +12,9 @@ using VbaTools.Syntax;
 namespace VbaDev.App.Workbooks;
 
 /// <summary>Retains bounded local failure evidence without changing analysis or its terminal result.</summary>
-internal sealed class SourceAnalysisEvidenceStore(string? directory = null)
+internal sealed class SourceAnalysisEvidenceStore(
+    string? directory = null,
+    Func<string?>? diagnosticRunRootProvider = null)
 {
     internal const int MaximumReports = 20;
     internal const int MaximumFailures = 16;
@@ -25,6 +27,9 @@ internal sealed class SourceAnalysisEvidenceStore(string? directory = null)
     private static readonly Regex ReportName = new(
         @"\Asource-analysis-\d{8}T\d{13}Z-[0-9a-f]{32}\.json\z",
         RegexOptions.CultureInvariant);
+    private static readonly Regex DiagnosticRunName = new(
+        @"\Arun-[0-9]{8}T[0-9]{9}Z-[0-9a-f]{16}\z",
+        RegexOptions.CultureInvariant);
 
     internal string Save(ResolvedProjectContext context, string operation, VbaSourceAnalysisReport report)
     {
@@ -32,16 +37,17 @@ internal sealed class SourceAnalysisEvidenceStore(string? directory = null)
             return string.Empty;
 
         string? targetDirectory = directory;
+        string? diagnosticRunId = null;
         string? partialPath = null;
         try
         {
-            targetDirectory = ResolveDirectory();
+            (targetDirectory, diagnosticRunId) = ResolveDirectory();
             var timestamp = DateTimeOffset.UtcNow;
             var invocationId = Guid.NewGuid().ToString("N");
             var name = FilePrefix + timestamp.ToString("yyyyMMdd'T'HHmmssfffffff'Z'", CultureInfo.InvariantCulture)
                 + "-" + invocationId + ".json";
             var path = Path.Combine(targetDirectory, name);
-            var bytes = Serialize(context, operation, report, timestamp, invocationId);
+            var bytes = Serialize(context, operation, report, timestamp, invocationId, diagnosticRunId);
             if (bytes.Length > MaximumReportBytes)
                 throw new IOException("The bounded failure report exceeded its maximum serialized size.");
 
@@ -72,17 +78,31 @@ internal sealed class SourceAnalysisEvidenceStore(string? directory = null)
         }
     }
 
-    private string ResolveDirectory()
+    private (string Directory, string? DiagnosticRunId) ResolveDirectory()
     {
-        if (directory is not null) return Path.GetFullPath(directory);
+        if (directory is not null) return (Path.GetFullPath(directory), null);
+        var diagnosticRunRoot = (diagnosticRunRootProvider
+            ?? (() => Environment.GetEnvironmentVariable("VBA_TOOLS_DIAGNOSTIC_RUN_ROOT")))();
+        if (diagnosticRunRoot is not null)
+        {
+            if (!Path.IsPathFullyQualified(diagnosticRunRoot))
+                throw new IOException("The diagnostic run root must be a local absolute path with a valid run ID.");
+            var fullRoot = Path.GetFullPath(diagnosticRunRoot);
+            if (OperatingSystem.IsWindows() && fullRoot.StartsWith(@"\\", StringComparison.Ordinal))
+                throw new IOException("The diagnostic run root must be a local absolute path with a valid run ID.");
+            var runId = Path.GetFileName(Path.TrimEndingDirectorySeparator(fullRoot));
+            if (!DiagnosticRunName.IsMatch(runId))
+                throw new IOException("The diagnostic run root must be a local absolute path with a valid run ID.");
+            return (Path.Combine(fullRoot, "source-analysis"), runId);
+        }
         var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         if (string.IsNullOrWhiteSpace(local))
             throw new IOException("The operating system did not provide a local application data directory.");
-        return Path.GetFullPath(Path.Combine(local, "VbaTools", "Diagnostics", "source-analysis"));
+        return (Path.GetFullPath(Path.Combine(local, "VbaTools", "Diagnostics", "source-analysis")), null);
     }
 
     private static byte[] Serialize(ResolvedProjectContext context, string operation, VbaSourceAnalysisReport report,
-        DateTimeOffset timestamp, string invocationId)
+        DateTimeOffset timestamp, string invocationId, string? diagnosticRunId)
     {
         var budget = new TextBudget();
         var failures = report.Failures.Take(MaximumFailures).Select(failure => new
@@ -145,16 +165,16 @@ internal sealed class SourceAnalysisEvidenceStore(string? directory = null)
             assemblies,
             executable
         };
-        return JsonSerializer.SerializeToUtf8Bytes(new
+        var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
-            schemaVersion = "1.0",
-            kind = "vba-dev-source-analysis-failure",
-            timestampUtc = timestamp,
-            invocationId,
-            project,
-            failures,
-            sources,
-            semanticInputs = new
+            ["schemaVersion"] = "1.0",
+            ["kind"] = "vba-dev-source-analysis-failure",
+            ["timestampUtc"] = timestamp,
+            ["invocationId"] = invocationId,
+            ["project"] = project,
+            ["failures"] = failures,
+            ["sources"] = sources,
+            ["semanticInputs"] = new
             {
                 acquired = inputs is not null,
                 referenceCount = inputs?.ReferenceCatalogIdentities.Count,
@@ -162,19 +182,21 @@ internal sealed class SourceAnalysisEvidenceStore(string? directory = null)
                 hostEventsAcquired = inputs?.IntrinsicHostEvents is not null,
                 references
             },
-            runtime,
-            truncation = new
+            ["runtime"] = runtime,
+            ["truncation"] = new
             {
                 failuresOmitted = Math.Max(0, report.Failures.Length - failures.Length),
                 sourcesOmitted = Math.Max(0, report.SyntaxTrees.Length - sources.Length),
                 referencesOmitted = Math.Max(0, (inputs?.ReferenceCatalogIdentities.Count ?? 0) - (references?.Length ?? 0)),
                 textTruncated = budget.Truncated || identityBudget.Truncated
             },
-            limitations = "Source hashes identify captured parser text encoded as UTF-8, not original file bytes. "
+            ["limitations"] = "Source hashes identify captured parser text encoded as UTF-8, not original file bytes. "
                 + "Only parsed trees and successfully acquired semantic identities are available. "
                 + "No source text, source copies, environment dump, or external upload is produced. "
                 + "Exception messages may contain paths or other application-provided details."
-        }, new JsonSerializerOptions { WriteIndented = true });
+        };
+        if (diagnosticRunId is not null) payload.Add("diagnosticRunId", diagnosticRunId);
+        return JsonSerializer.SerializeToUtf8Bytes(payload, new JsonSerializerOptions { WriteIndented = true });
     }
 
     private static object? CaptureException(Exception? error, TextBudget budget)

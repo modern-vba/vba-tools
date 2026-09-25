@@ -24,6 +24,17 @@ to save or prune evidence produces a warning without replacing the primary
 failure, changing its exit status, or claiming successful workbook generation.
 If saving fails, preserve stderr, which includes bounded exception details.
 
+For a local correlated diagnostic run, the launcher may set
+`VBA_TOOLS_DIAGNOSTIC_RUN_ROOT` to an absolute, unique run directory whose final
+name has the form `run-YYYYMMDDTHHmmssfffZ-<16 lowercase hex digits>`. Failure
+reports then go to its `source-analysis` child, with that validated run name in
+the JSON `diagnosticRunId` field. Retention remains the newest 20 completed
+reports **within that child**, without pruning another run's files. An absent
+variable keeps the default directory and report shape. An invalid run root
+produces a warning and bounded stderr fallback instead of redirecting output
+or hiding the source-analysis failure. Successful analysis and cancellation-only
+failures still create no report or run directory.
+
 ## Evidence and limitations
 
 The local report uses schema `1.0`, independent of the public `sourceAnalysis`
@@ -41,12 +52,17 @@ schema `3.0`. It records:
   and text. Only acquired evidence is reported; missing data is not success.
 
 Sources are not reopened or copied. A decode/parse failure can therefore leave
-no tree/hash for the active source. Template contents, source text, environment
-variables, workbook bytes, and native dumps are not collected. Exception messages
-may themselves include application-provided content. Paths and reference names
-can be sensitive: inspect and redact a report before sharing it. Nothing is
-uploaded automatically. Copy important reports outside the retention directory
-before enough later failures can remove them.
+no tree/hash for the active source. Template contents, source text, raw environment
+variable values, workbook bytes, and native dumps are not collected. The validated
+run ID is the only environment-derived value added during an opt-in correlated run.
+Exception messages may themselves include application-provided content. Paths
+and reference names can be sensitive: inspect and redact a report before sharing
+it. Nothing is uploaded automatically. Copy important reports outside the
+retention directory before enough later failures can remove them.
+
+The run ID allows this handled source-analysis failure to be matched with other
+local evidence from the same launcher invocation. It does not imply that a
+native process crash or a different failure was captured by this recorder.
 
 This is a handled-managed-exception recorder, not crash monitoring. A native
 access violation, process kill, stack overflow, or out-of-memory termination may
