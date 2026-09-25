@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createWriteStream, promises as fs } from 'node:fs';
+import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { PassThrough } from 'node:stream';
 import yazl from 'yazl';
 
 import {
@@ -87,6 +89,20 @@ test('failed packaging child retains bounded output and exact process completion
   );
 });
 
+test('monitor finalization failure does not replace the original child exit', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-vsix-monitor-finalize-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const childPath = path.join(root, 'fail.mjs');
+  await fs.writeFile(childPath, 'process.stderr.write("original failure\\n"); process.exitCode = 23;\n');
+
+  await assert.rejects(
+    () => runCommandWithSpawn(process.execPath, [childPath], root, {
+      onSpawn: () => async () => { throw new Error('monitor evidence write failed'); }
+    }),
+    error => error.exitCode === 23 && error.stderr === 'original failure\n'
+  );
+});
+
 test('opted-in VSIX verification preserves a failed child and partial output as local evidence', async (t) => {
   const { root, vscePath } = await createPackagingFailureFixture(t);
   const diagnosticsRoot = path.join(root, 'diagnostics');
@@ -118,6 +134,210 @@ test('opted-in VSIX verification preserves a failed child and partial output as 
   assert.equal(evidence.failedOutput.status, 'retained-partial');
   assert.equal(await fs.readFile(path.join(evidencePath, 'failed-output.partial'), 'utf8'), 'not-a-vsix');
   assert.equal(await fileExists(evidence.invocation.outputPath), false);
+});
+
+test('opted-in exact-child monitor records attachment without replacing the packaging failure', async (t) => {
+  const { root } = await createPackagingFailureFixture(t);
+  const diagnosticsRoot = path.join(root, 'diagnostics');
+  const procDumpPath = path.join(root, 'procdump64.exe');
+  await fs.writeFile(procDumpPath, 'test-only external monitor');
+  const procDumpSha256 = await hashFile(procDumpPath);
+  const spawnMonitor = (_file, args) => {
+    const monitor = new EventEmitter();
+    monitor.pid = 12345;
+    monitor.stdout = new PassThrough();
+    monitor.stderr = new PassThrough();
+    monitor.kill = () => true;
+    const targetPid = Number(args.at(-2));
+    setImmediate(() => {
+      monitor.stdout.end(Buffer.from(
+        `Process: node.exe (${targetPid})\r\nPress Ctrl-C to end monitoring without terminating the process.\r\n`,
+        'utf16le'));
+      monitor.stderr.end();
+      monitor.emit('close', 0, null);
+    });
+    return monitor;
+  };
+
+  let originalError;
+  await assert.rejects(
+    () => verifyVsixPackaging({
+      root,
+      diagnosticsRoot,
+      procDump: { path: procDumpPath, sha256: procDumpSha256, spawnMonitor }
+    }),
+    error => {
+      originalError = error;
+      assert.equal(error.exitCode, 23);
+      assert.equal(error.stderr, 'controlled child failure\n');
+      return true;
+    }
+  );
+
+  const entries = await fs.readdir(diagnosticsRoot);
+  const failurePath = path.join(diagnosticsRoot, entries.find(entry => entry.startsWith('failure-')));
+  const monitorPath = path.join(diagnosticsRoot, entries.find(entry => entry.startsWith('monitor-')));
+  const failure = JSON.parse(await fs.readFile(path.join(failurePath, 'failure.json'), 'utf8'));
+  const observation = JSON.parse(await fs.readFile(path.join(monitorPath, 'monitor.json'), 'utf8'));
+  assert.match(observation.invocationId, /^[0-9a-f]{8}-[0-9a-f-]{27}$/i);
+  assert.equal(observation.invocationId, failure.invocationId);
+  assert.equal(observation.target.pid, originalError.pid);
+  assert.equal(observation.target.pid, failure.invocation.pid);
+  assert.equal(observation.target.exitCode, 23);
+  assert.match(observation.monitor.attachReadyUtc, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(observation.monitor.exitCode, 0);
+  assert.deepEqual(observation.dumps, []);
+  assert.equal(observation.absence, 'no-exception-dump');
+});
+
+test('exact-child monitor is stopped within a bounded grace after the packaging child closes', async (t) => {
+  const { root } = await createPackagingFailureFixture(t);
+  const diagnosticsRoot = path.join(root, 'diagnostics');
+  const procDumpPath = path.join(root, 'procdump64.exe');
+  await fs.writeFile(procDumpPath, 'test-only external monitor');
+  const procDumpSha256 = await hashFile(procDumpPath);
+  let killCalls = 0;
+  const spawnMonitor = (_file, args) => {
+    const monitor = new EventEmitter();
+    monitor.pid = 12346;
+    monitor.stdout = new PassThrough();
+    monitor.stderr = new PassThrough();
+    monitor.kill = () => {
+      killCalls += 1;
+      setImmediate(() => monitor.emit('close', null, 'SIGTERM'));
+      return true;
+    };
+    setImmediate(() => monitor.stdout.write(Buffer.from(
+      `Process: node.exe (${args.at(-2)})\r\nPress Ctrl-C to end monitoring without terminating the process.\r\n`)));
+    return monitor;
+  };
+
+  const started = Date.now();
+  await assert.rejects(
+    () => verifyVsixPackaging({
+      root, diagnosticsRoot,
+      procDump: {
+        path: procDumpPath, sha256: procDumpSha256,
+        spawnMonitor, monitorGraceMilliseconds: 20
+      }
+    }),
+    error => error.exitCode === 23 && error.stderr === 'controlled child failure\n'
+  );
+  assert.ok(Date.now() - started < 2000);
+  assert.equal(killCalls, 1);
+  const observation = await readExactChildMonitor(diagnosticsRoot);
+  assert.equal(observation.monitor.timedOut, true);
+  assert.match(observation.monitor.killRequestedUtc, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(observation.monitor.killReturned, true);
+  assert.equal(observation.monitor.closeUnobservedAfterKill, false);
+  assert.equal(observation.monitor.signal, 'SIGTERM');
+  assert.equal(observation.absence, 'monitor-incomplete');
+});
+
+test('denied monitor kill records unconfirmed cleanup without replacing the packaging failure', async (t) => {
+  const { root } = await createPackagingFailureFixture(t);
+  const diagnosticsRoot = path.join(root, 'diagnostics');
+  const procDumpPath = path.join(root, 'procdump64.exe');
+  await fs.writeFile(procDumpPath, 'test-only external monitor');
+  const procDumpSha256 = await hashFile(procDumpPath);
+  let killCalls = 0;
+  const spawnMonitor = (_file, args) => {
+    const monitor = new EventEmitter();
+    monitor.pid = 12348;
+    monitor.stdout = new PassThrough();
+    monitor.stderr = new PassThrough();
+    monitor.kill = () => { killCalls += 1; return false; };
+    setImmediate(() => monitor.stdout.write(Buffer.from(
+      `Process: node.exe (${args.at(-2)})\r\nPress Ctrl-C to end monitoring without terminating the process.\r\n`)));
+    return monitor;
+  };
+
+  await assert.rejects(
+    () => verifyVsixPackaging({
+      root, diagnosticsRoot,
+      procDump: { path: procDumpPath, sha256: procDumpSha256,
+        spawnMonitor, monitorGraceMilliseconds: 20 }
+    }),
+    error => error.exitCode === 23 && error.stderr === 'controlled child failure\n'
+  );
+  assert.equal(killCalls, 1);
+  const observation = await readExactChildMonitor(diagnosticsRoot);
+  assert.equal(observation.monitor.timedOut, true);
+  assert.equal(observation.monitor.killReturned, false);
+  assert.equal(observation.monitor.closeUnobservedAfterKill, true);
+  assert.equal(observation.monitor.closeUtc, null);
+  assert.equal(observation.absence, 'monitor-incomplete');
+});
+
+test('exact-child monitor reports an unconfirmed attach instead of claiming no exception', async (t) => {
+  const { root } = await createPackagingFailureFixture(t);
+  const diagnosticsRoot = path.join(root, 'diagnostics');
+  const procDumpPath = path.join(root, 'procdump64.exe');
+  await fs.writeFile(procDumpPath, 'test-only external monitor');
+  const procDumpSha256 = await hashFile(procDumpPath);
+  const spawnMonitor = (_file, args) => {
+    const monitor = new EventEmitter();
+    monitor.pid = 12347;
+    monitor.stdout = new PassThrough();
+    monitor.stderr = new PassThrough();
+    monitor.kill = () => true;
+    setImmediate(() => {
+      monitor.stdout.end(Buffer.from(
+        `Process: other.exe (${args.at(-2)})\r\nPress Ctrl-C to end monitoring without terminating the process.\r\n`));
+      monitor.emit('close', 0, null);
+    });
+    return monitor;
+  };
+
+  await assert.rejects(
+    () => verifyVsixPackaging({
+      root, diagnosticsRoot,
+      procDump: { path: procDumpPath, sha256: procDumpSha256, spawnMonitor }
+    }),
+    error => error.exitCode === 23
+  );
+  const observation = await readExactChildMonitor(diagnosticsRoot);
+  assert.equal(observation.monitor.attachReadyUtc, null);
+  assert.equal(observation.monitor.attachReadyBeforeTargetClose, false);
+  assert.equal(observation.absence, 'attach-not-confirmed');
+});
+
+test('ProcDump launch failure cannot replace the original packaging child failure', async (t) => {
+  const { root } = await createPackagingFailureFixture(t);
+  const diagnosticsRoot = path.join(root, 'diagnostics');
+  const procDumpPath = path.join(root, 'procdump64.exe');
+  await fs.writeFile(procDumpPath, 'test-only external monitor');
+  const procDumpSha256 = await hashFile(procDumpPath);
+
+  await assert.rejects(
+    () => verifyVsixPackaging({
+      root, diagnosticsRoot,
+      procDump: {
+        path: procDumpPath, sha256: procDumpSha256,
+        spawnMonitor: () => { throw new Error('monitor launch failed'); }
+      }
+    }),
+    error => error.exitCode === 23 && error.stderr === 'controlled child failure\n'
+  );
+  const observation = await readExactChildMonitor(diagnosticsRoot);
+  assert.match(observation.monitor.error, /monitor launch failed/);
+  assert.equal(observation.absence, 'attach-not-confirmed');
+});
+
+test('exact-child monitor rejects an unverified ProcDump executable before packaging starts', async (t) => {
+  const { root } = await createPackagingFailureFixture(t);
+  const diagnosticsRoot = path.join(root, 'diagnostics');
+  const procDumpPath = path.join(root, 'procdump64.exe');
+  await fs.writeFile(procDumpPath, 'test-only external monitor');
+
+  await assert.rejects(
+    () => verifyVsixPackaging({
+      root, diagnosticsRoot,
+      procDump: { path: procDumpPath, sha256: '0'.repeat(64) }
+    }),
+    /ProcDump SHA-256 does not match/
+  );
+  assert.equal(await fileExists(diagnosticsRoot), false);
 });
 
 test('evidence storage failure never replaces the packaging child failure', async (t) => {
@@ -1548,6 +1768,12 @@ async function createPackagingFailureFixture(t, { writeOutput = true } = {}) {
     'process.exitCode = 23;'
   ].join('\n'));
   return { root, vscePath };
+}
+
+async function readExactChildMonitor(diagnosticsRoot) {
+  const entries = await fs.readdir(diagnosticsRoot);
+  const monitorPath = path.join(diagnosticsRoot, entries.find(entry => entry.startsWith('monitor-')));
+  return JSON.parse(await fs.readFile(path.join(monitorPath, 'monitor.json'), 'utf8'));
 }
 
 async function fileExists(filePath) {

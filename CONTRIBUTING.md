@@ -49,14 +49,33 @@ cannot by itself establish the cause of an access violation. The verifier
 rejects UNC and linked diagnostic roots; use an existing fixed local,
 non-reparse run root. Node does not independently attest a network-mapped drive.
 
+For an opt-in dump attempt inside the standard `verify:vsix` packaging step,
+independently verify the local `procdump64.exe` Authenticode signature and
+SHA-256, then set `VBA_TOOLS_VSIX_PROCDUMP_PATH` and
+`VBA_TOOLS_VSIX_PROCDUMP_SHA256` along with the existing absolute local
+`VBA_TOOLS_DIAGNOSTIC_RUN_ROOT`. The verifier checks the executable path and
+hash, starts the normal Node/vsce child unchanged, and attaches ProcDump only
+to that child's PID with `-ma -e -n 1 -at 30`. It records attach readiness,
+monitor exit/cleanup, dump metadata, and any attach or dump absence in a local
+`monitor-*/monitor.json`; a failed child's `failure.json` shares its invocation
+ID. A separate bounded wait after child close attempts to stop only the owned
+monitor if necessary, and records any unconfirmed stop; `-at 30` alone is not a
+monitor-lifetime limit. No machine-wide
+crash handler is registered. PID attachment can miss a short-lived child or,
+in principle, encounter PID reuse, so a missing dump does not prove the crash
+had no catchable exception. Full dumps may contain secrets: keep them local,
+never upload them, and distinguish ProcDump-monitored trials from the ordinary
+release gate because monitoring changes timing.
+
 For a separate native-dump trial, use a diagnostic-only, exact-child ProcDump
 launch (`-ma -e -n 1 -x`) after accepting the ProcDump license yourself. Target
 the Node executable and vsce entry point identified in `failure.json`, with the
 same `package --target win32-x64` arguments and a fresh, isolated `--out` path.
 Limit the trial to one full dump under an existing fixed local run root and a
-finite timeout. Do not attach by process name or PID, register a machine-wide
-crash handler, or reuse the trial VSIX for release. Compare the standard gate
-and direct entry points with only one launcher variable changed. A diagnostic
+finite timeout. This direct-launch alternative does not attach by process name
+or PID. Do not register a machine-wide crash handler or reuse the trial VSIX
+for release. Compare the standard gate and direct entry points with only one
+launcher variable changed. A diagnostic
 trial's ProcDump exit is not the standard gate's verdict: run
 `npm run verify:vsix` separately and keep both results distinct. Full dumps can
 contain secrets; keep them local and do not upload them.

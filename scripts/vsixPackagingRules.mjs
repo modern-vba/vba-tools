@@ -44,12 +44,21 @@ export const bundledLanguageServerVersionPrefix = defaultDistributionManifest.ru
 const activeWindowsCodePageFeatureName = 'sourceSnapshot.activeWindowsCodePage';
 const maximumFailureOutputCharacters = 64 * 1024;
 const maximumFailedPackageBytes = 64 * 1024 * 1024;
+const maximumMonitorOutputBytes = 64 * 1024;
+const defaultMonitorGraceMilliseconds = 30 * 1000;
 
 export async function verifyVsixPackaging(options = {}) {
   const root = options.root ?? process.cwd();
   const diagnosticsRoot = options.diagnosticsRoot ?? (process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT
     ? path.join(process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT, 'vsix-packaging')
     : undefined);
+  const procDump = Object.hasOwn(options, 'procDump') ? options.procDump
+    : (process.env.VBA_TOOLS_VSIX_PROCDUMP_PATH || process.env.VBA_TOOLS_VSIX_PROCDUMP_SHA256
+      ? {
+        path: process.env.VBA_TOOLS_VSIX_PROCDUMP_PATH,
+        sha256: process.env.VBA_TOOLS_VSIX_PROCDUMP_SHA256
+      }
+      : undefined);
   const runCommand = options.runCommand ?? runCommandWithSpawn;
   const inspectPackage = options.inspectPackage ?? inspectVsixPackage;
   const verifyLanguageServerAdmission = options.verifyLanguageServerAdmission
@@ -100,15 +109,27 @@ export async function verifyVsixPackaging(options = {}) {
       '--out',
       vsixPath
     ];
+    const invocationId = procDump ? randomUUID() : undefined;
+    let packageOptions = diagnosticsRoot
+      ? { maxOutputCharacters: maximumFailureOutputCharacters }
+      : undefined;
+    if (procDump) {
+      if (!diagnosticsRoot || runCommand !== runCommandWithSpawn) {
+        throw new Error('Exact-child ProcDump monitoring requires local diagnostics and the standard spawn runner.');
+      }
+      const onSpawn = await prepareExactChildProcDump({
+        procDump, diagnosticsRoot, root, packageFile, packageArgs, invocationId
+      });
+      packageOptions = { ...packageOptions, onSpawn };
+    }
     try {
-      await runCommand(packageFile, packageArgs, root,
-        diagnosticsRoot ? { maxOutputCharacters: maximumFailureOutputCharacters } : undefined);
+      await runCommand(packageFile, packageArgs, root, packageOptions);
     } catch (error) {
       if (diagnosticsRoot) {
         try {
           const evidencePath = await savePackagingFailureEvidence({
             diagnosticsRoot, root, packageFile, packageArgs, vsixPath,
-            packageVersion: extensionPackageJson.version, error
+            packageVersion: extensionPackageJson.version, error, invocationId
           });
           console.error(`VSIX packaging failure evidence saved: ${evidencePath}`);
         } catch (captureError) {
@@ -674,6 +695,12 @@ export function runCommandWithSpawn(file, args, cwd, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(file, args, { cwd, windowsHide: true });
     child.stdin?.end();
+    let finalizeMonitor;
+    try {
+      finalizeMonitor = options.onSpawn?.(child);
+    } catch (error) {
+      console.error(`Warning: exact-child monitor could not start: ${error}`);
+    }
     let stdout = '';
     let stderr = '';
     let stdoutCharacters = 0;
@@ -697,13 +724,20 @@ export function runCommandWithSpawn(file, args, cwd, options = {}) {
       stderr = append(stderr, value);
     });
     child.on('error', reject);
-    child.on('close', (exitCode, signal) => {
+    child.on('close', async (exitCode, signal) => {
       const finalStdout = stdoutDecoder.end();
       const finalStderr = stderrDecoder.end();
       stdoutCharacters += finalStdout.length;
       stderrCharacters += finalStderr.length;
       stdout = append(stdout, finalStdout);
       stderr = append(stderr, finalStderr);
+      if (finalizeMonitor) {
+        try {
+          await finalizeMonitor({ pid: child.pid, exitCode, signal });
+        } catch (error) {
+          console.error(`Warning: exact-child monitor evidence could not be saved: ${error}`);
+        }
+      }
       if (exitCode !== 0) {
         reject(Object.assign(
           new Error(`${file} ${args.join(' ')} exited with code ${exitCode}.\n${stderr}`),
@@ -722,8 +756,181 @@ export function runCommandWithSpawn(file, args, cwd, options = {}) {
   });
 }
 
+async function prepareExactChildProcDump({
+  procDump, diagnosticsRoot, root, packageFile, packageArgs, invocationId
+}) {
+  const procDumpPath = procDump.path;
+  const expectedSha256 = procDump.sha256;
+  if (typeof procDumpPath !== 'string' || !path.isAbsolute(procDumpPath)
+    || /^[\\/]{2}/.test(procDumpPath)
+    || path.basename(procDumpPath).toLowerCase() !== 'procdump64.exe') {
+    throw new Error('ProcDump must be an absolute local procdump64.exe path.');
+  }
+  if (typeof expectedSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(expectedSha256)) {
+    throw new Error('ProcDump monitoring requires the expected SHA-256 of the locally verified executable.');
+  }
+  await assertExistingUnlinkedLocalDirectory(path.dirname(procDumpPath));
+  const executable = await fs.lstat(procDumpPath);
+  if (!executable.isFile() || executable.isSymbolicLink()) {
+    throw new Error('ProcDump must be an ordinary local executable, not a link.');
+  }
+  const actualSha256 = await hashFile(procDumpPath);
+  if (actualSha256.toLowerCase() !== expectedSha256.toLowerCase()) {
+    throw new Error('ProcDump SHA-256 does not match the locally verified executable.');
+  }
+  const graceMilliseconds = procDump.monitorGraceMilliseconds ?? defaultMonitorGraceMilliseconds;
+  if (!Number.isInteger(graceMilliseconds) || graceMilliseconds < 1
+    || graceMilliseconds > defaultMonitorGraceMilliseconds) {
+    throw new Error('ProcDump monitor grace must be between 1 and 30000 milliseconds.');
+  }
+  await prepareDiagnosticsRoot(diagnosticsRoot);
+  const monitorPath = await fs.mkdtemp(path.join(diagnosticsRoot, 'monitor-'));
+  const dumpPath = path.join(monitorPath, 'dumps');
+  await fs.mkdir(dumpPath);
+  const spawnMonitor = procDump.spawnMonitor ?? spawn;
+
+  return child => {
+    const targetPid = Number.isInteger(child.pid) && child.pid > 0 ? child.pid : null;
+    const monitorArgs = targetPid === null ? []
+      : ['-ma', '-e', '-n', '1', '-at', '30', String(targetPid), dumpPath];
+    const observation = {
+      schemaVersion: '1.0',
+      kind: 'vsix-exact-child-procdump',
+      invocationId,
+      diagnosticRunId: process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ID ?? null,
+      target: {
+        file: packageFile, args: [...packageArgs], cwd: root,
+        pid: targetPid, spawnObservedUtc: new Date().toISOString(),
+        exitCode: null, signal: null, closeUtc: null
+      },
+      monitor: {
+        file: procDumpPath, sha256: actualSha256, args: monitorArgs,
+        pid: null, spawnAttemptUtc: null, attachReadyUtc: null,
+        attachReadyBeforeTargetClose: false, exitCode: null, signal: null,
+        closeUtc: null, timedOut: false, killRequestedUtc: null,
+        killReturned: null, closeUnobservedAfterKill: null,
+        error: null, stdoutTail: '', stderrTail: ''
+      },
+      dumps: [],
+      absence: null,
+      limitations: 'PID attachment can race a short-lived child or, in principle, attach to a reused PID. '
+        + 'A ready banner observed before child close does not prove monitoring preceded an earlier exception. '
+        + 'Dumps remain local and are never uploaded.'
+    };
+    let monitor;
+    let monitorClosed;
+    let notifyMonitorClosed;
+    let stdoutBytes = Buffer.alloc(0);
+    let stderrBytes = Buffer.alloc(0);
+    if (targetPid !== null) {
+      const processLine = new RegExp(
+        `(?:^|\\r?\\n)Process:\\s+${escapeRegExp(path.basename(packageFile))}\\s+\\(${targetPid}\\)(?:\\r?\\n)`,
+        'i');
+      monitorClosed = new Promise(resolve => { notifyMonitorClosed = resolve; });
+      try {
+        observation.monitor.spawnAttemptUtc = new Date().toISOString();
+        monitor = spawnMonitor(procDumpPath, monitorArgs, {
+          cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe']
+        });
+        observation.monitor.pid = monitor.pid ?? null;
+        monitor.stdout?.on('data', chunk => {
+          stdoutBytes = boundedMonitorBytes(stdoutBytes, chunk);
+          const output = decodeMonitorOutput(stdoutBytes);
+          if (!observation.monitor.attachReadyUtc
+            && processLine.test(output)
+            && output.includes('Press Ctrl-C to end monitoring')) {
+            observation.monitor.attachReadyUtc = new Date().toISOString();
+            observation.monitor.attachReadyBeforeTargetClose =
+              child.exitCode === null && child.signalCode === null;
+          }
+        });
+        monitor.stderr?.on('data', chunk => {
+          stderrBytes = boundedMonitorBytes(stderrBytes, chunk);
+        });
+        monitor.on('error', error => { observation.monitor.error = String(error); });
+        monitor.on('close', (exitCode, signal) => {
+          observation.monitor.exitCode = exitCode;
+          observation.monitor.signal = signal;
+          observation.monitor.closeUtc = new Date().toISOString();
+          notifyMonitorClosed();
+        });
+      } catch (error) {
+        observation.monitor.error = String(error);
+        notifyMonitorClosed();
+      }
+    }
+
+    return async ({ exitCode, signal }) => {
+      observation.target.exitCode = exitCode;
+      observation.target.signal = signal;
+      observation.target.closeUtc = new Date().toISOString();
+      if (monitor && observation.monitor.closeUtc === null) {
+        const completed = await waitForMonitor(monitorClosed, graceMilliseconds);
+        if (!completed) {
+          observation.monitor.timedOut = true;
+          observation.monitor.killRequestedUtc = new Date().toISOString();
+          try { observation.monitor.killReturned = monitor.kill() === true; }
+          catch (error) { observation.monitor.error ??= String(error); }
+          const closedAfterKill = await waitForMonitor(monitorClosed,
+            Math.min(graceMilliseconds, 2000));
+          observation.monitor.closeUnobservedAfterKill = !closedAfterKill;
+        }
+      }
+      observation.monitor.stdoutTail = decodeMonitorOutput(stdoutBytes);
+      observation.monitor.stderrTail = decodeMonitorOutput(stderrBytes);
+      observation.dumps = await collectMonitorDumps(dumpPath,
+        observation.monitor.closeUtc !== null && !observation.monitor.timedOut
+          && observation.monitor.exitCode === 0);
+      observation.absence = observation.dumps.length > 0 ? null
+        : targetPid === null ? 'target-pid-unavailable'
+          : !observation.monitor.attachReadyBeforeTargetClose ? 'attach-not-confirmed'
+            : observation.monitor.timedOut || observation.monitor.exitCode !== 0
+              ? 'monitor-incomplete' : 'no-exception-dump';
+      await fs.writeFile(path.join(monitorPath, 'monitor.json'),
+        JSON.stringify(observation, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });
+    };
+  };
+}
+
+function boundedMonitorBytes(previous, chunk) {
+  return Buffer.concat([previous, chunk]).subarray(-maximumMonitorOutputBytes);
+}
+
+function decodeMonitorOutput(bytes) {
+  if (bytes.length === 0) return '';
+  const sample = bytes.subarray(0, Math.min(bytes.length, 128));
+  const zeroCount = sample.reduce((count, byte) => count + (byte === 0 ? 1 : 0), 0);
+  return bytes.toString(zeroCount > sample.length / 8 ? 'utf16le' : 'utf8');
+}
+
+async function waitForMonitor(completion, milliseconds) {
+  let timer;
+  try {
+    return await Promise.race([
+      completion.then(() => true),
+      new Promise(resolve => { timer = setTimeout(() => resolve(false), milliseconds); })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function collectMonitorDumps(dumpPath, monitorClosed) {
+  const dumps = [];
+  for (const name of await fs.readdir(dumpPath)) {
+    if (!name.toLowerCase().endsWith('.dmp')) continue;
+    const dumpFile = path.join(dumpPath, name);
+    const entry = await fs.lstat(dumpFile);
+    if (!entry.isFile() || entry.isSymbolicLink()) continue;
+    dumps.push({ file: path.join('dumps', name), bytes: entry.size,
+      modifiedUtc: entry.mtime.toISOString(), sha256: await hashFile(dumpFile),
+      complete: monitorClosed });
+  }
+  return dumps;
+}
+
 async function savePackagingFailureEvidence({
-  diagnosticsRoot, root, packageFile, packageArgs, vsixPath, packageVersion, error
+  diagnosticsRoot, root, packageFile, packageArgs, vsixPath, packageVersion, error, invocationId
 }) {
   await prepareDiagnosticsRoot(diagnosticsRoot);
   const evidencePath = await fs.mkdtemp(path.join(diagnosticsRoot, 'failure-'));
@@ -739,7 +946,7 @@ async function savePackagingFailureEvidence({
     schemaVersion: '1.0',
     kind: 'vsix-packaging-child-failure',
     timestampUtc: new Date().toISOString(),
-    invocationId: randomUUID(),
+    invocationId: invocationId ?? randomUUID(),
     diagnosticRunId: process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ID ?? null,
     environment: {
       platform: process.platform,
