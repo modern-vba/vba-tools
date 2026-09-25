@@ -2217,6 +2217,42 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
     }
 
     [Fact]
+    public void ReadMetadataDistinguishesAdjacentNativeParameterDescriptors()
+    {
+        var reader = new ComTypeLibCatalogMetadataReader(
+            _ => CreateTypeLib(
+                "Library",
+                CreateTypeInfo(
+                    "Runner",
+                    TYPEKIND.TKIND_DISPATCH,
+                    functionNames: ["Run", "count", "caption", "enabled"],
+                    functionParameters:
+                    [
+                        new(VarEnum.VT_I4, null, PARAMFLAG.PARAMFLAG_FIN),
+                        new(VarEnum.VT_BSTR, null,
+                            PARAMFLAG.PARAMFLAG_FIN | PARAMFLAG.PARAMFLAG_FOPT),
+                        new(VarEnum.VT_BOOL, null, PARAMFLAG.PARAMFLAG_FIN)
+                    ])));
+
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            "Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Library.tlb"));
+
+        var signature = Assert.Single(Assert.Single(metadata.Types).Members).Signature;
+        Assert.NotNull(signature);
+        Assert.Equal(["count", "caption", "enabled"],
+            signature.Parameters.Select(parameter => parameter.Name));
+        Assert.Equal(["Long", "String", "Boolean"],
+            signature.Parameters.Select(parameter => parameter.TypeReference?.Name));
+        Assert.Equal([false, true, false],
+            signature.Parameters.Select(parameter => parameter.IsOptional));
+    }
+
+    [Fact]
     public void ReadMetadataPreservesAnExactCodePageFunctionName()
     {
         var reader = new ComTypeLibCatalogMetadataReader(
@@ -2638,7 +2674,7 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                 case nameof(ITypeInfo.GetFuncDesc):
                     var parameterCount = FunctionParameters?.Count
                         ?? Math.Max(0, (FunctionNames?.Length ?? 1) - 1);
-                    var elementSize = Marshal.SizeOf<ELEMDESC>();
+                    var elementSize = IntPtr.Size * 4;
                     var parameterPointer = parameterCount == 0
                             || HasMissingParameterDescriptors
                         ? IntPtr.Zero
@@ -2742,7 +2778,7 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                         for (var index = 0; index < releasedFunction.cParams; index++)
                         {
                             var parameter = Marshal.PtrToStructure<ELEMDESC>(IntPtr.Add(
-                                releasedFunction.lprgelemdescParam, index * Marshal.SizeOf<ELEMDESC>()));
+                                releasedFunction.lprgelemdescParam, index * (IntPtr.Size * 4)));
                             FreeNestedTypeDescriptions(parameter.tdesc);
                         }
                         Marshal.FreeHGlobal(releasedFunction.lprgelemdescParam);

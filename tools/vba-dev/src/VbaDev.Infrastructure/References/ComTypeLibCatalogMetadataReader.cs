@@ -626,11 +626,11 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         }
 
         var parameters = new List<VbaCallableParameter>();
-        var elementSize = Marshal.SizeOf<ELEMDESC>();
         var lastVisibleParameterIndex = -1;
         for (var index = funcDesc.cParams - 1; index >= 0; index--)
         {
-            var elementPointer = IntPtr.Add(funcDesc.lprgelemdescParam, index * elementSize);
+            var elementPointer = TypeLibElementDescriptorLayout.At(
+                funcDesc.lprgelemdescParam, index);
             var flags = Marshal.PtrToStructure<ELEMDESC>(elementPointer)
                 .desc.paramdesc.wParamFlags;
             if ((flags & (PARAMFLAG.PARAMFLAG_FRETVAL | PARAMFLAG.PARAMFLAG_FLCID)) == 0)
@@ -646,7 +646,8 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
 
         for (var index = 0; index < funcDesc.cParams; index++)
         {
-            var elementPointer = IntPtr.Add(funcDesc.lprgelemdescParam, index * elementSize);
+            var elementPointer = TypeLibElementDescriptorLayout.At(
+                funcDesc.lprgelemdescParam, index);
             var element = Marshal.PtrToStructure<ELEMDESC>(elementPointer);
             if ((element.desc.paramdesc.wParamFlags & PARAMFLAG.PARAMFLAG_FRETVAL) != 0)
             {

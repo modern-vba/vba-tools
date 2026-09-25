@@ -36,6 +36,39 @@ public sealed class UserFormEventTypeLibSurfaceReaderTests
     }
 
     [Fact]
+    public void ReadsEveryParameterFromAnIndependentlySizedNativeDescriptorArray()
+    {
+        var sourceTypeInfo = CreateSourceTypeInfo(
+            ["Run", "count", "caption"],
+            parameters:
+            [
+                (VarEnum.VT_I4, PARAMFLAG.PARAMFLAG_FIN),
+                (VarEnum.VT_BSTR, PARAMFLAG.PARAMFLAG_FIN | PARAMFLAG.PARAMFLAG_FOPT)
+            ]);
+
+        var surface = UserFormEventTypeLibSurfaceReader.ReadResolvedTypeInfos(
+            sourceTypeInfo,
+            defaultInterfaceTypeInfo: null);
+
+        var parameters = Assert.Single(surface.Events).Value.Parameters;
+        Assert.Collection(parameters,
+            count =>
+            {
+                Assert.Equal("count", count.Name);
+                Assert.Equal("Long",
+                    Assert.IsType<ObservedIntrinsicHostEventTypeReference>(count.Type).Name);
+                Assert.False(count.Optional);
+            },
+            caption =>
+            {
+                Assert.Equal("caption", caption.Name);
+                Assert.Equal("String",
+                    Assert.IsType<ObservedIntrinsicHostEventTypeReference>(caption.Type).Name);
+                Assert.True(caption.Optional);
+            });
+    }
+
+    [Fact]
     public void PreservesAnExactCodePageUserDefinedTypeNameFromTypeInfo()
     {
         var referencedTypeInfo = CreateSourceTypeInfo(["\u00A0"]);
@@ -68,12 +101,14 @@ public sealed class UserFormEventTypeLibSurfaceReaderTests
 
     private static ITypeInfo CreateSourceTypeInfo(
         string[] names,
-        ITypeInfo? referencedTypeInfo = null)
+        ITypeInfo? referencedTypeInfo = null,
+        IReadOnlyList<(VarEnum Type, PARAMFLAG Flags)>? parameters = null)
     {
         var typeInfo = DispatchProxy.Create<ITypeInfo, SourceTypeInfoProxy>();
         var proxy = (SourceTypeInfoProxy)(object)typeInfo;
         proxy.Names = names;
         proxy.ReferencedTypeInfo = referencedTypeInfo;
+        proxy.Parameters = parameters;
         return typeInfo;
     }
 
@@ -94,6 +129,8 @@ public sealed class UserFormEventTypeLibSurfaceReaderTests
         public string[] Names { get; set; } = [];
 
         public ITypeInfo? ReferencedTypeInfo { get; set; }
+
+        public IReadOnlyList<(VarEnum Type, PARAMFLAG Flags)>? Parameters { get; set; }
 
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
@@ -116,26 +153,30 @@ public sealed class UserFormEventTypeLibSurfaceReaderTests
                     return null;
                 case nameof(ITypeInfo.GetFuncDesc):
                     var parameterCount = Math.Max(0, Names.Length - 1);
-                    var elementSize = Marshal.SizeOf<ELEMDESC>();
+                    var elementSize = IntPtr.Size * 4;
                     var parameterPointer = parameterCount == 0
                         ? IntPtr.Zero
                         : Marshal.AllocHGlobal(elementSize * parameterCount);
                     for (var index = 0; index < parameterCount; index++)
                     {
+                        var parameterType = Parameters is null
+                            ? ReferencedTypeInfo is null ? VarEnum.VT_I4 : VarEnum.VT_USERDEFINED
+                            : Parameters[index].Type;
+                        var parameterFlags = Parameters is null
+                            ? PARAMFLAG.PARAMFLAG_FIN
+                            : Parameters[index].Flags;
                         var element = new ELEMDESC
                         {
                             tdesc = new TYPEDESC
                             {
-                                vt = unchecked((short)(ReferencedTypeInfo is null
-                                    ? VarEnum.VT_I4
-                                    : VarEnum.VT_USERDEFINED)),
+                                vt = unchecked((short)parameterType),
                                 lpValue = ReferencedTypeInfo is null ? IntPtr.Zero : new IntPtr(7)
                             },
                             desc = new ELEMDESC.DESCUNION
                             {
                                 paramdesc = new PARAMDESC
                                 {
-                                    wParamFlags = PARAMFLAG.PARAMFLAG_FIN
+                                    wParamFlags = parameterFlags
                                 }
                             }
                         };
