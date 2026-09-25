@@ -71,6 +71,14 @@ no shared cause is assumed. A report identifies inputs and a failing stage, but
 is not a complete replay package and may not identify the individual expression
 or URI involved inside project-wide analysis.
 
+The opt-in `SourceAnalysisUriResolutionWindowsProbeTests` exact-input probe calls
+shared analysis directly and does not use the CLI evidence store. If URI
+identification throws there, its local xUnit output includes
+`probeUriIdentification=` with bounded UTF-16 code units and available origin
+context. Preserve that test output before another run. The probe does not write
+a JSON report or change the project, and absence of this field on a successful
+run is not evidence that the historical fault is fixed.
+
 ## After recurrence
 
 1. Preserve the indicated JSON and corresponding Output/stderr before retrying.
