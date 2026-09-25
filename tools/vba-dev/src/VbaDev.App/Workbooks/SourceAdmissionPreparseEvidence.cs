@@ -101,6 +101,8 @@ internal sealed class SourceAdmissionPreparseEvidence(
     {
         if (!Path.IsPathFullyQualified(root) || root.StartsWith("\\\\", StringComparison.Ordinal))
             throw new IOException("Source-admission evidence requires an explicit local absolute directory.");
+        if (new DriveInfo(Path.GetPathRoot(root)!).DriveType != DriveType.Fixed)
+            throw new IOException("Source-admission evidence requires a local fixed drive.");
         for (var current = new DirectoryInfo(root); current is not null; current = current.Parent)
         {
             if (!current.Exists || (current.Attributes & (FileAttributes.ReparsePoint | FileAttributes.Device)) != 0)
