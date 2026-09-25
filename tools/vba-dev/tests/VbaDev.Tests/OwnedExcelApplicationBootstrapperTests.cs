@@ -179,21 +179,56 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             launcher, new FakeDebugExcelProcessApi(process.Id, process),
             new CallbackNativeObjectModelBinder(static (_, _) => new object()),
             CreateNoExposureIsolationFactory(), static _ => { });
+        var scheduledAt = Stopwatch.GetTimestamp();
+        var initialGcPause = GC.GetTotalPauseDuration();
+        long workerEnteredAt = 0;
         var startup = Task.Factory.StartNew(
-            () => bootstrapper.Start(controller, CancellationToken.None),
+            () =>
+            {
+                Volatile.Write(ref workerEnteredAt, Stopwatch.GetTimestamp());
+                return bootstrapper.Start(controller, CancellationToken.None);
+            },
             CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         Exception? primaryFailure = null;
         Exception? observed = null;
+        TimeoutException? enteredTimeout = null;
         try
         {
-            await entered.Task.WaitAsync(TimeSpan.FromSeconds(1));
-            primaryFailure = await Record.ExceptionAsync(
+            try
+            {
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            }
+            catch (TimeoutException timeout)
+            {
+                var workerStart = Volatile.Read(ref workerEnteredAt);
+                var startupError = startup.Exception?.GetBaseException();
+                ThreadPool.GetAvailableThreads(out var availableWorkers, out _);
+                ThreadPool.GetMaxThreads(out var maxWorkers, out _);
+                enteredTimeout = new TimeoutException(
+                    $"[DEBUG-vba-dev-fixture-wait-20260925] launcher entry wait: " +
+                    $"utc={DateTimeOffset.UtcNow:O}, entered={entered.Task.Status}, " +
+                    $"startup={startup.Status}, startupError={startupError?.GetType().Name ?? "none"}:" +
+                    $"{startupError?.Message ?? "none"}, launcherStartCalls={launcher.StartCalls}, " +
+                    $"workerStartMs={(workerStart == 0 ? "not-started" : Stopwatch.GetElapsedTime(scheduledAt, workerStart).TotalMilliseconds.ToString("F1"))}, " +
+                    $"elapsedMs={Stopwatch.GetElapsedTime(scheduledAt).TotalMilliseconds:F1}, " +
+                    $"gcPauseMs={(GC.GetTotalPauseDuration() - initialGcPause).TotalMilliseconds:F1}, " +
+                    $"processExited={process.HasExited}, processDisposed={process.Disposed}, " +
+                    $"poolThreads={ThreadPool.ThreadCount}, pendingPoolWork={ThreadPool.PendingWorkItemCount}, " +
+                    $"availableWorkers={availableWorkers}/{maxWorkers}.",
+                    timeout);
+            }
+            primaryFailure = enteredTimeout ?? await Record.ExceptionAsync(
                 () => WaitForStartupCheckpointAsync(missingCheckpoint.Task, startup));
         }
         finally
         {
             observed = await Record.ExceptionAsync(() => ReleaseAndDrainStartupAsync(
                 startup, controller, () => release.TrySetResult(), primaryFailure));
+        }
+
+        if (enteredTimeout is not null)
+        {
+            ExceptionDispatchInfo.Capture(observed ?? enteredTimeout).Throw();
         }
 
         Assert.IsType<TimeoutException>(primaryFailure);
