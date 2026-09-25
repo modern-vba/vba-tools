@@ -110,6 +110,32 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
     internal bool HasExited =>
         Volatile.Read(ref disposed) != 0 || process.HasExited;
 
+    internal bool TryGetExitCode(out int exitCode)
+    {
+        if (Completion.IsCompletedSuccessfully)
+        {
+            exitCode = Completion.Result.ExitCode;
+            return true;
+        }
+
+        try
+        {
+            if (process.HasExited)
+            {
+                exitCode = process.ExitCode;
+                return true;
+            }
+        }
+        catch (Exception ex) when (
+            ex is InvalidOperationException or ObjectDisposedException or System.ComponentModel.Win32Exception)
+        {
+            // Diagnostic evidence must not replace the original startup failure.
+        }
+
+        exitCode = default;
+        return false;
+    }
+
     public static DebugExcelProcessOwner Capture(
         nint windowHandle,
         IReadOnlyDictionary<int, DateTime> existingExcelProcesses,

@@ -5,7 +5,23 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
 import { runWithExtensionHostCleanup } from './testRunCleanup';
-import { saveExtensionHostFailureLogs } from './testRunFailureLogs';
+import { resolveExtensionHostFailureLogRoot, saveExtensionHostFailureLogs } from './testRunFailureLogs';
+
+test('Extension Host failure logs join a validated diagnostic verification run', () => {
+  const extensionRoot = path.resolve('extension');
+  const runRoot = path.resolve('evidence', 'run-20260925T101530123Z-0123456789abcdef');
+  assert.equal(resolveExtensionHostFailureLogRoot(extensionRoot, {
+    VBA_TOOLS_DIAGNOSTIC_RUN_ROOT: runRoot
+  }), path.join(runRoot, 'extension-host'));
+  assert.equal(resolveExtensionHostFailureLogRoot(extensionRoot, {
+    VBA_TOOLS_DIAGNOSTIC_RUN_ROOT: path.resolve('evidence')
+  }), path.join(extensionRoot, '.tmp', 'extension-host-failures'));
+  if (process.platform === 'win32') {
+    assert.equal(resolveExtensionHostFailureLogRoot(extensionRoot, {
+      VBA_TOOLS_DIAGNOSTIC_RUN_ROOT: '//invalid.example/share/run-20260925T101530123Z-0123456789abcdef'
+    }), path.join(extensionRoot, '.tmp', 'extension-host-failures'));
+  }
+});
 
 test('Extension Host failure capture retains only isolated profile logs after cleanup', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'vba-tools-failure-logs-test-'));
@@ -60,6 +76,25 @@ test('Extension Host failure capture never follows or copies links out of its lo
     path.join(root, 'evidence'));
   assert.deepEqual(await readdir(path.join(evidence, 'primary')), []);
   assert.equal(await readFile(path.join(outside, 'private.txt'), 'utf8'), 'excluded');
+});
+
+test('Extension Host failure capture refuses a linked evidence ancestor', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'vba-tools-linked-evidence-test-'));
+  const outside = await mkdtemp(path.join(tmpdir(), 'vba-tools-linked-evidence-outside-'));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  });
+  const profile = path.join(root, 'profile');
+  await mkdir(path.join(profile, 'logs'), { recursive: true });
+  await writeFile(path.join(profile, 'logs', 'server.log'), 'primary failure');
+  const linked = path.join(root, 'linked');
+  await symlink(outside, linked, 'junction');
+
+  await assert.rejects(saveExtensionHostFailureLogs(
+    [{ name: 'primary', userDataPath: profile }], path.join(linked, 'evidence')),
+  /linked diagnostic evidence directory/);
+  assert.deepEqual(await readdir(outside), []);
 });
 
 test('Extension Host failure capture keeps later logs when one profile cannot be copied', async t => {
