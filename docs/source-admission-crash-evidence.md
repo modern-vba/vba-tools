@@ -56,6 +56,27 @@ Invoke the script in PowerShell with explicit arguments, for example:
 child, accepting a license, or writing any evidence. The executable's hash,
 length and timestamp, child arguments, ProcDump PID and exit code, output
 hashes, timeout status, and dump filenames/lengths are recorded per attempt.
+The launcher also extracts the exact launched child PID and, when ProcDump
+reports it, the child's unsigned hexadecimal exit code from ProcDump's own
+UTF-16LE lines. Child stdout can use a different encoding in that same file;
+the launcher scans the raw bytes for ProcDump lines instead of decoding the
+whole stream as one encoding. A missing child exit remains `null` with a
+reason, not a guessed copy of ProcDump's exit code. A nonzero child exit stops
+the bounded series even if ProcDump itself exits zero.
+With `-n 1`, ProcDump may stop after the first dump before it reports the
+child's eventual exit. In that case, the dump and exception event remain
+available but the exact child exit code is unknown. Opening a process handle
+after seeing its PID would be only best-effort for an immediately failing
+child, so this launcher does not substitute a guessed exit code.
+
+An opted-in `vba-dev` child writes a separate startup receipt under
+`<run-root>/source-admission-processes/` before command dispatch. It includes
+the actual process ID, .NET runtime and framework versions, runtime identifier,
+and target framework without command arguments or environment variables. The
+launcher includes that runtime identity in `finished.json` only when run ID,
+attempt ID, child PID, and executable path all match. A missing receipt is
+reported explicitly; a native failure before managed startup may require the
+dump's loaded modules to recover runtime details.
 The already-captured source-byte hashes in the matching preparse receipts
 provide the source-input identity; the launcher does not reread source files.
 The ProcDump exit code is **not** treated as the child's exit code. On timeout
@@ -75,6 +96,7 @@ by a PowerShell host is not a suitable proof of unhandled native capture.
 
 Full dumps and command stdout/stderr may contain source, credentials, or
 environment variables. Keep them local, out of Git and external issue/PR
-comments unless separately authorized. Receipts and dumps do not establish
-the runtime, JIT, or application root cause. Opt-in disk writes can change
-timing, so a passing instrumented run is not stability proof.
+comments unless separately authorized. A matched startup receipt establishes
+the observed .NET runtime identity, but does not establish the JIT or
+application root cause. Opt-in disk writes can change timing, so a passing
+instrumented run is not stability proof.

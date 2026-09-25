@@ -26,6 +26,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false)
+. (Join-Path $PSScriptRoot 'Read-ProcDumpChildEvidence.ps1')
 
 function Assert-OrdinaryLocalPath([string] $Path, [bool] $IsDirectory) {
     if (-not [IO.Path]::IsPathFullyQualified($Path) -or $Path.StartsWith('\\', [StringComparison]::Ordinal)) {
@@ -96,6 +97,7 @@ $identity = [ordered]@{
 $dumpRoot = Join-Path $RunRoot 'source-admission-dumps'
 $plans = @()
 for ($attempt = 1; $attempt -le $Count; $attempt++) {
+    $attemptId = 'attempt-{0:d3}' -f $attempt
     $attemptDirectory = Join-Path $dumpRoot ('attempt-{0:d3}' -f $attempt)
     $dumpDirectory = Join-Path $attemptDirectory 'dumps'
     $arguments = @('-ma', '-e', '-n', '1', '-x', $dumpDirectory, $ExecutablePath) + $CommandArguments
@@ -103,6 +105,7 @@ for ($attempt = 1; $attempt -le $Count; $attempt++) {
         schemaVersion = '1.0'
         kind = 'scoped-vba-dev-dump-attempt'
         runId = $runId
+        attemptId = $attemptId
         attempt = $attempt
         executable = $identity
         commandArguments = $CommandArguments
@@ -129,6 +132,7 @@ for ($attempt = 1; $attempt -le $Count; $attempt++) {
     $start.WorkingDirectory = [IO.Path]::GetDirectoryName($ExecutablePath)
     $start.Environment['VBA_TOOLS_DIAGNOSTIC_RUN_ROOT'] = $RunRoot
     $start.Environment['VBA_TOOLS_DIAGNOSTIC_RUN_ID'] = $runId
+    $start.Environment['VBA_TOOLS_DIAGNOSTIC_ATTEMPT_ID'] = $attemptId
     foreach ($argument in $arguments) { [void] $start.ArgumentList.Add($argument) }
     $monitor = [Diagnostics.Process]::new()
     $monitor.StartInfo = $start
@@ -163,13 +167,66 @@ for ($attempt = 1; $attempt -le $Count; $attempt++) {
         $dumps = @(Get-ChildItem -LiteralPath $dumpDirectory -Filter '*.dmp' -File | ForEach-Object {
             [ordered]@{ path = $_.FullName; length = $_.Length }
         })
+        $plan['child'] = $null
+        $plan['runtimeReceiptPath'] = $null
+        $plan['runtimeIdentity'] = $null
+        $plan['runtimeCorrelation'] = 'not observed'
+        $observationError = $null
+        try {
+            $child = Read-ProcDumpChildEvidence -OutputPath $stdoutPath -ExecutablePath $ExecutablePath
+            $plan['child'] = $child
+            $processEvidenceRoot = Join-Path $RunRoot 'source-admission-processes'
+            $runtimeReceipts = @()
+            if (Test-Path -LiteralPath $processEvidenceRoot -PathType Container) {
+                $processEvidenceItem = Get-Item -LiteralPath $processEvidenceRoot -Force
+                if (($processEvidenceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw 'The runtime-receipt directory is not an ordinary directory.'
+                }
+                $runtimeReceipts = @(Get-ChildItem -LiteralPath $processEvidenceRoot -File `
+                    -Filter "process-$($child.childPid)-*.json" | ForEach-Object {
+                    $record = Get-Content -LiteralPath $_.FullName -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+                    if ($record.runId -eq $runId -and $record.attemptId -eq $attemptId -and
+                        $record.processId -eq $child.childPid) {
+                        [ordered]@{ path = $_.FullName; record = $record }
+                    }
+                })
+            }
+            if ($runtimeReceipts.Count -gt 1) {
+                throw "Multiple runtime receipts match child PID $($child.childPid) and $attemptId."
+            }
+            if ($runtimeReceipts.Count -eq 1) {
+                $runtimeReceipt = $runtimeReceipts[0]
+                if (-not [string]::Equals($runtimeReceipt.record.processPath,
+                    $ExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw "Runtime receipt process path does not match child PID $($child.childPid)."
+                }
+                $plan['runtimeReceiptPath'] = $runtimeReceipt.path
+                $plan['runtimeIdentity'] = [ordered]@{
+                    runtimeVersion = $runtimeReceipt.record.runtimeVersion
+                    frameworkDescription = $runtimeReceipt.record.frameworkDescription
+                    runtimeIdentifier = $runtimeReceipt.record.runtimeIdentifier
+                    targetFramework = $runtimeReceipt.record.targetFramework
+                }
+                $plan['runtimeCorrelation'] = 'matched run ID, attempt ID, child PID, and executable path'
+            } else {
+                $plan['runtimeReceiptPath'] = $null
+                $plan['runtimeIdentity'] = $null
+                $plan['runtimeCorrelation'] = 'no managed-child startup receipt'
+            }
+            if ($child.childExitIntegrityError) { throw $child.childExitReason }
+        } catch {
+            $observationError = $_.Exception.Message
+        }
         $plan['finishedUtc'] = [DateTime]::UtcNow.ToString('O')
         $plan['procdumpExitCode'] = $monitor.ExitCode
         $plan['dumpFiles'] = $dumps
+        $plan['observationError'] = $observationError
         $plan['stdoutSha256'] = (Get-FileHash -LiteralPath $stdoutPath -Algorithm SHA256).Hash
         $plan['stderrSha256'] = (Get-FileHash -LiteralPath $stderrPath -Algorithm SHA256).Hash
         Write-Receipt (Join-Path $attemptDirectory 'finished.json') $plan
-        if ($dumps.Count -gt 0 -or $monitor.ExitCode -ne 0) { break }
+        if ($observationError) { throw "ProcDump child evidence is incomplete: $observationError" }
+        if ($dumps.Count -gt 0 -or $monitor.ExitCode -ne 0 -or
+            ($child.childExitObserved -and $child.childExitCodeUnsigned -ne 0)) { break }
     } finally { if ($monitor.HasExited) { $monitor.Dispose() } }
 }
 

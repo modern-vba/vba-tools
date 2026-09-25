@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using VbaDev.Cli;
 using Xunit;
 
 namespace VbaDev.Tests;
@@ -28,6 +30,7 @@ public sealed class SourceAdmissionDumpLauncherTests
         {
             var attempt = attempts[index];
             Assert.Equal(Path.GetFileName(temp.Path), attempt.GetProperty("runId").GetString());
+            Assert.Equal($"attempt-{index + 1:D3}", attempt.GetProperty("attemptId").GetString());
             var arguments = attempt.GetProperty("procdumpArguments")
                 .EnumerateArray().Select(item => item.GetString()).ToArray();
             Assert.Equal(["-ma", "-e", "-n", "1", "-x"], arguments.Take(5));
@@ -60,6 +63,130 @@ public sealed class SourceAdmissionDumpLauncherTests
         Assert.Contains("missing", result.Error, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task ProcDumpOutputIdentifiesTheExactChildAndItsUnsignedExitCode()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var temp = TempDirectory.Create();
+        var output = Path.Combine(temp.Path, "stdout.txt");
+        await File.WriteAllTextAsync(output,
+            "Process:              cmd.exe (4242)\r\n" +
+            "[12:34:56]Process Exit: PID 4242, Exit Code 0xc0000005\r\n",
+            Encoding.Unicode);
+        var script = FindOutputReader();
+        var command = $". {Quote(script)}; " +
+            $"Read-ProcDumpChildEvidence -OutputPath {Quote(output)} " +
+            $"-ExecutablePath {Quote(Path.Combine(Environment.SystemDirectory, "cmd.exe"))} " +
+            "| ConvertTo-Json -Depth 5";
+
+        var result = await RunPowerShellAsync(command);
+
+        Assert.True(result.ExitCode == 0, $"stdout: {result.Output}\nstderr: {result.Error}");
+        using var json = JsonDocument.Parse(result.Output);
+        Assert.Equal(4242, json.RootElement.GetProperty("childPid").GetInt32());
+        Assert.Equal("cmd.exe", json.RootElement.GetProperty("childImageName").GetString());
+        Assert.Equal("0xC0000005", json.RootElement.GetProperty("childExitCodeHex").GetString());
+        Assert.Equal(3221225477u, json.RootElement.GetProperty("childExitCodeUnsigned").GetUInt32());
+    }
+
+    [Fact]
+    public async Task ProcDumpOutputRejectsAnExitForAnotherProcess()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var temp = TempDirectory.Create();
+        var output = Path.Combine(temp.Path, "stdout.txt");
+        await File.WriteAllTextAsync(output,
+            "Process:              cmd.exe (4242)\r\n" +
+            "[12:34:56]Process Exit: PID 5252, Exit Code 0x00000000\r\n",
+            Encoding.Unicode);
+        var command = $". {Quote(FindOutputReader())}; " +
+            $"Read-ProcDumpChildEvidence -OutputPath {Quote(output)} " +
+            $"-ExecutablePath {Quote(Path.Combine(Environment.SystemDirectory, "cmd.exe"))} " +
+            "| ConvertTo-Json -Depth 5";
+
+        var result = await RunPowerShellAsync(command);
+
+        Assert.True(result.ExitCode == 0, $"stdout: {result.Output}\nstderr: {result.Error}");
+        using var json = JsonDocument.Parse(result.Output);
+        Assert.Equal(4242, json.RootElement.GetProperty("childPid").GetInt32());
+        Assert.True(json.RootElement.GetProperty("childExitIntegrityError").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, json.RootElement.GetProperty("childExitCodeHex").ValueKind);
+        Assert.Contains("does not match",
+            json.RootElement.GetProperty("childExitReason").GetString(),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ProcDumpOutputFindsItsExitAfterOddLengthChildUtf8Output()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var temp = TempDirectory.Create();
+        var output = Path.Combine(temp.Path, "stdout.txt");
+        await File.WriteAllBytesAsync(output,
+        [.. Encoding.Unicode.GetBytes("Process:              cmd.exe (4242)\r\n"),
+         .. Encoding.UTF8.GetBytes("odd"),
+         .. Encoding.Unicode.GetBytes("[12:34:56]Process Exit: PID 4242, Exit Code 0x0000002a\r\n")]);
+        var command = $". {Quote(FindOutputReader())}; " +
+            $"Read-ProcDumpChildEvidence -OutputPath {Quote(output)} " +
+            $"-ExecutablePath {Quote(Path.Combine(Environment.SystemDirectory, "cmd.exe"))} " +
+            "| ConvertTo-Json -Depth 5";
+
+        var result = await RunPowerShellAsync(command);
+
+        Assert.True(result.ExitCode == 0, $"stdout: {result.Output}\nstderr: {result.Error}");
+        using var json = JsonDocument.Parse(result.Output);
+        Assert.Equal(4242, json.RootElement.GetProperty("childPid").GetInt32());
+        Assert.Equal("0x0000002A", json.RootElement.GetProperty("childExitCodeHex").GetString());
+    }
+
+    [Fact]
+    public async Task ProcDumpOutputLeavesExitUnknownWhenNoExitLineWasCaptured()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var temp = TempDirectory.Create();
+        var output = Path.Combine(temp.Path, "stdout.txt");
+        await File.WriteAllBytesAsync(output,
+            Encoding.Unicode.GetBytes("Process:              cmd.exe (4242)\r\n"));
+        var command = $". {Quote(FindOutputReader())}; " +
+            $"Read-ProcDumpChildEvidence -OutputPath {Quote(output)} " +
+            $"-ExecutablePath {Quote(Path.Combine(Environment.SystemDirectory, "cmd.exe"))} " +
+            "| ConvertTo-Json -Depth 5";
+
+        var result = await RunPowerShellAsync(command);
+
+        Assert.True(result.ExitCode == 0, $"stdout: {result.Output}\nstderr: {result.Error}");
+        using var json = JsonDocument.Parse(result.Output);
+        Assert.False(json.RootElement.GetProperty("childExitObserved").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, json.RootElement.GetProperty("childExitCodeHex").ValueKind);
+        Assert.Contains("No complete Process Exit line",
+            json.RootElement.GetProperty("childExitReason").GetString(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void StartupReceiptRecordsTheActualChildRuntimeWithoutCommandArguments()
+    {
+        using var temp = TempDirectory.Create();
+
+        VbaDevProcessStartupEvidence.TryWrite(temp.Path, "test-run", "attempt-001");
+
+        var receipt = Assert.Single(Directory.GetFiles(
+            Path.Combine(temp.Path, "source-admission-processes"), "*.json"));
+        var raw = File.ReadAllText(receipt);
+        using var json = JsonDocument.Parse(raw);
+        var root = json.RootElement;
+        Assert.Equal("vba-dev-runtime-startup", root.GetProperty("kind").GetString());
+        Assert.Equal("test-run", root.GetProperty("runId").GetString());
+        Assert.Equal("attempt-001", root.GetProperty("attemptId").GetString());
+        Assert.Equal(Environment.ProcessId, root.GetProperty("processId").GetInt32());
+        Assert.Equal(Environment.Version.ToString(), root.GetProperty("runtimeVersion").GetString());
+        Assert.Equal(RuntimeInformation.FrameworkDescription,
+            root.GetProperty("frameworkDescription").GetString());
+        Assert.Equal(RuntimeInformation.RuntimeIdentifier,
+            root.GetProperty("runtimeIdentifier").GetString());
+        Assert.False(root.TryGetProperty("commandArguments", out _));
+    }
+
     private static string FindLauncher()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
@@ -72,6 +199,9 @@ public sealed class SourceAdmissionDumpLauncherTests
         }
         throw new InvalidOperationException("Scoped dump launcher was not found.");
     }
+
+    private static string FindOutputReader()
+        => Path.Combine(Path.GetDirectoryName(FindLauncher())!, "Read-ProcDumpChildEvidence.ps1");
 
     private static string Quote(string value)
         => $"'{value.Replace("'", "''", StringComparison.Ordinal)}'";

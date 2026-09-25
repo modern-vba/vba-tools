@@ -3,6 +3,7 @@ using VbaDev.Cli;
 
 try
 {
+    VbaDevProcessStartupEvidence.TryWriteFromEnvironment();
     using var standardInput = Console.OpenStandardInput();
     return await VbaDevCommandLine
         .CreateDefault()
