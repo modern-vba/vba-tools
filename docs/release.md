@@ -356,6 +356,42 @@ it was the Repository Admin pull-request-only or Organization Admin
 always-bypass path.
 If the tagged content changes, rerun the gate before creating the tag.
 
+### Failure-collection profile
+
+When an intermittent failure needs investigation, use the opt-in diagnostic
+profile on the same candidate checkout:
+
+```powershell
+npm run diagnose:release:windows-excel
+```
+
+Use `npm run diagnose:release` when visible Excel/VBE testing is not permitted.
+The profile assigns one local run ID, records the checkout commit, a bounded
+fingerprint of dirty content, and available toolchain versions and hashes. It
+saves a manifest and bounded head/tail stdout and stderr for every stage under
+`.tmp/diagnostic-verification/run-*`. It passes that run root to cooperating
+failure reporters. Independent stages continue after an earlier failure, while
+the overall command returns failure if any stage fails. The Windows Excel stage
+is explicitly absent from the non-Excel profile, not counted as passed. In the
+Windows Excel profile, the CLI, debug-adapter, and cross-product cases run as
+separate stages. A failed prerequisite build marks only its dependent stages
+`skipped-prerequisite` rather than using a stale executable or suppressing
+unrelated stages.
+
+The manifest's `launcherPid` identifies the npm process, not a nested .NET or
+VSIX child. A cooperating child reporter must record its own executable and
+process identity; a missing reporter or dump remains a visible evidence gap.
+The profile does not currently impose a per-stage timeout or collect a native
+dump on its own. Stop a hung run deliberately and preserve its local run
+directory for inspection.
+
+This is an evidence-gathering profile, not a release gate. It neither creates a
+tag nor publishes an artifact, and it never substitutes for the ordinary
+fail-fast `verify:release:windows-excel` on the exact release commit. A stage
+that was not reached or a dump that was not captured is not evidence of success.
+Logs and local failure reports can contain paths or sensitive environment
+details; inspect them before sharing and do not upload them automatically.
+
 Run package verification:
 
 ```powershell

@@ -195,7 +195,7 @@ async function runOutputProblemsIntegrationTests(command: 'build' | 'publish'): 
     assertSourcesClosed(ownedUriKeys);
     const first = await runWorkbookBackedProjectCommand(options);
     assert.ok(first);
-    assert.equal(first.exitCode, 1);
+    assert.equal(first.exitCode, 1, output.join(''));
     assert.equal(first.cancelled, false);
     assert.equal(first.cancellationRequested, false);
     const firstReports = analysisRecords(output.join(''));

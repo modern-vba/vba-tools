@@ -12,7 +12,7 @@ import {
 } from './configuration';
 import { runRestrictedModeExtensionHostTests } from './restrictedModeExtensionHost';
 import { runWithExtensionHostCleanup } from './testRunCleanup';
-import { saveExtensionHostFailureLogs } from './testRunFailureLogs';
+import { resolveExtensionHostFailureLogRoot, saveExtensionHostFailureLogs } from './testRunFailureLogs';
 
 async function main(): Promise<void> {
   const extensionDevelopmentPath = path.resolve(__dirname, '..', '..', '..');
@@ -105,7 +105,7 @@ async function main(): Promise<void> {
       { name: 'primary', userDataPath },
       { name: 'trusted-host-events', userDataPath: hostEventCatalogUserDataPath },
       { name: 'restricted-host-events', userDataPath: untrustedHostEventCatalogUserDataPath }
-    ], path.join(extensionDevelopmentPath, '.tmp', 'extension-host-failures'));
+    ], resolveExtensionHostFailureLogRoot(extensionDevelopmentPath));
     console.error(`Extension Host failure log snapshot saved: ${evidence}`);
   });
 }
