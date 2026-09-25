@@ -29,11 +29,12 @@ snapshot.
 
 ## VSIX packaging failure evidence
 
-When `VBA_TOOLS_DIAGNOSTIC_RUN_ROOT` names an absolute local diagnostic run
-directory, a failed `verify:vsix` packaging child saves a bundle under
+When `VBA_TOOLS_DIAGNOSTIC_RUN_ROOT` names an existing absolute local diagnostic
+run directory, a failed `verify:vsix` packaging child saves a bundle under
 `<run-root>/vsix-packaging/failure-*/`. `failure.json` records the shared run ID,
 exact Node/vsce invocation, child PID/exit/signal, platform, package and
-package-lock hashes, Node and vsce file hashes and versions, and bounded
+package-lock hashes, Node and vsce file hashes and versions, the reported npm
+version when npm supplies one, and bounded
 stdout/stderr tails (at most 65,536 UTF-16 code units each). If the failed
 temporary VSIX is an ordinary file no larger than 64 MiB, it is retained as
 `failed-output.partial`, never as a verified `.vsix`. The normal temporary
@@ -44,8 +45,25 @@ behavior and cleanup are unchanged.
 File hashes are observed after the child exits; they do not prove that no file
 changed during execution. The bundle may contain private paths and tool output,
 stays local, and is not packaged or uploaded. It contains no native dump and
-cannot by itself establish the cause of an access violation. Preserve the
-bundle and use a separately scoped crash-dump investigation when one recurs.
+cannot by itself establish the cause of an access violation. The verifier
+rejects UNC and linked diagnostic roots; use an existing fixed local,
+non-reparse run root. Node does not independently attest a network-mapped drive.
+
+For a separate native-dump trial, use the diagnostic-only
+`scripts/diagnostics/Invoke-VbaDevScopedDump.ps1` launcher with an absolute
+`VBA_TOOLS_PROCDUMP_PATH` and the same Node/vsce executable identities and
+package arguments as the failed `failure.json`. Its `-PlanOnly` mode shows the
+exact `ProcDump -ma -e -n 1 -x` command before execution. Set
+`-ExecutablePath` to the exact Node executable and `-CommandArguments` to the
+vsce entry point, `package`, `--target win32-x64`, and an isolated `--out`
+path. Set `-RunRoot` to the existing local diagnostic run root, `-Count 1`, and
+`-TimeoutSeconds 300`. The launcher starts only that child; it does not attach
+to a process name or PID, change machine-wide crash settings, or accept the
+ProcDump license on your behalf. Compare the standard gate and each direct
+entry-point trial with only one launcher variable changed. A diagnostic trial's
+output is never a verified VSIX, and its ProcDump exit is not the standard
+gate's verdict. Run `npm run verify:vsix` separately and keep its result distinct.
+Full dumps can contain secrets; keep them local and do not upload them.
 
 ## Private-desktop Excel feasibility proof
 

@@ -111,6 +111,8 @@ test('opted-in VSIX verification preserves a failed child and partial output as 
   assert.equal(evidence.output.stderr, 'controlled child failure\n');
   assert.equal(evidence.tools.node.version, process.version);
   assert.equal(evidence.tools.node.sha256, await hashFile(process.execPath));
+  assert.equal(evidence.tools.npm.reportedVersion,
+    /^npm\/([^\s]+)/.exec(process.env.npm_config_user_agent ?? '')?.[1] ?? null);
   assert.equal(evidence.tools.vsce.sha256, await hashFile(vscePath));
   assert.equal(evidence.inputs.packageLock.sha256, await hashFile(path.join(root, 'package-lock.json')));
   assert.equal(evidence.failedOutput.status, 'retained-partial');
@@ -135,9 +137,39 @@ test('evidence storage failure never replaces the packaging child failure', asyn
   assert.equal(await fs.readFile(diagnosticsRoot, 'utf8'), 'sentinel');
 });
 
+test('UNC diagnostic destination is rejected without replacing the packaging failure', async (t) => {
+  const { root } = await createPackagingFailureFixture(t);
+  const diagnosticsRoot = '\\\\remote-server\\private-share\\vsix-packaging';
+
+  await assert.rejects(
+    () => verifyVsixPackaging({ root, diagnosticsRoot }),
+    error => error.exitCode === 23 && /exited with code 23/.test(error.message)
+  );
+});
+
+test('linked diagnostic destination cannot redirect packaging evidence', async (t) => {
+  const { root } = await createPackagingFailureFixture(t);
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-vsix-outside-'));
+  t.after(() => fs.rm(outside, { recursive: true, force: true }));
+  const diagnosticsRoot = path.join(root, 'diagnostics-link');
+  try {
+    await fs.symlink(outside, diagnosticsRoot, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (error) {
+    if (error.code === 'EPERM') return t.skip('Directory links require local privileges.');
+    throw error;
+  }
+
+  await assert.rejects(
+    () => verifyVsixPackaging({ root, diagnosticsRoot }),
+    error => error.exitCode === 23 && /exited with code 23/.test(error.message)
+  );
+  assert.deepEqual(await fs.readdir(outside), []);
+});
+
 test('unified diagnostic run captures packaging evidence under its shared run root', async (t) => {
   const { root } = await createPackagingFailureFixture(t);
   const runRoot = path.join(root, 'diagnostic-run');
+  await fs.mkdir(runRoot);
   const originalRoot = process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT;
   const originalId = process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ID;
   process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT = runRoot;

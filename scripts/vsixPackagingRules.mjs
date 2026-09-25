@@ -725,10 +725,7 @@ export function runCommandWithSpawn(file, args, cwd, options = {}) {
 async function savePackagingFailureEvidence({
   diagnosticsRoot, root, packageFile, packageArgs, vsixPath, packageVersion, error
 }) {
-  if (!path.isAbsolute(diagnosticsRoot)) {
-    throw new Error('The diagnostic run root must be an absolute path.');
-  }
-  await fs.mkdir(diagnosticsRoot, { recursive: true });
+  await prepareDiagnosticsRoot(diagnosticsRoot);
   const evidencePath = await fs.mkdtemp(path.join(diagnosticsRoot, 'failure-'));
   const vscePath = packageArgs[0];
   const packageLockPath = path.join(root, 'package-lock.json');
@@ -755,6 +752,7 @@ async function savePackagingFailureEvidence({
     },
     tools: {
       node: { path: packageFile, version: process.version, sha256: await hashFile(packageFile) },
+      npm: { reportedVersion: /^npm\/([^\s]+)/.exec(process.env.npm_config_user_agent ?? '')?.[1] ?? null },
       vsce: { path: vscePath, version: vscePackage.version, sha256: await hashFile(vscePath) }
     },
     invocation: {
@@ -783,6 +781,38 @@ async function savePackagingFailureEvidence({
   await fs.writeFile(path.join(evidencePath, 'failure.json'), JSON.stringify(report, null, 2) + '\n',
     { encoding: 'utf8', flag: 'wx' });
   return evidencePath;
+}
+
+async function prepareDiagnosticsRoot(diagnosticsRoot) {
+  if (!path.isAbsolute(diagnosticsRoot) || /^[\\/]{2}/.test(diagnosticsRoot)) {
+    throw new Error('The diagnostic run root must be an absolute local path, not UNC or device-backed.');
+  }
+  await assertExistingUnlinkedLocalDirectory(path.dirname(diagnosticsRoot));
+  try { await fs.mkdir(diagnosticsRoot); }
+  catch (error) { if (error.code !== 'EEXIST') throw error; }
+  await assertExistingUnlinkedLocalDirectory(diagnosticsRoot);
+}
+
+async function assertExistingUnlinkedLocalDirectory(directory) {
+  const absolute = path.resolve(directory);
+  if (!path.isAbsolute(directory) || /^[\\/]{2}/.test(absolute)) {
+    throw new Error('Diagnostic evidence must remain under an absolute local directory.');
+  }
+  const root = path.parse(absolute).root;
+  const segments = absolute.slice(root.length).split(path.sep).filter(Boolean);
+  let current = root;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    const entry = await fs.lstat(current);
+    if (entry.isSymbolicLink() || !entry.isDirectory()) {
+      throw new Error(`Diagnostic evidence path crosses a link or non-directory: ${current}`);
+    }
+  }
+  const resolved = await fs.realpath(absolute);
+  if (path.normalize(resolved).toLowerCase() !== path.normalize(absolute).toLowerCase()
+    || /^[\\/]{2}/.test(resolved)) {
+    throw new Error('Diagnostic evidence path resolves outside the requested local directory.');
+  }
 }
 
 async function retainFailedOutput(vsixPath, evidencePath) {
