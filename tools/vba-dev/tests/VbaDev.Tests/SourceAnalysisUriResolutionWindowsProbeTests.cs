@@ -77,6 +77,7 @@ public sealed class SourceAnalysisUriResolutionWindowsProbeTests(ITestOutputHelp
                 Assert.IsType<VbaReferenceSelection>(inputs.ReferenceSelection)));
 
             WriteEnvironment(context, syntaxTrees.Length, trials, beforeFiles);
+            WriteAssembly("probe", typeof(SourceAnalysisUriResolutionWindowsProbeTests).Assembly);
             WriteAssembly("syntax", typeof(VbaSyntaxTree).Assembly);
             WriteAssembly("semantics", typeof(VbaProjectSourceAnalysis).Assembly);
             WriteAssembly("typelib-reader", typeof(ComTypeLibCatalogMetadataReader).Assembly);
@@ -222,8 +223,9 @@ public sealed class SourceAnalysisUriResolutionWindowsProbeTests(ITestOutputHelp
         output.WriteLine($"os={RuntimeInformation.OSDescription}, osArchitecture={RuntimeInformation.OSArchitecture}");
         output.WriteLine(
             $"framework={RuntimeInformation.FrameworkDescription}, runtime={Environment.Version}, processArchitecture={RuntimeInformation.ProcessArchitecture}, target={AppContext.TargetFrameworkName}");
+        var probeAssembly = typeof(SourceAnalysisUriResolutionWindowsProbeTests).Assembly;
         output.WriteLine(
-            $"invocation=dotnet test VbaDev.Tests.csproj -c Release --filter FullyQualifiedName~{nameof(SourceAnalysisUriResolutionWindowsProbeTests)}, trials={trials}");
+            $"probe={nameof(SourceAnalysisUriResolutionWindowsProbeTests)}, testAssemblyConfiguration={probeAssembly.GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration ?? "unknown"}, trials={trials}");
     }
 
     private void WriteAssembly(string role, Assembly assembly)
