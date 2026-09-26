@@ -455,3 +455,35 @@ an in-run guard receipt. No additional dump was requested or copied. The
 Windows event stack is useful evidence of a native failure in a **different**
 analysis location, not proof of a common root cause or of a lexer fix. The
 original URI operation remains uncaptured and #415 is not release-ready.
+
+## Historical second-parse replay on 2026-09-27
+
+To exercise the URI operation actually present in the 2026-09-11 stack,
+commit `ef2c35b` was exported into an ignored local `.tmp` directory. This
+added no Git branch or worktree and did not change the current checkout. Its
+Release Syntax and Semantics assemblies built with .NET SDK 10.0.300; the
+resulting SHA-256 values were
+`E4439B64CB5D958EC19BFAD6DED48BBB4440D9804A07FE5C0F0EFBE8E7460C6D`
+and `00877DDFFC366F70450026AB24ED5F46ABBE2ABD80FBE29BFB95AB0CE371282D`,
+respectively. These are newly built assemblies, **not** the historical
+published binary.
+
+A COM-free, read-only harness parsed the same 35 current BFW sources after
+checking every raw UTF-16 text hash against the frozen baseline, and built
+six reference catalogs from the locally captured TypeLib metadata JSON. One
+uninstrumented trial completed. A diagnostic-only version then surrounded
+the old `TryGetLocalPath(string)` second `new Uri(uri)` with a catch that would
+retain the exact UTF-16 URI only in a local receipt and rethrow an observed
+`NullReferenceException`. Ten fresh .NET 10.0.8 x64 hosts each completed ten
+semantic analyses (100/100), with no exception or URI receipt. A later
+read-only check found all 35 source hashes unchanged and no Excel process.
+
+This is a bounded **non-reproduction**, not a correction. The old assembly
+derived 16,120 active definitions and one diagnostic from the frozen catalog
+data, versus the current replay baseline's 16,246 definitions and zero
+diagnostics. The historical published binary, precise 2026-09-11 catalog
+state, and exact failing URI are unavailable, and the diagnostic catch can
+alter rare timing/code generation. Current semantic code no longer makes this
+second parse, but the original runtime failure's cause remains unsupported.
+The native crash observed with current code is separate evidence; neither
+result justifies closing #415 or claiming release readiness.
