@@ -561,3 +561,16 @@ while initially parsing the 35 sources, before the intentional call; the
 Windows .NET event stack passed through `ReadOnlySpan<char>.Length` and
 `VbaIdentifier.ReadCandidateLength`. A second attempt skipped that initial
 parse and reached the expected canary. No extra dump was collected.
+
+A separate read-only System log check found one WHEA-Logger event 19 on
+2026-09-22 09:44:42 local time: Processor Core, Corrected Machine Check,
+Internal parity error, APIC ID 9. There was no Application Error event in
+the surrounding 30 minutes. [Microsoft's WHEA definitions](https://learn.microsoft.com/en-us/windows-hardware/drivers/whea/windows-hardware-error-architecture-definitions)
+describe a corrected machine check as a processor-detected condition
+corrected by hardware or firmware; it is
+nonfatal. This record is an independent reason to investigate system
+stability, **not** a proven explanation of any VBA analysis failure. The
+last 30 days contained no Windows Memory Diagnostic result in the System
+log; that absence is not a clean memory-test result. The physical disk
+reported `Healthy`/`OK`, which likewise does not rule out CPU, RAM,
+firmware, or software faults.
