@@ -113,3 +113,39 @@ comments unless separately authorized. A matched startup receipt establishes
 the observed .NET runtime identity, but does not establish the JIT or
 application root cause. Opt-in disk writes can change timing, so a passing
 instrumented run is not stability proof.
+
+## Historical evidence and remaining gap
+
+The original 2026-09-10 published `vba-dev` failure was a native read access
+violation during source admission (`0xC0000005`, executable SHA-256
+`C335CC1CA179BFF28CC04E6A4C3DE30BE162C903DA64C4B1156B1BF504EE438E`).
+Its reported JIT location mapped to `VbaLexer.LexerState.get_Position`.
+The Issue #409 record describes a small dump lacking the relevant managed
+heap and native-helper pages; that original file was not found at its later
+documented location. A later fatal-handler stack is not the first fault's
+register and memory state, and cannot fill those missing pages. Ten subsequent
+fresh-project workflows (70 CLI invocations, including 20 Build/Test calls)
+did not reproduce that original crash. None of this identifies a bad source
+file, a CLR/JIT defect, or an environmental cause.
+
+A separate 2026-09-26 standalone lexer replay used three fixed lines and
+checked each completed token's kind, text, and range against a golden
+sequence. One fresh process exited with `0xC0000005` after 2.7 million
+completed calls, without reporting a token mismatch. An earlier local
+first-chance full dump from this minimizer retained a valid rooted lexer
+state, source object, and expected input string, while the faulting receiver
+register held a non-object-like value. The matching later Windows Error
+Reporting small dump cannot walk the managed stack or inspect heap objects;
+it does not replace that first-chance context. These minimizer crashes are related
+evidence, not a proven replay of the original CLI's exact failure.
+
+For the next in-scope occurrence, retain the exact-child first-chance full
+dump alongside its run/attempt/PID identity, available runtime and
+source-admission receipts, executable and source hashes, exit observation,
+and loaded-module list. Managed startup and preparse receipts may be absent
+if the child fails before writing them, or if it is a standalone minimizer.
+Compare the *first* exception context with the source object and
+receiver provenance before choosing a product change or runtime/environment
+mitigation. ProcDump may stop at the first dump before reporting the child's
+final exit; record that exit as unknown rather than substituting the monitor
+exit. A native access violation cannot be made safe by an in-process retry.
