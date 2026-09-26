@@ -95,3 +95,7 @@ run is not evidence that the historical fault is fixed.
    may still require owned Excel metadata discovery; obtain the usual approval.
 5. Add reviewed recurrence evidence to #415. Keep the issue open until the actual
    cause and regression behavior are established, not merely because logging works.
+
+The [opt-in #415 URI reproducer](../scripts/source-identity-repro/README.md)
+accepts either its sanitized synthetic fixture or a private exact failure receipt.
+Its bounded stress loop is not part of ordinary test or release gates.

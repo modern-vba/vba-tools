@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(SourceIdentityAssemblyDirectory)' == ''">
+    <ProjectReference Include="../../tools/vba-source-identity/src/VbaTools.SourceIdentity/VbaTools.SourceIdentity.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(SourceIdentityAssemblyDirectory)' != ''">
+    <Reference Include="VbaTools.SourceIdentity">
+      <HintPath>$(SourceIdentityAssemblyDirectory)/VbaTools.SourceIdentity.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <Target Name="ValidateFrozenAssembly" BeforeTargets="ResolveReferences" Condition="'$(SourceIdentityAssemblyDirectory)' != ''">
+    <Error Condition="!Exists('$(SourceIdentityAssemblyDirectory)/VbaTools.SourceIdentity.dll')" Text="The frozen SourceIdentity assembly does not exist." />
+  </Target>
+</Project>
