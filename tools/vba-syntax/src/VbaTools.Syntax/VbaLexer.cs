@@ -1,3 +1,6 @@
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+
 namespace VbaTools.Syntax;
 
 /// <summary>
@@ -287,12 +290,62 @@ internal static class VbaLexer
     private static VbaToken ReadIdentifierOrKeyword(LexerState state, int identifierLength)
     {
         var start = state.Position;
-        for (var index = 0; index < identifierLength; index++)
+        var index = 0;
+        var phase = "ReadIdentifierOrKeyword.Advance";
+        string text;
+        try
         {
-            state.Advance();
+            for (; index < identifierLength; index++)
+            {
+                state.Advance();
+            }
+
+            phase = "ReadIdentifierOrKeyword.StartOffset";
+            var startOffset = start.Offset;
+            phase = "ReadIdentifierOrKeyword.PositionBeforeSlice";
+            var endOffset = state.Position.Offset;
+            phase = "ReadIdentifierOrKeyword.Slice";
+            text = state.Slice(startOffset, endOffset);
+        }
+        catch (NullReferenceException error)
+        {
+            // [DEBUG-415-lexer-v1] Observe failed identifier cursor/slice work; retain the original exception.
+            try
+            {
+                var sourceText = state?.DiagnosticSourceText;
+                var cachedPosition = state?.DiagnosticCachedPosition;
+                string? source = null;
+                var textReadFailed = false;
+                try { source = sourceText?.Text; }
+                catch (Exception) { textReadFailed = true; }
+                VbaSyntaxPosition? position = null;
+                var positionReadFailed = false;
+                try { position = state?.Position; }
+                catch (Exception) { positionReadFailed = true; }
+                VbaLexerAdvanceFailureEvidence.Capture(
+                    error,
+                    phase,
+                    state is null,
+                    sourceText is null,
+                    source,
+                    textReadFailed,
+                    position,
+                    positionReadFailed,
+                    cachedPosition is null,
+                    state?.DiagnosticLine ?? -1,
+                    state?.DiagnosticCharacter ?? -1,
+                    state?.DiagnosticOffset ?? -1,
+                    start,
+                    identifierLength,
+                    index);
+            }
+            catch (Exception)
+            {
+                // Diagnostics must not replace the original lexer failure.
+            }
+            throw;
         }
 
-        var text = state.Slice(start.Offset, state.Position.Offset);
         var kind = VbaLanguageVocabulary.IsKeyword(text)
             ? VbaTokenKind.Keyword
             : VbaTokenKind.Identifier;
@@ -397,6 +450,13 @@ internal static class VbaLexer
         private int character;
         private int offset;
         private VbaSyntaxPosition? cachedPosition;
+
+        // [DEBUG-415-lexer-v1] Raw cursor state is read only after failed identifier cursor/slice work.
+        internal VbaSourceText? DiagnosticSourceText => SourceText;
+        internal VbaSyntaxPosition? DiagnosticCachedPosition => cachedPosition;
+        internal int DiagnosticLine => line;
+        internal int DiagnosticCharacter => character;
+        internal int DiagnosticOffset => offset;
 
         /// <summary>
         /// Gets the source text being tokenized.
@@ -513,6 +573,78 @@ internal static class VbaLexer
             character = position.Character;
             offset = position.Offset;
             cachedPosition = position;
+        }
+    }
+}
+
+// [DEBUG-415-lexer-v1] Temporary, failure-only evidence; never retain source contents.
+internal static class VbaLexerAdvanceFailureEvidence
+{
+    internal const string Key = "DEBUG-415-lexer-v1";
+
+    internal static void Capture(
+        NullReferenceException error,
+        string phase,
+        bool stateIsNull,
+        bool sourceTextIsNull,
+        string? source,
+        bool textReadFailed,
+        VbaSyntaxPosition? position,
+        bool positionReadFailed,
+        bool cachedPositionIsNull,
+        int rawLine,
+        int rawCharacter,
+        int rawOffset,
+        VbaSyntaxPosition? start,
+        int identifierLength,
+        int loopIndex)
+    {
+        try
+        {
+            var evidence = new Dictionary<string, object>(StringComparer.Ordinal)
+            {
+                ["phase"] = phase,
+                ["stateIsNull"] = stateIsNull,
+                ["sourceTextIsNull"] = sourceTextIsNull,
+                ["textIsNull"] = source is null,
+                ["textReadFailed"] = textReadFailed,
+                ["positionIsNull"] = position is null,
+                ["positionReadFailed"] = positionReadFailed,
+                ["cachedPositionIsNull"] = cachedPositionIsNull,
+                ["rawLine"] = rawLine,
+                ["rawCharacter"] = rawCharacter,
+                ["rawOffset"] = rawOffset,
+                ["positionLine"] = position?.Line ?? -1,
+                ["positionCharacter"] = position?.Character ?? -1,
+                ["positionOffset"] = position?.Offset ?? -1,
+                ["startLine"] = start?.Line ?? -1,
+                ["startCharacter"] = start?.Character ?? -1,
+                ["startOffset"] = start?.Offset ?? -1,
+                ["identifierLength"] = identifierLength,
+                ["loopIndex"] = loopIndex,
+                ["sourceLength"] = source?.Length ?? -1,
+                ["sourceHashDomain"] = "utf16-platform-endian-code-units",
+                ["sourceSha256"] = string.Empty,
+                ["sourceHashComplete"] = false
+            };
+            if (source is not null)
+            {
+                try
+                {
+                    evidence["sourceSha256"] = Convert.ToHexString(
+                        SHA256.HashData(MemoryMarshal.AsBytes(source.AsSpan())));
+                    evidence["sourceHashComplete"] = true;
+                }
+                catch (Exception)
+                {
+                    // Keep the cursor facts even if hashing itself fails.
+                }
+            }
+            error.Data[Key] = evidence;
+        }
+        catch (Exception)
+        {
+            // Observation must never replace the original NullReferenceException.
         }
     }
 }

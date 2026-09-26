@@ -152,6 +152,115 @@ public sealed class SourceAnalysisEvidenceStoreTests
             evidence.GetProperty("comparisonOtherUriUtf16Hex").GetString());
     }
 
+    [Theory]
+    [InlineData("TryGetLabelReference.prefix")]
+    [InlineData("FindIdentifier.query")]
+    [InlineData("GetProcedureSyntaxWords.prefix")]
+    public void PositionSyntaxFailureSerializesBoundedInnerEvidenceWithoutReplacingTheFailure(string phase)
+    {
+        using var temp = TempDirectory.Create();
+        var original = new NullReferenceException("original-position-failure");
+        original.Data["DEBUG-415-syntax-v1"] = new Dictionary<string, object>(StringComparer.Ordinal)
+        {
+            ["phase"] = phase,
+            ["uri"] = new string('u', 3000),
+            ["uriLength"] = 3000,
+            ["uriCaptureComplete"] = true,
+            ["positionIsNull"] = false,
+            ["positionLine"] = 4,
+            ["positionCharacter"] = 7,
+            ["positionOffset"] = 35,
+            ["statementStartOffset"] = 28,
+            ["statementEndOffset"] = 42,
+            ["statementNextOffset"] = 43,
+            ["significantTokenCount"] = 2,
+            ["inspectedTokenCount"] = 2,
+            ["inspectionComplete"] = false,
+            ["firstBadIndex"] = 1,
+            ["firstBadReferenceKind"] = "start",
+            ["postFaultGraphStatus"] = "broken",
+            ["unrelated"] = "private-source-sentinel"
+        };
+        var wrapper = new InvalidOperationException("wrapper", original);
+        var directory = Path.Combine(temp.Path, "diagnostics");
+
+        var output = new SourceAnalysisEvidenceStore(directory)
+            .Save(CreateContext(temp.Path), "build", CreateReport(wrapper));
+
+        Assert.Contains("evidence saved:", output, StringComparison.Ordinal);
+        var raw = File.ReadAllText(Assert.Single(Directory.GetFiles(directory)));
+        Assert.DoesNotContain("private-source-sentinel", raw, StringComparison.Ordinal);
+        using var saved = JsonDocument.Parse(raw);
+        var evidence = Assert.Single(saved.RootElement.GetProperty("failures").EnumerateArray())
+            .GetProperty("exception").GetProperty("positionSyntax");
+        Assert.Equal("available", evidence.GetProperty("status").GetString());
+        Assert.Equal(phase, evidence.GetProperty("phase").GetString());
+        Assert.Equal(2048, evidence.GetProperty("uri").GetString()!.Length);
+        Assert.Equal(3000, evidence.GetProperty("uriLength").GetInt32());
+        Assert.False(evidence.GetProperty("uriCaptureComplete").GetBoolean());
+        Assert.False(evidence.GetProperty("positionIsNull").GetBoolean());
+        Assert.Equal(35, evidence.GetProperty("positionOffset").GetInt32());
+        Assert.Equal(1, evidence.GetProperty("firstBadIndex").GetInt32());
+        Assert.Equal("start", evidence.GetProperty("firstBadReferenceKind").GetString());
+        Assert.Equal("broken", evidence.GetProperty("postFaultGraphStatus").GetString());
+        Assert.Same(original, wrapper.InnerException);
+        Assert.Equal("original-position-failure", original.Message);
+    }
+
+    [Fact]
+    public void LexerAdvanceFailureSerializesOnlyPrimitiveEvidenceAndPreservesTheFailure()
+    {
+        using var temp = TempDirectory.Create();
+        var original = new NullReferenceException("original-lexer-failure");
+        original.Data["DEBUG-415-lexer-v1"] = new Dictionary<string, object>(StringComparer.Ordinal)
+        {
+            ["phase"] = "ReadIdentifierOrKeyword.PositionBeforeSlice",
+            ["stateIsNull"] = false,
+            ["sourceTextIsNull"] = false,
+            ["textIsNull"] = false,
+            ["textReadFailed"] = false,
+            ["positionIsNull"] = false,
+            ["positionReadFailed"] = false,
+            ["cachedPositionIsNull"] = true,
+            ["rawLine"] = 1,
+            ["rawCharacter"] = 2,
+            ["rawOffset"] = 22,
+            ["positionLine"] = 1,
+            ["positionCharacter"] = 2,
+            ["positionOffset"] = 22,
+            ["startLine"] = 1,
+            ["startCharacter"] = 0,
+            ["startOffset"] = 20,
+            ["identifierLength"] = 4,
+            ["loopIndex"] = 2,
+            ["sourceLength"] = 24,
+            ["sourceSha256"] = new string('A', 64),
+            ["sourceHashComplete"] = true,
+            ["unrelated"] = "private-source-sentinel"
+        };
+        var wrapper = new InvalidOperationException("wrapper", original);
+        var directory = Path.Combine(temp.Path, "diagnostics");
+
+        var output = new SourceAnalysisEvidenceStore(directory)
+            .Save(CreateContext(temp.Path), "build", CreateReport(wrapper));
+
+        Assert.Contains("evidence saved:", output, StringComparison.Ordinal);
+        var raw = File.ReadAllText(Assert.Single(Directory.GetFiles(directory)));
+        Assert.DoesNotContain("private-source-sentinel", raw, StringComparison.Ordinal);
+        using var saved = JsonDocument.Parse(raw);
+        var evidence = Assert.Single(saved.RootElement.GetProperty("failures").EnumerateArray())
+            .GetProperty("exception").GetProperty("lexerAdvance");
+        Assert.Equal("available", evidence.GetProperty("status").GetString());
+        Assert.Equal("ReadIdentifierOrKeyword.PositionBeforeSlice", evidence.GetProperty("phase").GetString());
+        Assert.Equal(22, evidence.GetProperty("rawOffset").GetInt32());
+        Assert.Equal(2, evidence.GetProperty("loopIndex").GetInt32());
+        Assert.Equal(24, evidence.GetProperty("sourceLength").GetInt32());
+        Assert.True(evidence.GetProperty("sourceHashComplete").GetBoolean());
+        Assert.Equal(new string('A', 64), evidence.GetProperty("sourceSha256").GetString());
+        Assert.Same(original, wrapper.InnerException);
+        Assert.Equal("original-lexer-failure", original.Message);
+    }
+
     // [DEBUG-415-uri-v1] Temporary observation tests, not a reproduction of the runtime NRE.
     [Fact]
     public void UriIdentificationFailureRetainsOriginalExceptionAndExactLocalEvidence()

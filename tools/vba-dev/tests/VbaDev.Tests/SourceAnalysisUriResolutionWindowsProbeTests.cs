@@ -52,7 +52,19 @@ public sealed class SourceAnalysisUriResolutionWindowsProbeTests(ITestOutputHelp
             var (_, analysis, projectFatal) = new VbaSourceAdmission(() => 932)
                 .ReadSnapshotAnalysis(context.DocumentSourceSetPath, CancellationToken.None);
             var admissionReport = analysis.ToReport();
-            Assert.False(projectFatal);
+            if (projectFatal || !admissionReport.Complete)
+            {
+                foreach (var failure in admissionReport.Failures)
+                {
+                    output.WriteLine(
+                        $"admissionFailure scope={failure.Scope}, phase={failure.Phase}, activeSourcePath={failure.ActiveSourcePath}, exceptionDetails={failure.ExceptionDetails}");
+                }
+                var original = admissionReport.Failures.FirstOrDefault(failure => failure.Exception is not null)?.Exception;
+                if (original is not null) ExceptionDispatchInfo.Capture(original).Throw();
+            }
+            Assert.False(projectFatal, string.Join(
+                Environment.NewLine,
+                admissionReport.Failures.Select(failure => failure.Message)));
             Assert.True(admissionReport.Complete, string.Join(
                 Environment.NewLine,
                 admissionReport.Failures.Select(failure => failure.Message)));
@@ -127,6 +139,16 @@ public sealed class SourceAnalysisUriResolutionWindowsProbeTests(ITestOutputHelp
                 if (uriEvidence is not null)
                 {
                     output.WriteLine($"probeUriIdentification={uriEvidence}");
+                }
+                var syntaxEvidence = SourceAnalysisSyntaxProbeEvidenceFormatter.Format(error);
+                if (syntaxEvidence is not null)
+                {
+                    output.WriteLine($"probeSyntaxPosition={syntaxEvidence}");
+                }
+                var lexerEvidence = SourceAnalysisLexerProbeEvidenceFormatter.Format(error);
+                if (lexerEvidence is not null)
+                {
+                    output.WriteLine($"probeLexer={lexerEvidence}");
                 }
             }
             catch (Exception) { /* Test-output failure must not replace the probe failure. */ }

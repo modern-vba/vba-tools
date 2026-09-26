@@ -208,8 +208,131 @@ internal sealed class SourceAnalysisEvidenceStore(
             hresult = error.HResult,
             details = budget.Take(SafeExceptionText(error, MaximumExceptionCharacters), MaximumExceptionCharacters),
             stackTrace = budget.Take(SafeStack(error), 8192),
-            uriIdentification = CaptureUriIdentification(error, budget)
+            uriIdentification = CaptureUriIdentification(error, budget),
+            positionSyntax = CapturePositionSyntax(error, budget),
+            lexerAdvance = CaptureLexerAdvance(error)
         };
+    }
+
+    // [DEBUG-415-lexer-v1] Temporary primitive-only capture; source contents are never copied.
+    private static object? CaptureLexerAdvance(Exception error)
+    {
+        var depth = 0;
+        for (Exception? current = error; current is not null && depth < 8; current = current.InnerException, depth++)
+        {
+            try
+            {
+                if (current.Data["DEBUG-415-lexer-v1"] is not Dictionary<string, object> evidence)
+                    continue;
+                if (evidence.GetValueOrDefault("stateIsNull") is not bool stateIsNull
+                    || evidence.GetValueOrDefault("sourceTextIsNull") is not bool sourceTextIsNull
+                    || evidence.GetValueOrDefault("textIsNull") is not bool textIsNull
+                    || evidence.GetValueOrDefault("positionIsNull") is not bool positionIsNull)
+                    return new { status = "unavailable" };
+
+                var phase = evidence.GetValueOrDefault("phase") as string;
+                if (phase is not ("ReadIdentifierOrKeyword.Advance"
+                    or "ReadIdentifierOrKeyword.StartOffset"
+                    or "ReadIdentifierOrKeyword.PositionBeforeSlice"
+                    or "ReadIdentifierOrKeyword.Slice"))
+                    return new { status = "unavailable" };
+
+                var rawHash = evidence.GetValueOrDefault("sourceSha256") as string;
+                var hash = rawHash is { Length: 64 } && rawHash.All(char.IsAsciiHexDigit)
+                    ? rawHash : null;
+                return new
+                {
+                    status = "available",
+                    phase,
+                    stateIsNull,
+                    sourceTextIsNull,
+                    textIsNull,
+                    textReadFailed = evidence.GetValueOrDefault("textReadFailed") as bool?,
+                    positionIsNull,
+                    positionReadFailed = evidence.GetValueOrDefault("positionReadFailed") as bool?,
+                    cachedPositionIsNull = evidence.GetValueOrDefault("cachedPositionIsNull") as bool?,
+                    rawLine = evidence.GetValueOrDefault("rawLine") as int?,
+                    rawCharacter = evidence.GetValueOrDefault("rawCharacter") as int?,
+                    rawOffset = evidence.GetValueOrDefault("rawOffset") as int?,
+                    positionLine = evidence.GetValueOrDefault("positionLine") as int?,
+                    positionCharacter = evidence.GetValueOrDefault("positionCharacter") as int?,
+                    positionOffset = evidence.GetValueOrDefault("positionOffset") as int?,
+                    startLine = evidence.GetValueOrDefault("startLine") as int?,
+                    startCharacter = evidence.GetValueOrDefault("startCharacter") as int?,
+                    startOffset = evidence.GetValueOrDefault("startOffset") as int?,
+                    identifierLength = evidence.GetValueOrDefault("identifierLength") as int?,
+                    loopIndex = evidence.GetValueOrDefault("loopIndex") as int?,
+                    sourceLength = evidence.GetValueOrDefault("sourceLength") as int?,
+                    sourceHashDomain = "utf16-platform-endian-code-units",
+                    sourceSha256 = hash,
+                    sourceHashComplete = evidence.GetValueOrDefault("sourceHashComplete") is true && hash is not null
+                };
+            }
+            catch (Exception)
+            {
+                return new { status = "unavailable" };
+            }
+        }
+
+        return null;
+    }
+
+    // [DEBUG-415-syntax-v1] Temporary whitelist for failed position token graphs.
+    private static object? CapturePositionSyntax(Exception error, TextBudget budget)
+    {
+        var depth = 0;
+        for (Exception? current = error; current is not null && depth < 8; current = current.InnerException, depth++)
+        {
+            try
+            {
+                if (current.Data["DEBUG-415-syntax-v1"] is not Dictionary<string, object> evidence)
+                    continue;
+                if (evidence.GetValueOrDefault("uri") is not string rawUri
+                    || evidence.GetValueOrDefault("uriLength") is not int uriLength || uriLength < -1
+                    || evidence.GetValueOrDefault("positionIsNull") is not bool positionIsNull)
+                    return new { status = "unavailable" };
+
+                var phase = evidence.GetValueOrDefault("phase") as string;
+                if (phase is not ("TryGetLabelReference.prefix" or "FindIdentifier.query"
+                    or "GetProcedureSyntaxWords.prefix"))
+                    return new { status = "unavailable" };
+
+                var uri = budget.TakeIdentifier(rawUri, 2048);
+                var rawKind = evidence.GetValueOrDefault("firstBadReferenceKind") as string;
+                var rawStatus = evidence.GetValueOrDefault("postFaultGraphStatus") as string;
+                var referenceKind = rawKind is "none" or "significantTokens" or "count" or "indexer"
+                    or "token" or "range" or "start" ? rawKind : null;
+                var graphStatus = rawStatus is "intact" or "broken" or "unverified" ? rawStatus : null;
+                return new
+                {
+                    status = "available",
+                    phase,
+                    uri,
+                    uriLength,
+                    uriCaptureComplete = evidence.GetValueOrDefault("uriCaptureComplete") is true
+                        && uriLength == rawUri.Length && uri == rawUri,
+                    positionIsNull,
+                    positionLine = evidence.GetValueOrDefault("positionLine") as int?,
+                    positionCharacter = evidence.GetValueOrDefault("positionCharacter") as int?,
+                    positionOffset = evidence.GetValueOrDefault("positionOffset") as int?,
+                    statementStartOffset = evidence.GetValueOrDefault("statementStartOffset") as int?,
+                    statementEndOffset = evidence.GetValueOrDefault("statementEndOffset") as int?,
+                    statementNextOffset = evidence.GetValueOrDefault("statementNextOffset") as int?,
+                    significantTokenCount = evidence.GetValueOrDefault("significantTokenCount") as int?,
+                    inspectedTokenCount = evidence.GetValueOrDefault("inspectedTokenCount") as int?,
+                    inspectionComplete = evidence.GetValueOrDefault("inspectionComplete") as bool?,
+                    firstBadIndex = evidence.GetValueOrDefault("firstBadIndex") as int?,
+                    firstBadReferenceKind = referenceKind,
+                    postFaultGraphStatus = graphStatus
+                };
+            }
+            catch (Exception)
+            {
+                return new { status = "unavailable" };
+            }
+        }
+
+        return null;
     }
 
     // [DEBUG-415-uri-v1] Temporary whitelist, not a general Exception.Data serializer.

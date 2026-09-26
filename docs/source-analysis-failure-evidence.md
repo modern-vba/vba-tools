@@ -211,3 +211,206 @@ remained, and the original repository status was unchanged. Because the copy
 has a different absolute path, this validates the published CLI workflow but
 does not replay the historical URI spellings exactly or prove that a rare NRE
 cannot recur.
+
+## Exact BFW input and process-boundary investigation on 2026-09-26
+
+The opt-in, read-only `SourceAnalysisUriResolutionWindowsProbeTests` used the
+original BFW source root and installed TypeLibs on Windows .NET 10.0.8. It
+admitted 35 source trees and six catalogs with 16,246 active definitions; the
+successful trials produced zero diagnostics. It compared the original project
+tree (41 files, 2,468,110 bytes) and Excel process IDs before and after each
+test. Fresh Debug test hosts ran at most ten `Analyze` calls each, rather than
+copying sources or building a workbook.
+
+With normal tiered compilation, intermittent `NullReferenceException`s arose
+in different managed paths, including syntax-position lookup, lexer advance,
+semantic resolution, and callable-signature presentation. One monitored trial
+instead returned `projectFatal=true` during source admission, before any
+`Analyze` call; its then-current assertion omitted the original exception
+details. Another test host terminated with `Internal CLR error (0x80131506)`
+while parsing source, and its exact-child ProcDump monitor observed
+`C0000005.ACCESS_VIOLATION` without saving a dump. These are distinct
+observations, not multiple captures of the historical `System.Uri`
+`NullReferenceException`; no failing URI was acquired in these trials. The
+completed successful and handled-failure trials checked the original project
+tree and Excel-process state. The fatal crash exited before the test's
+after-state checks, so its immediate invariants were not recorded; subsequent
+trials observed the original tree hash again. Local logs remain under ignored
+`.tmp/diagnostic-verification/issue-415-*` directories.
+
+As one controlled comparison, the same Debug DLL with
+`DOTNET_TieredCompilation=0` completed ten fresh processes with ten analyses
+each (100/100), while normal-tiered trials had failed. That finite
+non-reproduction is a reason to investigate runtime/code-generation or
+process-history effects; it does not establish a JIT, CLR, hardware, COM, or
+product-code root cause, nor does it prove that disabling tiering is a fix.
+An earlier lexical access violation was also observed with tiering disabled.
+
+For managed `NullReferenceException` and native access-violation follow-up,
+a local signed ProcDump was attached to the **exact owned** Debug
+`testhost.exe` PID after validating its executable path and start time. The
+monitor used a first-chance filter, `-ma`, and `-n 1`, with a finite test and
+monitor lifetime; it did not register a machine-wide handler. Initial monitored
+processes either passed, failed before analysis, or crashed without producing
+a matching dump. A monitor reporting no dump is not proof that no exception
+occurred: the preceding admission failure had no captured exception detail,
+and the observed CLR fatal error did not satisfy the saved-dump condition.
+Stop at the first matching full dump, verify its size/hash and exception context,
+and keep it local; dumps can contain private source, paths, and secrets. Do not
+upload the dump or treat a monitored test as a release-gate pass.
+
+To separate installed TypeLib acquisition history from later managed analysis,
+an opt-in `SourceAnalysisTypeLibReplayWindowsProbeTests` captured a baseline
+and six `input.json` TypeLib metadata snapshots in an ignored local directory.
+The baseline (SHA-256
+`5C86F4E457BE9E45E840743E6C2062C30C0E453B22107847DAAFA013204CEEB2`)
+records the ordered 35 source URI/raw-UTF-16 hashes, catalog input hashes,
+selection, 16,246 active definitions, and zero-diagnostic fingerprint. Each of
+six separate fresh test hosts re-read the **same original source root**,
+verified those hashes, rebuilt the six catalogs from the snapshots without
+COM or registry discovery, and completed ten analyses with matching results
+(60/60). This finite replay is a non-reproduction, not proof that COM history
+causes the other failures. A future COM-free failure with matching baseline
+and input fingerprints would show that prior COM acquisition is unnecessary;
+continued passes would not establish the converse. The snapshots contain
+private TypeLib metadata and absolute paths; keep them local. None of these
+observations resolves #415 or satisfies its original-URI regression criterion.
+
+A later original-input control independently acquired the installed TypeLibs
+in five fresh Debug test hosts and completed ten analyses per host (50/50),
+again with unchanged BFW project-tree and Excel-process checks. Thus this
+bounded comparison saw no failure on either the COM-backed (50/50) or
+COM-free (60/60) path. It provides no causal distinction between them and is
+not a correction or release-gate result.
+
+A third, acquisition-conditioned arm performed the installed TypeLib acquisition
+first, verified that all six acquired identities and serialized metadata hashes
+matched the frozen baseline, then analyzed with the **frozen** catalogs rather
+than reusing the acquired live catalogs. Its ordered 35-source URI/raw-UTF-16
+fingerprint was SHA-256
+`DA3786223771D8556A61BBB9E66F50CD221B3D3E955495AF2C5B7E1DBA044AFE`.
+Three fresh Debug hosts each completed ten analyses, and one post-build host
+completed three more (33/33); every trial had zero diagnostics and the baseline
+diagnostic SHA-256
+`4F53CDA18C2BAA0C0354BB5F9A3ECBE5ED12AB4D8E11BA873C2F11161202B945`.
+The earlier COM-free and COM-backed arms used a prior test-assembly build but
+the same product DLLs. Since all three bounded arms passed, this experiment
+does not distinguish their process histories, identify a cause, or complete
+#415's original-URI regression criterion.
+
+## First-chance lexer fault dump on 2026-09-26
+
+In the exact-input BFW probe's `issue-415-nre-procdump-20260926-j01` run,
+the first eight of ten analyses completed with zero diagnostics. Trial 9
+failed with `NullReferenceException` at `VbaLexer.ReadIdentifierOrKeyword`
+line 339. The post-test project tree remained 41 files with SHA-256
+`038839696C32C2D0DED55672FCD4BC19D6C5EC44EDC205087B1983B5D551C772`;
+Excel process IDs were unchanged.
+
+The exact-child ProcDump monitor was configured for first-chance exceptions.
+It logged `C0000005.ACCESS_VIOLATION`, a 350 MB full dump completed in 0.3
+seconds, and its one-dump limit reached. The monitor nevertheless exited 1
+and its wrapper reported `dumpFinalized=false`; the completed file was
+independently verified at 358,058,938 bytes with SHA-256
+`E91E2B2A25DC68070F5FF0905120D0997399C520AED9FDE6A1E972C9ADC09A74`.
+ProcDump's dump comment calls this first-chance, while CDB's generic exception
+display says the first/second-chance distinction is unavailable offline.
+
+At the saved fault, CDB identified OS thread `0x2c68` at RIP
+`0x7FF9A72D9386`: `cmp dword ptr [rcx],ecx` attempted to read address zero
+with `RCX=0`. The instruction follows a call to `LexerState.get_Position`;
+the returned and stored position reference was null. The captured `LexerState`,
+`VbaSourceText`, `start` position, and `cachedPosition` were non-null. Its raw
+offset was 77, `start.Offset` was 71, `identifierLength` was 6, and the source
+string was 127 UTF-16 code units (object size 276 bytes), with SHA-256
+`813C67DFA5F08AEA60B7F42C38EB582DB602E35C49EEF7C37E0B523E38FEC15A`.
+Its exact line matches `common-modules/WorksheetService.cls:1010` in the
+unchanged BFW source tree; the line content is not copied into this document.
+The getter source uses
+`cachedPosition ??= new VbaSyntaxPosition(...)`, which should not return null
+under ordinary managed execution. SOS `verifyobj` found four inspected objects
+valid, and `verifyheap` checked 2,145,953 objects with zero errors. These
+checks do not establish why the null return occurred; no JIT, CLR, hardware,
+or product-code root cause is supported yet. This is fault-time evidence for
+one lexer manifestation, not a reproduction of the historical `System.Uri`
+exception or completion of #415's regression criterion.
+
+Release validation remains incomplete: the full verification command stopped
+only at the known VSIX packaging Node `0xC0000005` failure after all preceding
+suites passed. A separate Windows Excel suite passed its 48, 6, and 5 tests.
+The dump and diagnostic logs remain private under ignored local `.tmp` paths;
+do not commit or upload them.
+
+A proposed shortcut that skipped document identification for generated
+`vba-reference://` URIs with escaped spaces in the authority was discarded.
+The historical stack entered a second parse of an admitted file URI, not this
+generated-reference case. The shortcut would also change identity behavior for
+some admitted reference URIs. Its finite unit-test passes therefore could not
+justify a #415 correction. The normal identity admission path remains in use.
+
+After extending the temporary lexer recorder to the faulted
+`ReadIdentifierOrKeyword` position access, the exact-input BFW probe passed ten
+analyses in one fresh Debug host (10/10, zero diagnostics). The next fresh host
+failed on its first attempted analysis, before any completed trial, with a
+managed `NullReferenceException` at `VbaPositionSyntaxIndex.FindIdentifier`
+line 683. That location is a LINQ ordering key over a statement's token range,
+not the historical URI operation or the newly instrumented lexer access.
+The same 41-file source-tree hash was observed before and after; no Excel
+process appeared. No new dump was collected because the authorized one-dump
+limit had already been reached. This second post-change manifestation prevents
+using the single successful host as stability evidence and still does not
+establish a shared cause.
+
+With both the lexer and `FindIdentifier` failure-only recorders built, a new
+bounded sequence of fresh hosts completed 80 analyses across its first eight
+hosts. Host 9 completed three analyses and then failed on attempt 4 with a
+`NullReferenceException` at `ReadIdentifierOrKeyword` line 306. Its attached
+`probeLexer` evidence identified `ReadIdentifierOrKeyword.PositionBeforeSlice`:
+`state`, `sourceText`, `cachedPosition`, and a post-failure reread of `Position`
+were non-null; raw and reread offsets were both 148, start offset 137,
+identifier length 11, and source length 195 UTF-16 code units. The source-line
+SHA-256 over UTF-16LE units was
+`6F17A8ADE7FDD515BA38451BC1937D064B0831C34B2A65604DF71DBC447AD21F`,
+matching the unchanged BFW `common-modules/WorksheetService.cls` line 1021.
+The reread describes state *after* the exception; without a second fault-time
+dump it does not itself prove the getter's return value at the failing
+instruction. The earlier one-dump native context supplies that stronger
+observation for a different line and trial. The probe again verified the
+41-file tree hash and unchanged Excel process IDs. It produced no URI or
+`FindIdentifier` graph evidence, because neither boundary failed in this host.
+
+## COM-free frozen-catalog recurrence on 2026-09-27
+
+The `ReplayCapturedMetadataWithoutComOrRegistry` arm then used the same original
+BFW source root and the previously hashed six TypeLib metadata snapshots in
+fresh Debug hosts. It verifies ordered source URI/text fingerprints, catalog
+input hashes, reference selection, definition count, and the zero-diagnostic
+baseline before and during each analysis, without installed TypeLib/COM or
+registry acquisition in that host. The first fresh host completed ten analyses.
+The second completed five with the expected diagnostic fingerprint, then failed
+on trial 6 with `NullReferenceException` at
+`VbaPositionSyntaxIndex.GetProcedureSyntaxWords` line 1569 while filtering
+significant tokens by `token.Range.Start.Offset`. This is a different syntax
+position from the URI and lexer failures. It demonstrates that fresh installed
+TypeLib/COM acquisition is **not necessary** for at least this intermittent
+failure. It does not establish whether the catalog contents, source input,
+runtime, or process state is causal, nor whether this is the same root cause as
+the historical URI failure.
+
+The replay has a post-action project-tree and Excel-process guard, but its
+failure output did not include the guard results because they were attached
+only as secondary exception data. A later read-only check found 41 project
+files and no Excel process; that alone is weaker than the in-run before/after
+receipt. The probe now emits explicit bounded before/after tree hashes,
+Excel-process counts/IDs, and a protection-check result even after an analysis
+exception, without replacing the primary failure. That revised failure path
+has not yet been observed in a fresh recurrence. No further native dump was
+collected.
+
+After adding that failure output and a `GetProcedureSyntaxWords.prefix`
+token-graph recorder, ten further fresh COM-free hosts each completed ten
+analyses (100/100) against the same frozen baseline. Every completed test
+also passed its project-tree and Excel-process guards. This finite
+non-reproduction does not reverse the earlier COM-free recurrence or prove
+that the instrumentation, runtime, or product code fixed it. No token-graph
+evidence was acquired in this follow-up because no failure occurred.
