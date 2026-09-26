@@ -583,3 +583,16 @@ also appeared in unrelated executables, including `MsMpEng.exe` (5),
 `sppsvc.exe` (8), and `Explorer.EXE` (1). These counts exclude the deliberately
 crashing test executable and are broader than the VBA tool processes, but
 event co-occurrence alone cannot identify a common failure mechanism.
+
+A static audit of the latest `ReadOnlySpan<char>.Length` access-violation
+stack found no explicit unsafe/native or span-escaping operation in its
+immediate Syntax path. `ParseModule` creates a source wrapper around an
+immutable managed string; the lexer forms `AsSpan` from that string while
+inside its end-of-source loop, and `ReadCandidateLength` uses managed rune
+decoding and bounded span slices (`VbaSyntaxTreeParser.cs:122-130`,
+`VbaLexer.cs:34,84-86`, `VbaIdentifier.cs:157-187`). Invalid ordinary
+offsets or malformed UTF-16 would be expected to produce managed range
+handling or token results,
+not by themselves an access violation at span length. The event stack and
+static audit cannot locate the actual corruption, distinguish runtime/JIT
+from other process influences, or absolve product code.
