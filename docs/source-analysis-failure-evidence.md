@@ -487,3 +487,45 @@ alter rare timing/code generation. Current semantic code no longer makes this
 second parse, but the original runtime failure's cause remains unsupported.
 The native crash observed with current code is separate evidence; neither
 result justifies closing #415 or claiming release readiness.
+
+## Standalone current-build comparisons on 2026-09-27
+
+The same ignored local harness was linked to the current product assemblies,
+keeping the 35 raw-UTF-16 source hash checks and six frozen catalogs. With a
+Release build it reproduced the baseline's 16,246 active definitions and zero
+diagnostics; ten fresh standalone hosts completed ten analyses each (100/100).
+This is a configuration/process-boundary comparison with the Debug xUnit
+replay, not a proof that Release code is safe.
+
+The current Debug standalone build, without xUnit or live COM, returned a
+`NullReferenceException` in `VbaLexer.LexerState.Peek` on trial 5 after four
+successful analyses. With only `DOTNET_TieredCompilation=0` changed, another
+fresh Debug process failed on trial 10 in
+`VbaPositionSyntaxIndex.IsWord` after nine successful analyses. Neither
+failure was in `System.Uri`; disabling tiered compilation alone did not
+prevent this class of intermittent failure.
+
+To test whether reusing parsed syntax trees is required, the Debug standalone
+harness then reread and rehashed all 35 original sources and reparsed them
+before **each** analysis, while retaining the frozen catalogs. One fresh host
+completed ten analyses. The next completed four and failed during trial 5
+with `ArgumentOutOfRangeException` in `VbaLexer.LexerState.Slice` /
+`String.Substring`, reached from lexical comment inspection during semantic
+resolution. This occurrence saved the exception stack but not its diagnostic
+`Exception.Data`; actual slice operands therefore remain unobserved. After a
+local-only receipt change to include allowlisted lexer evidence, the next
+fresh-syntax process instead terminated with native `0xC0000005` in
+`VbaTokenStream.FromText` while initially parsing sources, before trial 1.
+The changed harness is a separate trial condition. A later read-only check
+again found all 35 source hashes matching the baseline and zero Excel
+processes. No additional dump was requested or copied.
+
+These observations rule out xUnit, live TypeLib/COM acquisition, tiered
+compilation, and reuse of parsed trees as **necessary conditions** for at
+least one current manifestation. They do not establish a common cause or
+show whether the old URI failure has the same cause. Windows Application
+events in the surrounding four-hour period also recorded `0xC0000005` in
+unrelated `VBCSCompiler.exe`, `codex.exe`, and `sppsvc.exe` processes; no
+WHEA-Logger event appeared in that window. This makes an environment-wide
+factor worth checking, but neither proves hardware/OS corruption nor
+exonerates product code. Keep the different stacks and binaries distinct.
