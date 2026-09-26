@@ -133,3 +133,29 @@ The dump (SHA-256
 `FDB436BB81B89C4CC89E8ED477681BCE2687A8A4E9DA4BA31FE622CF5882B1B7`),
 trial reports, and private receipt remain only under ignored local `.tmp` paths.
 The actual root cause, corrective action, and regression boundary remain open.
+
+## Live first-chance follow-up
+
+The ProcDump limitation above led to a separate **live** CDB run with SOS
+`!soe -create System.ArgumentOutOfRangeException 1`. A short startup preflight
+confirmed that the type-filtered first-chance break was installed. With the
+same frozen DLL and sanitized fixture, one five-million-iteration child passed;
+the next stopped at a first-chance CLR notification after 1,000,000 reported
+iterations. The live managed and native stacks still contained
+`String.SplitInternal` and `SourceIdentity.NormalizeSegments`. A single local
+full-memory user dump was saved at that stop (SHA-256
+`4A5EBE9C67B0803EB8376E7F54A52E6221517DFDF2511C1FD0E5FF08D0E51E34`).
+The owned child was then terminated under the debugger, not resumed.
+
+Offline inspection found a 121-code-unit input string and the expected ten
+ascending separator offsets in the live stack buffer. The allocated 11-element
+result array had no populated elements. The optimized .NET 10.0.8 Tier1 code
+has three bounds-check branches converging on the same `start`
+`ArgumentOutOfRangeException` helper; the dump does not identify the branch or
+retain its exact volatile start/length operands. A recovered callee-saved
+register conflicts with the stored separator-buffer pointer, but its provenance
+at the throw is not established. Neither a corrupted separator list nor a
+particular bad index is proven. A new controlled breakpoint at the bounds-check
+branch, before the helper call, is needed to distinguish those possibilities.
+The dump and debugger log remain ignored and local; the historical semantic
+`System.Uri` NullReferenceException has not thereby been reproduced or fixed.
