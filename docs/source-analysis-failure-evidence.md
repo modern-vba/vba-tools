@@ -160,6 +160,18 @@ branch, before the helper call, is needed to distinguish those possibilities.
 The dump and debugger log remain ignored and local; the historical semantic
 `System.Uri` NullReferenceException has not thereby been reproduced or fixed.
 
+The 2026-09-11 stack belongs to the older `ef2c35b` identity implementation:
+`TryIdentifyDocument` admitted a file URI with `Uri.TryCreate`, then
+`TryGetLocalPath(string)` constructed a second `new Uri(uri)` for that same
+string. Commit `a78ea0a` removed the second parse from that call path by
+reusing the admitted `Uri`; later shared lexical identity work changed the
+file-path implementation again. This establishes that the exact historical
+second-parse call is absent from current semantic identity admission, not why
+the runtime threw or which URI triggered it. A generated non-file reference
+URI is not supported as the historical second-parse input by that stack alone.
+The managed NRE and newer `String.SplitInternal` exception remain distinct
+observations until an exact failing input or shared causal evidence is found.
+
 ## Scoped segment-scan compatibility trial
 
 `SourceIdentity.NormalizeSegments` now scans the decoded path remainder without
