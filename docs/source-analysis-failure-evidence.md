@@ -562,10 +562,12 @@ Windows .NET event stack passed through `ReadOnlySpan<char>.Length` and
 `VbaIdentifier.ReadCandidateLength`. A second attempt skipped that initial
 parse and reached the expected canary. No extra dump was collected.
 
-A separate read-only System log check found one WHEA-Logger event 19 on
-2026-09-22 09:44:42 local time: Processor Core, Corrected Machine Check,
-Internal parity error, APIC ID 9. There was no Application Error event in
-the surrounding 30 minutes. [Microsoft's WHEA definitions](https://learn.microsoft.com/en-us/windows-hardware/drivers/whea/windows-hardware-error-architecture-definitions)
+A separate read-only 30-day System log check found four WHEA-Logger event 19
+warnings (2026-08-28, 09-04, 09-09, and 09-22 local time), all reporting
+Processor Core, Corrected Machine Check, and Internal parity error, with
+APIC IDs 0, 1, 1, and 9 respectively. There was no Application Error event
+within 30 minutes of the latest warning (09-22 09:44:42).
+[Microsoft's WHEA definitions](https://learn.microsoft.com/en-us/windows-hardware/drivers/whea/windows-hardware-error-architecture-definitions)
 describe a corrected machine check as a processor-detected condition
 corrected by hardware or firmware; it is
 nonfatal. This record is an independent reason to investigate system
