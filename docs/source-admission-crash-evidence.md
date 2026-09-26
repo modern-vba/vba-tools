@@ -149,3 +149,47 @@ receiver provenance before choosing a product change or runtime/environment
 mitigation. ProcDump may stop at the first dump before reporting the child's
 final exit; record that exit as unknown rather than substituting the monitor
 exit. A native access violation cannot be made safe by an in-process retry.
+
+## Exact BFW-input first-chance follow-up on 2026-09-26
+
+An opt-in Debug test host read the original BFW source tree and the six installed
+TypeLibs, then called shared analysis repeatedly without starting Excel. Eight
+complete analyses produced zero diagnostics. The ninth failed with a managed
+`NullReferenceException` at `VbaLexer.ReadIdentifierOrKeyword` line 339. The
+post-test source tree still had 41 files and SHA-256
+`038839696C32C2D0DED55672FCD4BC19D6C5EC44EDC205087B1983B5D551C772`,
+and Excel process IDs were unchanged.
+
+An exact-child, first-chance ProcDump monitor recorded a
+`C0000005.ACCESS_VIOLATION` on that test host and completed one 358,058,938-byte
+full dump (SHA-256
+`E91E2B2A25DC68070F5FF0905120D0997399C520AED9FDE6A1E972C9ADC09A74`).
+Its one-dump limit was reached. ProcDump exited 1 and a local wrapper reported
+`dumpFinalized=false`, but the completed dump file, size, and hash were verified
+independently. Neither monitor exit code nor wrapper flag is the child exit
+status; the test itself reported the managed failure.
+
+In the saved native context, the faulting instruction read address zero
+immediately after an indirect call resolving to `LexerState.get_Position`.
+The saved return value was null. The inspected lexer state, source text, start
+position, and cached position were non-null, with raw offset 77 and a six-unit
+identifier starting at offset 71. SOS verified those objects and found zero
+errors while checking the managed heap. The getter's ordinary source and
+inspected native branches return either the existing cached position or a new
+position, so the observed null is not explained by a simple null field.
+Snapshot timing, code-version provenance, and transient process state still
+prevent a supported JIT, CLR, hardware, or product-code root-cause claim. This
+is evidence for a lexer manifestation using the affected source input, not a
+reproduction of #415's historical `System.Uri` exception and not a fix.
+The dump and raw logs remain only in the ignored local diagnostic directory;
+do not commit or upload them.
+
+Read-only follow-up on the same dump confirmed the caller's `state` stack slot
+and null return slot, both indirect call targets, and the getter's IL/native
+null-coalescing branches. SOS displayed one `MinOptJitted` native version and
+`ReJIT ID 0` for caller and getter. The loaded module's PE/PDB identity and
+embedded product commit matched the current disk build; an in-dump MVID/hash
+comparison was unavailable. No obvious profiler module or heap-verification
+error was found. These checks weaken a stale-binary or simple field-race
+explanation but do not exclude transient stack/code corruption, runtime state,
+or other process-environment effects.
