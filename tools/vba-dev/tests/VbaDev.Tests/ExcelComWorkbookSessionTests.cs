@@ -36,17 +36,19 @@ public sealed class ExcelComWorkbookSessionTests
         using var controller = new OwnedExcelTerminationController();
         using var cancellationRegistration = cancellation.Token.Register(
             () => controller.RequestForcedTermination(TimeSpan.Zero));
+        var cancellationReached = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSetupFailure = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var excel = new CancelingExcelSetupApplication(() =>
         {
             cancellation.Cancel();
-            controller.RequestCleanupAsync(TimeSpan.Zero)
-                .WaitAsync(TimeSpan.FromSeconds(1))
-                .GetAwaiter()
-                .GetResult();
+            cancellationReached.TrySetResult();
+            releaseSetupFailure.Task.GetAwaiter().GetResult();
             throw setupFailure;
         });
 
-        // Fake COM setup waits synchronously for cleanup; leave the test pool available.
+        // Fake COM setup waits for the test to verify cleanup; leave the test pool available.
         var startup = Task.Factory.StartNew(
             () => ExcelComWorkbookSession.StartExplicitlyOwnedHiddenExcel(
                 enableAutomationSecurityLow: false,
@@ -66,7 +68,19 @@ public sealed class ExcelComWorkbookSessionTests
             CancellationToken.None,
             TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
-        var error = await Assert.ThrowsAsync<OwnedExcelSessionStartCanceledException>(() => startup);
+        try
+        {
+            await cancellationReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await controller.RequestCleanupAsync(TimeSpan.Zero)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            releaseSetupFailure.TrySetResult();
+        }
+
+        var error = await Assert.ThrowsAsync<OwnedExcelSessionStartCanceledException>(
+            () => startup.WaitAsync(TimeSpan.FromSeconds(5)));
 
         Assert.True(error.CleanupVerified);
         Assert.Null(error.CleanupException);
