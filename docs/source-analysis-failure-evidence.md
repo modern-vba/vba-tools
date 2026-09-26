@@ -159,3 +159,25 @@ particular bad index is proven. A new controlled breakpoint at the bounds-check
 branch, before the helper call, is needed to distinguish those possibilities.
 The dump and debugger log remain ignored and local; the historical semantic
 `System.Uri` NullReferenceException has not thereby been reproduced or fixed.
+
+## Scoped segment-scan compatibility trial
+
+`SourceIdentity.NormalizeSegments` now scans the decoded path remainder without
+calling `String.SplitInternal`. It retains empty-segment removal, `.` and `..`
+normalization, and root clamping. This avoids the runtime call on the newly
+observed `ArgumentOutOfRangeException` path; it does not establish why that
+runtime call failed or address the historical semantic `System.Uri`
+`NullReferenceException`. The sanitized failure pair is included as a
+deterministic identity test; it does not reproduce the intermittent crash by
+itself. The high-volume reproducer remains opt-in.
+
+On the same Windows .NET 10.0.8 host, the new SourceIdentity DLL (SHA-256
+`BA862E205AF0641814AA689A0802DF439653B9EAE5497E3CF08475FB1B01A6DF`)
+completed ten fresh child runs of five million identity iterations each with
+the sanitized pair: 50,000,000 calls, ten passes, no observed exceptions. The
+frozen pre-change DLL had failed in two of six analogous runs. These bounded
+observations support the mitigation but do not prove long-term stability or a
+root cause. A three-trial read-only semantic-analysis probe of the affected
+six-TypeLib BFW project also passed; that is a non-reproduction, not proof that
+the historical semantic failure is gone. Keep #415 open for the original
+failure's cause and regression boundary, and keep the local dump private.
