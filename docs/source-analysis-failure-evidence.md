@@ -593,8 +593,8 @@ decoding and bounded span slices (`VbaSyntaxTreeParser.cs:122-130`,
 `VbaLexer.cs:34,84-86`, `VbaIdentifier.cs:157-187`). Invalid ordinary
 offsets or malformed UTF-16 would be expected to produce managed range
 handling or token results, not by themselves an access violation at span
-length. The event stack and
-static audit cannot locate the actual corruption, distinguish runtime/JIT
+length. The event stack and static audit cannot locate the actual corruption,
+distinguish runtime/JIT
 from other process influences, or absolve product code.
 
 ## Windows integrity checks on 2026-09-27
@@ -627,3 +627,22 @@ separate parser event nor the `bthmodem.sys` finding is established as the
 cause of the 07:38 worker crash, the VBA-analysis failures, or the corrected
 machine checks. No system repair, reboot, configuration change, or new dump
 was performed by this investigation.
+
+The maintainer subsequently ran elevated
+`DISM /Online /Cleanup-Image /RestoreHealth`, which completed successfully.
+The CBS summary at 08:25:04
+records 1,608 detected corruptions repaired and zero CSI manifest
+corruptions detected by that DISM pass. The following `sfc /scannow` reached
+100% but reported that some files could not be repaired. At 08:27:48 CBS
+records an XML parser failure at line 188, column 7; at 08:27:50 its `[SR]`
+entry says it cannot verify files for
+`Microsoft-Windows-Power-Policy-Definitions` version 10.0.26100.3912
+because the manifest is damaged. CBS does not give that manifest's full
+path or identify a particular unrepaired component file. At 08:28:26 the
+same SFC run records a successful one-component repair and both
+`Corrupt file` and `Repaired file` entries for `bthmodem.sys`; that earlier
+driver finding is therefore not the supported remaining SFC blocker. DISM's
+successful repair of its detected set did not establish that this later
+SFC manifest parse would succeed. Neither outcome proves a cause for the
+VBA-analysis failures, and this investigation did not initiate the system
+repair or collect a new dump.
