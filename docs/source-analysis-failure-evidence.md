@@ -178,6 +178,12 @@ the sanitized pair: 50,000,000 calls, ten passes, no observed exceptions. The
 frozen pre-change DLL had failed in two of six analogous runs. These bounded
 observations support the mitigation but do not prove long-term stability or a
 root cause. A three-trial read-only semantic-analysis probe of the affected
-six-TypeLib BFW project also passed; that is a non-reproduction, not proof that
-the historical semantic failure is gone. Keep #415 open for the original
-failure's cause and regression boundary, and keep the local dump private.
+six-TypeLib BFW project also passed. A later ten-trial run completed with zero
+diagnostics on each trial and unchanged project-tree and Excel-process checks.
+After adding SourceIdentity to the probe's assembly inventory, a further
+one-trial run passed and recorded the loaded test-path SourceIdentity DLL as
+SHA-256 `AB58698598A61EF7F345D82C9B6230F74B4FBDE4DF4E41E9EFC49253121C2DCA`.
+That DLL is distinct from the Release standalone reproducer DLL above. These
+are non-reproductions, not proof that the historical semantic failure is gone.
+Keep #415 open for the original failure's cause and regression boundary, and
+keep the local dump private.

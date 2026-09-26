@@ -13,6 +13,7 @@ using VbaDev.Infrastructure.Projects;
 using VbaDev.Infrastructure.References;
 using VbaDev.Infrastructure.Workbooks;
 using VbaTools.Semantics;
+using VbaTools.SourceIdentities;
 using VbaTools.Syntax;
 using VbaTools.TypeLibRegistry;
 using Xunit;
@@ -79,6 +80,7 @@ public sealed class SourceAnalysisUriResolutionWindowsProbeTests(ITestOutputHelp
             WriteEnvironment(context, syntaxTrees.Length, trials, beforeFiles);
             WriteAssembly("probe", typeof(SourceAnalysisUriResolutionWindowsProbeTests).Assembly);
             WriteAssembly("syntax", typeof(VbaSyntaxTree).Assembly);
+            WriteAssembly("source-identity", typeof(SourceIdentity).Assembly);
             WriteAssembly("semantics", typeof(VbaProjectSourceAnalysis).Assembly);
             WriteAssembly("typelib-reader", typeof(ComTypeLibCatalogMetadataReader).Assembly);
             foreach (var identity in inputs.ReferenceCatalogIdentities.Values
