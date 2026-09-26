@@ -573,6 +573,13 @@ corrected by hardware or firmware; it is
 nonfatal. This record is an independent reason to investigate system
 stability, **not** a proven explanation of any VBA analysis failure. The
 last 30 days contained no Windows Memory Diagnostic result in the System
-log; that absence is not a clean memory-test result. The physical disk
+log, and its enabled Results/Debug log had zero records; that absence is
+not a clean memory-test result. The physical disk
 reported `Healthy`/`OK`, which likewise does not rule out CPU, RAM,
 firmware, or software faults.
+
+In the same 30-day Application Error event-1000 window, `0xC0000005`
+also appeared in unrelated executables, including `MsMpEng.exe` (5),
+`sppsvc.exe` (8), and `Explorer.EXE` (1). These counts exclude the deliberately
+crashing test executable and are broader than the VBA tool processes, but
+event co-occurrence alone cannot identify a common failure mechanism.
