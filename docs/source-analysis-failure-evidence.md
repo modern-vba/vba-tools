@@ -540,3 +540,24 @@ non-reproduction does not establish that Semantics is required: the earlier
 current Debug standalone process terminated while parsing its initial source
 set, before catalog reconstruction or analysis, and process histories differ.
 The specific failing slice operands still have not been captured.
+
+With the allowlisted receipt enabled, ten more fresh current-Debug hosts
+were scheduled for ten fresh-tree analyses each. Nine hosts completed all
+ten (90/90); one terminated before its initial preparation message with
+native `0xC0000005`. Windows Application Error event 1000 recorded
+`dotnet.exe`, an unknown faulting module, and offset zero for that process;
+there was no managed exception receipt. No `Slice` recurrence or actual
+operand evidence appeared in this bounded run. These counts must not be
+combined with the separate historical or Release cohorts as one pass rate.
+
+The ignored local harness then exercised the same exception-receipt path
+with an intentional private `Slice(0, 6)` call on a five-character synthetic
+string. It recorded the original `ArgumentOutOfRangeException`, phase
+`LexerState.Slice`, start `0`, end `6`, pre-call source length `5`, and an
+unchanged source reference. This validates capture and serialization for a
+known invalid range, not the cause of a real failure. The first canary
+attempt instead terminated with an unhandled `AccessViolationException`
+while initially parsing the 35 sources, before the intentional call; the
+Windows .NET event stack passed through `ReadOnlySpan<char>.Length` and
+`VbaIdentifier.ReadCandidateLength`. A second attempt skipped that initial
+parse and reached the expected canary. No extra dump was collected.
