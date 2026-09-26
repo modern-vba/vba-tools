@@ -529,3 +529,14 @@ unrelated `VBCSCompiler.exe`, `codex.exe`, and `sppsvc.exe` processes; no
 WHEA-Logger event appeared in that window. This makes an environment-wide
 factor worth checking, but neither proves hardware/OS corruption nor
 exonerates product code. Keep the different stacks and binaries distinct.
+
+A further standalone control referenced **only** the current Debug Syntax
+assembly. It re-read and checked each of the 35 original source-text hashes
+before every `ParseModule` call, with no semantic analysis, catalogs, COM, or
+Excel. Twenty fresh hosts each completed ten full 35-source parses (200/200),
+with no observed exception or native termination. Afterward, all 35 source
+hashes still matched the baseline and no Excel process existed. This finite
+non-reproduction does not establish that Semantics is required: the earlier
+current Debug standalone process terminated while parsing its initial source
+set, before catalog reconstruction or analysis, and process histories differ.
+The specific failing slice operands still have not been captured.
