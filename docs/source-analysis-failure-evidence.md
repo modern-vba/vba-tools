@@ -99,3 +99,37 @@ run is not evidence that the historical fault is fixed.
 The [opt-in #415 URI reproducer](../scripts/source-identity-repro/README.md)
 accepts either its sanitized synthetic fixture or a private exact failure receipt.
 Its bounded stress loop is not part of ordinary test or release gates.
+
+## Sanitized URI isolation on 2026-09-26
+
+With the captured URI pair's five-character account segment replaced by `local`,
+the frozen SourceIdentity DLL (SHA-256
+`91D812876BAF5B45909635BD6D7D990D86E61D290DE97749BD41A247C13EECDF`)
+on Windows .NET 10.0.8 failed with `ArgumentOutOfRangeException` in
+`String.SplitInternal` in two of six fresh child processes, each bounded to
+5,000,000 identity iterations; four passed. The full original private receipt
+also replayed successfully once, which is only a non-reproduction. The sanitized
+fixture retains the URI lengths (269 and 276 UTF-16 code units) and comparison
+order. It contains no personal account name.
+
+The failing-side decoded remainder was 121 UTF-16 code units, with slash offsets
+5, 11, 18, 24, 47, 61, 71, 75, 85, and 100. A separate ignored local control
+called only `remainder.Split('/', StringSplitOptions.RemoveEmptyEntries)` on that
+exact sanitized remainder: six fresh processes and 30,000,000 total calls all
+passed. This negative control narrows the observation but does not exonerate
+`String.Split`, establish a product defect, or prove a fix.
+
+A signed ProcDump exact-child run with `-ma -e 1 -f '*ArgumentOutOfRangeException*'
+-n 1 -x` produced one local full dump on its first bounded attempt, after the
+child reported 2,300,000 completed iterations. The dump's exception object and
+generated stack confirm `ArgumentOutOfRangeException` through
+`String.SplitInternal`, `SourceIdentity.NormalizeSegments`, and `TryFromUri`.
+However, the dump comment says `Unhandled exception`, and CDB reports that the
+first/second-chance distinction is unavailable. The live stack is at later
+exception propagation, so this dump does **not** establish first-chance capture
+or reveal the failing split indices, length, or separator list. ProcDump exited
+with code 1; the child's exit code was not observed and must not be inferred.
+The dump (SHA-256
+`FDB436BB81B89C4CC89E8ED477681BCE2687A8A4E9DA4BA31FE622CF5882B1B7`),
+trial reports, and private receipt remain only under ignored local `.tmp` paths.
+The actual root cause, corrective action, and regression boundary remain open.
