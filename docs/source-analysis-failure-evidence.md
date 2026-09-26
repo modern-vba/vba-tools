@@ -592,7 +592,38 @@ inside its end-of-source loop, and `ReadCandidateLength` uses managed rune
 decoding and bounded span slices (`VbaSyntaxTreeParser.cs:122-130`,
 `VbaLexer.cs:34,84-86`, `VbaIdentifier.cs:157-187`). Invalid ordinary
 offsets or malformed UTF-16 would be expected to produce managed range
-handling or token results,
-not by themselves an access violation at span length. The event stack and
+handling or token results, not by themselves an access violation at span
+length. The event stack and
 static audit cannot locate the actual corruption, distinguish runtime/JIT
 from other process influences, or absolve product code.
+
+## Windows integrity checks on 2026-09-27
+
+The maintainer ran an elevated `sfc /verifyonly` twice. The first attempt
+stopped at 3% with Windows Resource Protection unable to perform the
+requested operation. CBS records the SFP verification request at 07:38:05
+local time, seven completed 100-component batches, and an eighth batch
+started without a completion record at 07:38:08. Application Error event
+1000 at that same second reports `TiWorker.exe` terminating in `ntdll.dll`
+with `0xC0000409`; the later CBS worker-restart message confirms the worker
+crash. The event does not identify why the worker terminated, and this first
+attempt says nothing about whether protected files are intact.
+
+The second elevated `sfc /verifyonly` started at 07:48:31 and reached 100%,
+reporting integrity violations. Its CBS verification batches end at
+07:49:42; the sole explicit corruption entry in the current CBS log is
+`DEPLOY [Pnp] Corrupt file: C:\Windows\System32\drivers\bthmodem.sys` at
+that time. No `[SR]` entry specifies a mismatching hash, corruption subtype,
+or a repair result. The existing file was readable (114,688 bytes, file
+version 10.0.26100.5074), but that does not contradict SFC's integrity
+finding. `/verifyonly` performed no repair.
+
+Separately, at 07:46:50, a `WinMgmt` CBS session reported
+`CBS_E_XML_PARSER_FAILURE` while reading a RollupFix package `.mum`. A
+read-only .NET XML reader subsequently traversed the current 1,708,640-byte
+file without a well-formedness error; this does not validate CBS-specific
+metadata or reconstruct the bytes seen at failure time. Neither that
+separate parser event nor the `bthmodem.sys` finding is established as the
+cause of the 07:38 worker crash, the VBA-analysis failures, or the corrected
+machine checks. No system repair, reboot, configuration change, or new dump
+was performed by this investigation.
