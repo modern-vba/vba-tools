@@ -414,3 +414,44 @@ also passed its project-tree and Excel-process guards. This finite
 non-reproduction does not reverse the earlier COM-free recurrence or prove
 that the instrumentation, runtime, or product code fixed it. No token-graph
 evidence was acquired in this follow-up because no failure occurred.
+
+## COM-free pre-catalog range failure and later native crash on 2026-09-27
+
+The next fresh frozen-catalog replay failed during source admission, **before**
+it rebuilt any catalog from the snapshot or called semantic `Analyze`. The
+failure was `ArgumentOutOfRangeException` from `System.String.Substring`,
+reached through `VbaLexer.LexerState.Slice`, `CreateToken`, and
+`ReadFixedLength` while parsing one of the original BFW sources. Its in-test
+post-state guard passed: the project tree hash was identical before and after,
+and no Excel process appeared. A separate read-only check found all 35 source
+text hashes equal to the frozen baseline. The ordinary cursor transitions in
+this lexer do not appear able to pass an out-of-range slice for an immutable
+string, but the failed invocation did not record its actual offsets, so a
+product cursor defect, runtime behavior, or process-state fault cannot yet be
+distinguished. This is not the historical `System.Uri` exception.
+
+A temporary `[DEBUG-415-lexer-v1]` failure-only recorder now preserves the
+original range exception and records `Slice` start/end offsets, the pre-call
+source length and cursor, post-failure source length/hash and cursor, and
+whether both reads used the same string object. It does not retain source
+content or change an error into a successful analysis. The probe formatter
+and handled-failure JSON store accept only these bounded fields. Syntax
+tests passed 1,938/1,938; VbaDev tests passed 3,017 with 57 skipped. These
+tests validate evidence behavior, not the cause of the intermittent fault.
+
+With that build, 13 fresh COM-free test hosts completed ten analyses each
+(130/130) against the frozen baseline. The 14th `dotnet test` invocation
+returned 1 without a handled-test failure record. Windows Application Error
+and .NET Runtime events
+at 2026-09-27 00:54 JST identify `testhost.exe` exit `0xC0000005` with an
+unhandled `AccessViolationException` in `System.Runtime.EH.DispatchEx` /
+`List<T>.Add`, reached from
+`VbaCallableSignaturePresentation.PresentParameter` during semantic analysis.
+The trial number within that host is unknown because its process terminated
+before test output could be retained. The in-test after-state guard also could
+not run. A later read-only check again found all 35 source hashes matching
+the baseline and zero Excel processes; this weaker after-the-fact check is not
+an in-run guard receipt. No additional dump was requested or copied. The
+Windows event stack is useful evidence of a native failure in a **different**
+analysis location, not proof of a common root cause or of a lexer fix. The
+original URI operation remains uncaptured and #415 is not release-ready.

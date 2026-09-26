@@ -234,7 +234,8 @@ internal sealed class SourceAnalysisEvidenceStore(
                 if (phase is not ("ReadIdentifierOrKeyword.Advance"
                     or "ReadIdentifierOrKeyword.StartOffset"
                     or "ReadIdentifierOrKeyword.PositionBeforeSlice"
-                    or "ReadIdentifierOrKeyword.Slice"))
+                    or "ReadIdentifierOrKeyword.Slice"
+                    or "LexerState.Slice"))
                     return new { status = "unavailable" };
 
                 var rawHash = evidence.GetValueOrDefault("sourceSha256") as string;
@@ -262,6 +263,17 @@ internal sealed class SourceAnalysisEvidenceStore(
                     startOffset = evidence.GetValueOrDefault("startOffset") as int?,
                     identifierLength = evidence.GetValueOrDefault("identifierLength") as int?,
                     loopIndex = evidence.GetValueOrDefault("loopIndex") as int?,
+                    sliceStartOffset = evidence.GetValueOrDefault("sliceStartOffset") as int?,
+                    sliceEndOffset = evidence.GetValueOrDefault("sliceEndOffset") as int?,
+                    slicePreLine = evidence.GetValueOrDefault("slicePreLine") as int?,
+                    slicePreCharacter = evidence.GetValueOrDefault("slicePreCharacter") as int?,
+                    slicePreOffset = evidence.GetValueOrDefault("slicePreOffset") as int?,
+                    slicePostLine = evidence.GetValueOrDefault("slicePostLine") as int?,
+                    slicePostCharacter = evidence.GetValueOrDefault("slicePostCharacter") as int?,
+                    slicePostOffset = evidence.GetValueOrDefault("slicePostOffset") as int?,
+                    slicePreSourceLength = evidence.GetValueOrDefault("slicePreSourceLength") as int?,
+                    slicePrePostSourceSameReference =
+                        evidence.GetValueOrDefault("slicePrePostSourceSameReference") as bool?,
                     sourceLength = evidence.GetValueOrDefault("sourceLength") as int?,
                     sourceHashDomain = "utf16-platform-endian-code-units",
                     sourceSha256 = hash,

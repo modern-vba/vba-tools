@@ -45,6 +45,16 @@ internal static class SourceAnalysisLexerProbeEvidenceFormatter
                     startOffset = GetInt(evidence, "startOffset"),
                     identifierLength = GetInt(evidence, "identifierLength"),
                     loopIndex = GetInt(evidence, "loopIndex"),
+                    sliceStartOffset = GetInt(evidence, "sliceStartOffset"),
+                    sliceEndOffset = GetInt(evidence, "sliceEndOffset"),
+                    slicePreLine = GetInt(evidence, "slicePreLine"),
+                    slicePreCharacter = GetInt(evidence, "slicePreCharacter"),
+                    slicePreOffset = GetInt(evidence, "slicePreOffset"),
+                    slicePostLine = GetInt(evidence, "slicePostLine"),
+                    slicePostCharacter = GetInt(evidence, "slicePostCharacter"),
+                    slicePostOffset = GetInt(evidence, "slicePostOffset"),
+                    slicePreSourceLength = GetInt(evidence, "slicePreSourceLength"),
+                    slicePrePostSourceSameReference = GetBool(evidence, "slicePrePostSourceSameReference"),
                     sourceLength = GetInt(evidence, "sourceLength"),
                     sourceHashDomain = "utf16-platform-endian-code-units",
                     sourceSha256 = hash,
@@ -72,6 +82,7 @@ internal static class SourceAnalysisLexerProbeEvidenceFormatter
                 or "ReadIdentifierOrKeyword.StartOffset"
                 or "ReadIdentifierOrKeyword.PositionBeforeSlice"
                 or "ReadIdentifierOrKeyword.Slice"
+                or "LexerState.Slice"
                 ? phase : null;
 
     private static string? GetSha256(IReadOnlyDictionary<string, object> evidence)

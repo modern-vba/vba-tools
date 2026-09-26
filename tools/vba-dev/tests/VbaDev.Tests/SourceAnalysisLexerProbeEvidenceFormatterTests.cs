@@ -101,4 +101,49 @@ public sealed class SourceAnalysisLexerProbeEvidenceFormatterTests
         using var parsed = JsonDocument.Parse(formatted);
         Assert.Equal(phase, parsed.RootElement.GetProperty("phase").GetString());
     }
+
+    [Fact]
+    public void SliceFailurePrintsOnlyBoundedOffsetsAndSourceIdentity()
+    {
+        var original = new ArgumentOutOfRangeException("startOffset");
+        original.Data["DEBUG-415-lexer-v1"] = new Dictionary<string, object>
+        {
+            ["phase"] = "LexerState.Slice",
+            ["stateIsNull"] = false,
+            ["sourceTextIsNull"] = false,
+            ["textIsNull"] = false,
+            ["positionIsNull"] = false,
+            ["sliceStartOffset"] = 11,
+            ["sliceEndOffset"] = 32,
+            ["slicePreLine"] = 2,
+            ["slicePreCharacter"] = 4,
+            ["slicePreOffset"] = 15,
+            ["slicePostLine"] = 2,
+            ["slicePostCharacter"] = 4,
+            ["slicePostOffset"] = 15,
+            ["slicePreSourceLength"] = 20,
+            ["slicePrePostSourceSameReference"] = true,
+            ["sourceLength"] = 20,
+            ["sourceSha256"] = new string('B', 64),
+            ["sourceHashComplete"] = true,
+            ["unrelated"] = "PRIVATE_SOURCE_TEXT"
+        };
+        var wrapper = new InvalidOperationException("wrapper", original);
+
+        var formatted = Assert.IsType<string>(SourceAnalysisLexerProbeEvidenceFormatter.Format(wrapper));
+        using var parsed = JsonDocument.Parse(formatted);
+        var evidence = parsed.RootElement;
+        Assert.Equal("available", evidence.GetProperty("status").GetString());
+        Assert.Equal("LexerState.Slice", evidence.GetProperty("phase").GetString());
+        Assert.Equal(11, evidence.GetProperty("sliceStartOffset").GetInt32());
+        Assert.Equal(32, evidence.GetProperty("sliceEndOffset").GetInt32());
+        Assert.Equal(15, evidence.GetProperty("slicePreOffset").GetInt32());
+        Assert.Equal(15, evidence.GetProperty("slicePostOffset").GetInt32());
+        Assert.Equal(20, evidence.GetProperty("sourceLength").GetInt32());
+        Assert.Equal(20, evidence.GetProperty("slicePreSourceLength").GetInt32());
+        Assert.True(evidence.GetProperty("slicePrePostSourceSameReference").GetBoolean());
+        Assert.True(evidence.GetProperty("sourceHashComplete").GetBoolean());
+        Assert.DoesNotContain("PRIVATE_SOURCE_TEXT", formatted);
+        Assert.Same(original, wrapper.InnerException);
+    }
 }

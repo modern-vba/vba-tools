@@ -261,6 +261,59 @@ public sealed class SourceAnalysisEvidenceStoreTests
         Assert.Equal("original-lexer-failure", original.Message);
     }
 
+    [Fact]
+    public void LexerSliceFailureSerializesBoundedPrePostStateWithoutSourceText()
+    {
+        using var temp = TempDirectory.Create();
+        var original = new ArgumentOutOfRangeException("endOffset", "original-slice-failure");
+        original.Data["DEBUG-415-lexer-v1"] = new Dictionary<string, object>(StringComparer.Ordinal)
+        {
+            ["phase"] = "LexerState.Slice",
+            ["stateIsNull"] = false,
+            ["sourceTextIsNull"] = false,
+            ["textIsNull"] = false,
+            ["positionIsNull"] = false,
+            ["sliceStartOffset"] = 12,
+            ["sliceEndOffset"] = 41,
+            ["slicePreLine"] = 3,
+            ["slicePreCharacter"] = 1,
+            ["slicePreOffset"] = 31,
+            ["slicePostLine"] = 3,
+            ["slicePostCharacter"] = 1,
+            ["slicePostOffset"] = 31,
+            ["slicePreSourceLength"] = 40,
+            ["slicePrePostSourceSameReference"] = true,
+            ["sourceLength"] = 40,
+            ["sourceSha256"] = new string('C', 64),
+            ["sourceHashComplete"] = true,
+            ["unrelated"] = "private-source-sentinel"
+        };
+        var wrapper = new InvalidOperationException("wrapper", original);
+        var directory = Path.Combine(temp.Path, "diagnostics");
+
+        var output = new SourceAnalysisEvidenceStore(directory)
+            .Save(CreateContext(temp.Path), "build", CreateReport(wrapper));
+
+        Assert.Contains("evidence saved:", output, StringComparison.Ordinal);
+        var raw = File.ReadAllText(Assert.Single(Directory.GetFiles(directory)));
+        Assert.DoesNotContain("private-source-sentinel", raw, StringComparison.Ordinal);
+        using var saved = JsonDocument.Parse(raw);
+        var evidence = Assert.Single(saved.RootElement.GetProperty("failures").EnumerateArray())
+            .GetProperty("exception").GetProperty("lexerAdvance");
+        Assert.Equal("available", evidence.GetProperty("status").GetString());
+        Assert.Equal("LexerState.Slice", evidence.GetProperty("phase").GetString());
+        Assert.Equal(12, evidence.GetProperty("sliceStartOffset").GetInt32());
+        Assert.Equal(41, evidence.GetProperty("sliceEndOffset").GetInt32());
+        Assert.Equal(31, evidence.GetProperty("slicePreOffset").GetInt32());
+        Assert.Equal(31, evidence.GetProperty("slicePostOffset").GetInt32());
+        Assert.Equal(40, evidence.GetProperty("sourceLength").GetInt32());
+        Assert.Equal(40, evidence.GetProperty("slicePreSourceLength").GetInt32());
+        Assert.True(evidence.GetProperty("slicePrePostSourceSameReference").GetBoolean());
+        Assert.True(evidence.GetProperty("sourceHashComplete").GetBoolean());
+        Assert.Equal(new string('C', 64), evidence.GetProperty("sourceSha256").GetString());
+        Assert.Same(original, wrapper.InnerException);
+    }
+
     // [DEBUG-415-uri-v1] Temporary observation tests, not a reproduction of the runtime NRE.
     [Fact]
     public void UriIdentificationFailureRetainsOriginalExceptionAndExactLocalEvidence()

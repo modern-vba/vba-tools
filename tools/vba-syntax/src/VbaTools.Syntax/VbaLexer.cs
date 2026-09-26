@@ -499,7 +499,53 @@ internal static class VbaLexer
         /// <param name="endOffset">The exclusive zero-based end offset.</param>
         /// <returns>The requested source slice.</returns>
         public string Slice(int startOffset, int endOffset)
-            => Source[startOffset..endOffset];
+        {
+            var preLine = line;
+            var preCharacter = character;
+            var preOffset = offset;
+            string? sourceAtCall = null;
+            var preSourceLength = -1;
+            try
+            {
+                var currentSource = Source;
+                sourceAtCall = currentSource;
+                preSourceLength = currentSource.Length;
+                return currentSource[startOffset..endOffset];
+            }
+            catch (ArgumentOutOfRangeException error)
+            {
+                // [DEBUG-415-lexer-v1] Capture only a failed slice; never retain source contents.
+                try
+                {
+                    var postLine = line;
+                    var postCharacter = character;
+                    var postOffset = offset;
+                    var sourceText = SourceText;
+                    string? source = null;
+                    var textReadFailed = false;
+                    try { source = sourceText?.Text; }
+                    catch (Exception) { textReadFailed = true; }
+                    var cachedPositionIsNull = cachedPosition is null;
+                    VbaSyntaxPosition? position = null;
+                    var positionReadFailed = false;
+                    try { position = Position; }
+                    catch (Exception) { positionReadFailed = true; }
+                    VbaLexerAdvanceFailureEvidence.CaptureSlice(
+                        error, source, preSourceLength,
+                        sourceAtCall is not null && ReferenceEquals(sourceAtCall, source),
+                        sourceText is null, textReadFailed,
+                        position, positionReadFailed, cachedPositionIsNull,
+                        preLine, preCharacter, preOffset,
+                        postLine, postCharacter, postOffset,
+                        startOffset, endOffset);
+                }
+                catch (Exception)
+                {
+                    // Diagnostics must not replace the original range exception.
+                }
+                throw;
+            }
+        }
 
         public string SliceWhitespace(
             int startOffset,
@@ -583,7 +629,7 @@ internal static class VbaLexerAdvanceFailureEvidence
     internal const string Key = "DEBUG-415-lexer-v1";
 
     internal static void Capture(
-        NullReferenceException error,
+        Exception error,
         string phase,
         bool stateIsNull,
         bool sourceTextIsNull,
@@ -644,7 +690,49 @@ internal static class VbaLexerAdvanceFailureEvidence
         }
         catch (Exception)
         {
-            // Observation must never replace the original NullReferenceException.
+            // Observation must never replace the original lexer exception.
+        }
+    }
+
+    internal static void CaptureSlice(
+        ArgumentOutOfRangeException error,
+        string? source,
+        int preSourceLength,
+        bool prePostSourceSameReference,
+        bool sourceTextIsNull,
+        bool textReadFailed,
+        VbaSyntaxPosition? position,
+        bool positionReadFailed,
+        bool cachedPositionIsNull,
+        int preLine,
+        int preCharacter,
+        int preOffset,
+        int postLine,
+        int postCharacter,
+        int postOffset,
+        int startOffset,
+        int endOffset)
+    {
+        Capture(error, "LexerState.Slice", false, sourceTextIsNull, source,
+            textReadFailed, position, positionReadFailed, cachedPositionIsNull,
+            postLine, postCharacter, postOffset, null, -1, -1);
+        try
+        {
+            if (error.Data[Key] is not Dictionary<string, object> evidence) return;
+            evidence["sliceStartOffset"] = startOffset;
+            evidence["sliceEndOffset"] = endOffset;
+            evidence["slicePreLine"] = preLine;
+            evidence["slicePreCharacter"] = preCharacter;
+            evidence["slicePreOffset"] = preOffset;
+            evidence["slicePostLine"] = postLine;
+            evidence["slicePostCharacter"] = postCharacter;
+            evidence["slicePostOffset"] = postOffset;
+            evidence["slicePreSourceLength"] = preSourceLength;
+            evidence["slicePrePostSourceSameReference"] = prePostSourceSameReference;
+        }
+        catch (Exception)
+        {
+            // Observation must never replace the original slice exception.
         }
     }
 }
