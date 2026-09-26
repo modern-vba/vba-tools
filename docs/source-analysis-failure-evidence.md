@@ -199,3 +199,15 @@ That DLL is distinct from the Release standalone reproducer DLL above. These
 are non-reproductions, not proof that the historical semantic failure is gone.
 Keep #415 open for the original failure's cause and regression boundary, and
 keep the local dump private.
+
+The freshly published Windows vba-dev executable (SHA-256
+`DD9C25D5F383B3DCCAABC1AEB890A50DCDD8444D8901821EDB03179790EB6CBC`)
+also completed one ordinary `build --project` against an isolated copy of the
+affected BFW project. The copy contained the same 41 files and 2,468,110
+bytes before Build; the command imported 35 source files and wrote a nonempty
+workbook only under the ignored diagnostic copy. The original bin workbook
+retained its pre-run length and UTC modification time, no Excel process
+remained, and the original repository status was unchanged. Because the copy
+has a different absolute path, this validates the published CLI workflow but
+does not replay the historical URI spellings exactly or prove that a rare NRE
+cannot recur.
