@@ -20,6 +20,7 @@ param(
     [string] $RunRoot = $env:VBA_TOOLS_DIAGNOSTIC_RUN_ROOT,
     [ValidateRange(1, 100)][int] $Count = 1,
     [ValidateRange(10, 3600)][int] $TimeoutSeconds = 300,
+    [switch] $FirstChanceAccessViolation,
     [switch] $PlanOnly
 )
 
@@ -95,18 +96,30 @@ $identity = [ordered]@{
     sha256 = (Get-FileHash -LiteralPath $ExecutablePath -Algorithm SHA256).Hash
 }
 $dumpRoot = Join-Path $RunRoot 'source-admission-dumps'
+$captureMode = if ($FirstChanceAccessViolation) {
+    'first-chance-access-violation'
+} else {
+    'unhandled-exception'
+}
+$triggerArguments = if ($FirstChanceAccessViolation) {
+    @('-ma', '-e', '1', '-g', '-f', 'C0000005')
+} else {
+    @('-ma', '-e')
+}
 $plans = @()
 for ($attempt = 1; $attempt -le $Count; $attempt++) {
     $attemptId = 'attempt-{0:d3}' -f $attempt
     $attemptDirectory = Join-Path $dumpRoot ('attempt-{0:d3}' -f $attempt)
     $dumpDirectory = Join-Path $attemptDirectory 'dumps'
-    $arguments = @('-ma', '-e', '-n', '1', '-x', $dumpDirectory, $ExecutablePath) + $CommandArguments
+    $arguments = @($triggerArguments) + @('-n', '1', '-x', $dumpDirectory, $ExecutablePath) +
+        $CommandArguments
     $plan = [ordered]@{
         schemaVersion = '1.0'
         kind = 'scoped-vba-dev-dump-attempt'
         runId = $runId
         attemptId = $attemptId
         attempt = $attempt
+        captureMode = $captureMode
         executable = $identity
         commandArguments = $CommandArguments
         procdumpPath = $ProcDumpPath

@@ -52,6 +52,19 @@ Invoke the script in PowerShell with explicit arguments, for example:
     -Count 10
 ```
 
+For a suspected native access violation that the CLR may later convert or
+re-raise, opt in to `-FirstChanceAccessViolation`. This replaces the default
+unhandled-exception trigger with
+`-ma -e 1 -g -f C0000005 -n 1 -x <dump-directory> <exact-executable> ...`.
+The filter captures the first matching native exception in the exact launched
+child before managed exception handling changes its register context. The
+`captureMode` field in each attempt receipt distinguishes the two modes.
+Check the dump's first-chance marker and exception context before interpreting
+it. A first-chance access violation may be handled, so a dump alone does not
+prove that the child ultimately failed; ProcDump may stop before observing the
+child's final exit. Keep the first-chance mode separate from normal verification
+and use a fresh local run directory for each trial.
+
 `-PlanOnly` emits the exact ProcDump argument vector without starting a
 child, accepting a license, or writing any evidence. The executable's hash,
 length and timestamp, child arguments, ProcDump PID and exit code, output

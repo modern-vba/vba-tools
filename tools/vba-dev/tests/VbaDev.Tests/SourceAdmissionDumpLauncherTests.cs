@@ -31,6 +31,7 @@ public sealed class SourceAdmissionDumpLauncherTests
             var attempt = attempts[index];
             Assert.Equal(Path.GetFileName(temp.Path), attempt.GetProperty("runId").GetString());
             Assert.Equal($"attempt-{index + 1:D3}", attempt.GetProperty("attemptId").GetString());
+            Assert.Equal("unhandled-exception", attempt.GetProperty("captureMode").GetString());
             var arguments = attempt.GetProperty("procdumpArguments")
                 .EnumerateArray().Select(item => item.GetString()).ToArray();
             Assert.Equal(["-ma", "-e", "-n", "1", "-x"], arguments.Take(5));
@@ -42,6 +43,37 @@ public sealed class SourceAdmissionDumpLauncherTests
             Assert.DoesNotContain("-w", arguments);
             Assert.DoesNotContain("-accepteula", arguments);
         }
+        Assert.Empty(Directory.EnumerateFileSystemEntries(temp.Path));
+    }
+
+    [Fact]
+    public async Task PlanOnlyCanCaptureFirstChanceNativeAccessViolationForTheExactChild()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var temp = TempDirectory.Create();
+        var executable = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        var command = $"& {Quote(FindLauncher())} -ExecutablePath {Quote(executable)} " +
+            $"-CommandArguments @('/c','exit 42') -ProcDumpPath 'C:\\unused\\procdump64.exe' " +
+            $"-RunRoot {Quote(temp.Path)} -FirstChanceAccessViolation -PlanOnly";
+
+        var result = await RunPowerShellAsync(command);
+
+        Assert.True(result.ExitCode == 0, $"stdout: {result.Output}\nstderr: {result.Error}");
+        using var json = JsonDocument.Parse(result.Output);
+        var attempt = json.RootElement;
+        Assert.Equal("first-chance-access-violation",
+            attempt.GetProperty("captureMode").GetString());
+        var arguments = attempt.GetProperty("procdumpArguments")
+            .EnumerateArray().Select(item => item.GetString()).ToArray();
+        Assert.Equal(["-ma", "-e", "1", "-g", "-f", "C0000005", "-n", "1", "-x"],
+            arguments.Take(9));
+        Assert.Equal(executable, arguments[10]);
+        Assert.Equal(["/c", "exit 42"], arguments.Skip(11));
+        Assert.EndsWith("attempt-001\\dumps", arguments[9],
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("-i", arguments);
+        Assert.DoesNotContain("-w", arguments);
+        Assert.DoesNotContain("-accepteula", arguments);
         Assert.Empty(Directory.EnumerateFileSystemEntries(temp.Path));
     }
 
