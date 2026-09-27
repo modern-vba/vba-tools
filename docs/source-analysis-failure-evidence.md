@@ -671,3 +671,63 @@ available event and WER records do not establish the command lines or parent
 processes. This is further evidence that lexer-path failures can recur, not
 that SFC caused them or that a particular VBA input is faulty. The historical
 URI and Slice root causes and release acceptance remain open.
+
+## Fixed-input runtime and Syntax-only comparisons on 2026-09-27
+
+The branch's opt-in frozen-catalog test used the unchanged Debug
+`VbaDev.Tests.dll` (SHA-256
+`4FB241CFE4D6741274161FBD68C83DE0DB440EB29ECB3A9709C3A527A265A389`)
+and 2026-09-26 six-catalog baseline (SHA-256
+`5C86F4E457BE9E45E840743E6C2062C30C0E453B22107847DAAFA013204CEEB2`).
+Each fresh testhost verified the same 35 raw-UTF-16 source fingerprints.
+The first local .NET 10.0.8 host completed ten zero-diagnostic analyses.
+The next host terminated with native `0xC0000005` before a completed trial;
+its .NET event stack reached `VbaPositionSyntaxIndex.GetEnclosingBlocks`.
+An independent live-TypeLib host terminated with native `0xC0000005`
+at `VbaSourceText.get_Text` during semantic re-lexing. A further
+COM-free host completed eight analyses and failed on trial nine with a
+managed `NullReferenceException` in `LexerState.Slice`; its failure-only
+receipt found the source text and position non-null, with a 68-code-unit
+source and unchanged source-tree fingerprint. These are three distinct
+manifestations, **not** reproductions of the historical `System.Uri`
+failure. The local TRX files are under ignored
+`.tmp/diagnostic-verification/issue-415-step2-20260927`; no dump was
+collected for these runs.
+
+To compare runtimes without rebuilding the test binary or changing the
+VSTest runner DLL, the same `vstest.console.dll` was invoked directly
+under each host. Module inspection of the running `testhost.exe`
+confirmed `coreclr.dll` 10.0.8 from the locally installed SDK or
+10.0.12 from `C:\Program Files\dotnet`, respectively. Five fresh hosts
+per runtime completed ten zero-diagnostic frozen-catalog analyses each
+(50/50 under each runtime). The direct-runner cohorts cannot be merged
+with the earlier `dotnet test` cohort because the launch path changed;
+the successes do not demonstrate that either runtime is safe.
+
+An ignored, standalone Syntax-only control then re-read and rehashed
+the original 35 sources before each parse and queried `GetPositionSyntax`
+at each argument-list callee. Completed trials yielded 17,036 position
+queries and the same 27,707 enclosing-block count. Under .NET 10.0.8,
+two fresh processes completed ten trials each; the third terminated
+before its first completed trial with native `0xC0000005` at
+`LexerState.get_Position` during `ParseModule`. Under .NET 10.0.12,
+one fresh process completed ten trials; the second completed three and
+then exited after a managed `NullReferenceException` at
+`LexerState.Slice` during `ParseModule`. The latter's .NET Runtime
+event 1026 names the managed exception, while Application Error 1000
+records `0xC0000005`; neither record alone identifies the first corrupt
+state. The same current Debug Syntax DLL was used in both hosts (SHA-256
+`8FE3CDCDA24305E21562E29B7975857E87187234E6381E4747FFB438A06E2AAC`).
+Afterward all 35 source hashes still matched, and no Excel process was
+running. This control excludes TypeLib acquisition, semantic analysis,
+Excel, and xUnit as necessary conditions for these lexer-path failures;
+it does **not** prove a common cause with the original URI exception.
+Upgrading only to .NET 10.0.12 is not a validated correction.
+
+A local artifact audit found no retained executable matching the
+historical published CLI SHA-256
+`AD2C508061ADFFED05DBFDE7A63AE281C9207F9122ECC6874024AE9B5707FD03`.
+The 2026-09-26 frozen six-catalog baseline is not the 2026-09-11 catalog
+state, and the historical failing URI was never captured. Thus an exact
+original-binary/input replay cannot be claimed. The URI-root-cause,
+actual failure-boundary regression, and release gate remain unresolved.
