@@ -646,3 +646,28 @@ successful repair of its detected set did not establish that this later
 SFC manifest parse would succeed. Neither outcome proves a cause for the
 VBA-analysis failures, and this investigation did not initiate the system
 repair or collect a new dump.
+
+The maintainer then reran elevated `sfc /verifyonly`. It reached 100% and
+reported no integrity violations. CBS records the verification from 08:34:23
+through 08:38:01, ending with `Repairing 0 components` and `Repair complete`.
+The prior `Power-Policy-Definitions` manifest error, XML parse error, and
+`bthmodem.sys` corruption entry do not recur in this verification interval.
+This supports that the protected-file integrity check passed on this run; it
+does not establish that the earlier manifest failure's cause is understood.
+
+The verification interval was not crash-free: Application Error event 1000
+records `TiWorker.exe` crashes at 08:35:49 (`ntdll.dll`, `0xC0000409`) and
+08:36:23 (`wcp.dll`, `0xC0000005`), and CBS records worker relaunches. The
+08:35:46 and 08:36:08 verification attempts stopped mid-batch; the 08:37:01
+attempt completed all batches. The successful final SFC result therefore does
+not establish servicing-stack or machine stability.
+
+Two separate `dotnet.exe` application crashes occurred nearby. A .NET Runtime
+1025 event at 08:37:01 records a `FailFast` stack ending in
+`VbaLexer.CreateToken`; a 1026 event at 08:38:51 records an unhandled
+`AccessViolationException` in `VbaLexer`/`VbaProjectSourceAnalysis.Analyze`.
+Application Error 1000 events match their respective process IDs. The
+available event and WER records do not establish the command lines or parent
+processes. This is further evidence that lexer-path failures can recur, not
+that SFC caused them or that a particular VBA input is faulty. The historical
+URI and Slice root causes and release acceptance remain open.
