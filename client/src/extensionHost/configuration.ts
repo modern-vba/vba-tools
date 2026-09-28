@@ -1,5 +1,5 @@
 export const minimumSupportedVscodeVersion = '1.137.0';
-const extensionHostTestVscodeVersion = '1.138.0';
+const extensionHostTestVscodeVersion = '1.139.1';
 
 export interface ExtensionHostRuntimeSelection {
   readonly version: string | undefined;
