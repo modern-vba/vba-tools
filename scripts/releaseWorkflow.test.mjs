@@ -646,6 +646,22 @@ test('release workflow pins secretless least-privilege publish and fail-closed r
   assert.ok(checkoutSteps.every((step) => step.with?.['persist-credentials'] === false));
   assert.ok(Object.values(workflow.jobs).every((job) => job['runs-on'] === 'windows-2025'));
 
+  for (const job of Object.values(workflow.jobs)) {
+    const nodeSetupIndex = job.steps.findIndex(
+      (step) => step.uses?.startsWith('actions/setup-node@')
+    );
+    if (nodeSetupIndex === -1) {
+      continue;
+    }
+    const npmSetupStep = job.steps[nodeSetupIndex + 1];
+    assert.equal(npmSetupStep.shell, 'pwsh');
+    assert.equal(
+      npmSetupStep.run,
+      'npm install --global (node -p "require(\'./package.json\').packageManager")'
+    );
+    assert.ok(job.steps.findIndex((step) => step.run === 'npm ci --ignore-scripts') > nodeSetupIndex + 1);
+  }
+
   const validateTagStep = workflow.jobs.validate.steps.find(
     (step) => step.name === 'Resolve and validate the annotated tag'
   );

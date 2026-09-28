@@ -41,6 +41,9 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Install pinned npm
+        shell: pwsh
+        run: npm install --global (node -p "require('./package.json').packageManager")
       - name: Restore locked validation dependencies
         run: npm ci --ignore-scripts
       - name: Verify release protections remain active
@@ -85,6 +88,9 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Install pinned npm
+        shell: pwsh
+        run: npm install --global (node -p "require('./package.json').packageManager")
       - name: Set up .NET
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
       - name: Restore locked JavaScript dependencies
@@ -125,6 +131,9 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Install pinned npm
+        shell: pwsh
+        run: npm install --global (node -p "require('./package.json').packageManager")
       - name: Restore locked validation dependencies
         run: npm ci --ignore-scripts
       - name: Download the exact build artifact
@@ -190,6 +199,9 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Install pinned npm
+        shell: pwsh
+        run: npm install --global (node -p "require('./package.json').packageManager")
       - name: Restore locked validation dependencies
         run: npm ci --ignore-scripts
       - name: Download the build-once release set
@@ -342,6 +354,9 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Install pinned npm
+        shell: pwsh
+        run: npm install --global (node -p "require('./package.json').packageManager")
       - name: Restore locked validation dependencies
         run: npm ci --ignore-scripts
       - name: Download and validate the existing draft snapshot
@@ -417,6 +432,9 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Install pinned npm
+        shell: pwsh
+        run: npm install --global (node -p "require('./package.json').packageManager")
       - name: Restore locked publishing dependencies
         run: npm ci --ignore-scripts
       - name: Download the immutable current-run release set
@@ -613,6 +631,9 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Install pinned npm
+        shell: pwsh
+        run: npm install --global (node -p "require('./package.json').packageManager")
       - name: Restore locked validation dependencies
         run: npm ci --ignore-scripts
       - name: Recheck remote draft bytes metadata provenance and Marketplace visibility
