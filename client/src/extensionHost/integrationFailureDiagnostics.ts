@@ -1,20 +1,67 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { appendFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { requestStdinCancellation, type StartVbaDevProcess } from '../devtoolCommand';
+import { captureSnapshotInputEvidence } from './snapshotInputEvidence';
 
 const sections = ['events', 'notifications', 'process', 'stdout', 'stderr', 'testOutput', 'outputChannel'] as const;
 type DiagnosticSection = typeof sections[number];
 const tailLimit = 2048;
+type NativeTestBuildDumpTarget = 'invalid' | 'corrected';
+
+export interface NativeTestBuildDumpOptions {
+  readonly dumpRoot: string;
+  readonly target: NativeTestBuildDumpTarget;
+}
+
+type SpawnProcess = (executablePath: string, args: string[], options: SpawnOptionsWithoutStdio) => ChildProcessWithoutNullStreams;
 
 /** Seven 2,048-character tails keep failure-only fixture evidence below 16,384 characters. */
 export class IntegrationFailureDiagnostics {
   private phase = 'setup';
   private readonly tails = new Map<DiagnosticSection, { text: string; characters: number }>();
+  private crashDumpArmed = false;
+
+  constructor(
+    private readonly dumpOptions?: NativeTestBuildDumpOptions,
+    private readonly spawnProcess: SpawnProcess = spawn
+  ) {
+    if (dumpOptions !== undefined && (!path.isAbsolute(dumpOptions.dumpRoot)
+        || (process.platform === 'win32' && path.win32.normalize(dumpOptions.dumpRoot).startsWith('\\\\')))) {
+      throw new Error('The native Test build dump root must be an absolute local directory.');
+    }
+  }
 
   // Match the production Node adapter, observing copies without delaying consumers.
   readonly startProcess: StartVbaDevProcess = (executablePath, args) => {
-    const child = spawn(executablePath, [...args], { windowsHide: true });
-    this.record('process', `start: ${path.basename(executablePath)} pid=${child.pid ?? 'unavailable'}; close not yet observed\n`);
+    const targetPhase = this.dumpOptions?.target === 'invalid'
+      ? 'Explorer invalid unsaved source' : 'Explorer corrected unsaved source';
+    const captureDump = this.dumpOptions !== undefined && !this.crashDumpArmed
+      && this.phase === targetPhase && path.win32.basename(executablePath).toLowerCase() === 'vba-dev.exe'
+      && args[0] === 'test' && args.includes('--source-snapshot');
+    if (captureDump) this.crashDumpArmed = true;
+    const invocationId = captureDump ? randomUUID() : undefined;
+    const dumpName = invocationId === undefined ? undefined
+      : path.join(this.dumpOptions!.dumpRoot, `vba-dev-${invocationId}-%p.dmp`);
+    const metadataPath = invocationId === undefined ? undefined
+      : path.join(this.dumpOptions!.dumpRoot, `vba-dev-${invocationId}.jsonl`);
+    const snapshotArg = args.indexOf('--source-snapshot');
+    const sourceSnapshot = snapshotArg >= 0 ? args[snapshotArg + 1] : undefined;
+    const snapshotEvidence = captureDump ? captureSnapshotInputEvidence(sourceSnapshot) : undefined;
+    const child = this.spawnProcess(executablePath, [...args], dumpName === undefined
+      ? { windowsHide: true }
+      : { windowsHide: true, env: { ...process.env,
+        DOTNET_DbgEnableMiniDump: '1', DOTNET_DbgMiniDumpType: '4', DOTNET_DbgMiniDumpName: dumpName } });
+    if (metadataPath !== undefined) {
+      this.appendMetadata(metadataPath, { event: 'start', phase: this.phase, executablePath,
+        args, sourceSnapshot, snapshotEvidence, pid: child.pid ?? null, dumpName });
+      child.once('close', (exitCode, signal) => {
+        this.appendMetadata(metadataPath, { event: 'close', exitCode, signal });
+      });
+    }
+    this.record('process', `start: ${JSON.stringify({ executablePath, args, pid: child.pid ?? null,
+      dumpName: dumpName ?? null })}; close not yet observed\n`);
     return {
       started: child.pid !== undefined,
       onStdout: listener => {
@@ -57,6 +104,14 @@ export class IntegrationFailureDiagnostics {
   beginPhase(phase: string): void {
     this.phase = phase.slice(0, 128);
     this.tails.clear();
+  }
+
+  private appendMetadata(file: string, record: object): void {
+    try {
+      appendFileSync(file, JSON.stringify(record) + '\n', 'utf8');
+    } catch (error) {
+      this.record('process', `local dump metadata unavailable: ${String(error)}\n`);
+    }
   }
 
   record(section: DiagnosticSection, value: string): void {

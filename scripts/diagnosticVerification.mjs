@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const maxStreamBytes = 8 * 1024 * 1024;
+const windowsExcelReleaseGateScript = 'verify:release:windows-excel';
 
 // These commands build their own prerequisites. Unlike verify:release, this
 // diagnostic profile continues to the next independent command after failure.
@@ -51,15 +52,26 @@ export async function runDiagnosticVerification(options = {}) {
       !== (process.platform === 'win32' ? root.toLowerCase() : root)) {
     throw new Error('Diagnostic verification requires an unlinked local checkout path.');
   }
-  const scripts = options.scripts ?? [
+  if (options.releaseGateWindowsExcel && (options.includeWindowsExcel || options.scripts !== undefined)) {
+    throw new Error('The standard Windows Excel release gate cannot be combined with a diagnostic profile.');
+  }
+  if (options.nativeTestBuildDumpTarget !== undefined
+      && (!options.releaseGateWindowsExcel || !['invalid', 'corrected'].includes(options.nativeTestBuildDumpTarget))) {
+    throw new Error('A native Test build dump target requires the release gate and invalid or corrected.');
+  }
+  const scripts = options.releaseGateWindowsExcel ? [windowsExcelReleaseGateScript] : (options.scripts ?? [
     ...diagnosticReleaseScripts,
     ...(options.includeWindowsExcel ? windowsExcelScripts : [])
-  ];
-  const knownScripts = new Set([...diagnosticReleaseScripts, ...windowsExcelScripts]);
+  ]);
+  const knownScripts = new Set([
+    ...diagnosticReleaseScripts,
+    ...windowsExcelScripts,
+    ...(options.releaseGateWindowsExcel ? [windowsExcelReleaseGateScript] : [])
+  ]);
   if (scripts.length === 0 || scripts.some((script) => !knownScripts.has(script))) {
     throw new Error('Diagnostic verification requires known nonempty release-stage scripts.');
   }
-  if (scripts.some((script) => windowsExcelScripts.includes(script))
+  if (scripts.some((script) => windowsExcelScripts.includes(script) || script === windowsExcelReleaseGateScript)
       && (options.hostPlatform ?? process.platform) !== 'win32') {
     throw new Error('Windows Excel diagnostic profile requires Windows.');
   }
@@ -84,7 +96,8 @@ export async function runDiagnosticVerification(options = {}) {
     kind: 'vba-tools-diagnostic-verification',
     schemaVersion: 1,
     releaseGate: false,
-    profile: scripts.some((script) => windowsExcelScripts.includes(script)) ? 'windows-excel' : 'non-excel',
+    profile: options.releaseGateWindowsExcel ? 'release-gate-windows-excel'
+      : scripts.some((script) => windowsExcelScripts.includes(script)) ? 'windows-excel' : 'non-excel',
     startedUtc: started,
     finishedUtc: null,
     complete: false,
@@ -100,6 +113,17 @@ export async function runDiagnosticVerification(options = {}) {
     VBA_TOOLS_DIAGNOSTIC_RUN_ROOT: runRoot,
     VBA_TOOLS_DIAGNOSTIC_RUN_ID: runId
   };
+  delete env.VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET;
+  if (options.nativeTestBuildDumpTarget !== undefined) {
+    env.VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET = options.nativeTestBuildDumpTarget;
+  }
+  if (options.releaseGateWindowsExcel) {
+    for (const key of Object.keys(env)) {
+      if (/^(?:DOTNET|COMPlus)_Dbg(?:EnableMiniDump|MiniDumpType|MiniDumpName)$/i.test(key)) {
+        delete env[key];
+      }
+    }
+  }
   for (const [index, script] of scripts.entries()) {
     const prefix = `${String(index + 1).padStart(2, '0')}-${script.replace(/[^a-z0-9._-]/gi, '-')}`;
     const stdoutFile = `${prefix}.stdout.log`;
@@ -185,6 +209,12 @@ export async function runDiagnosticVerification(options = {}) {
 
   manifest.complete = true;
   manifest.finishedUtc = new Date().toISOString();
+  manifest.releaseGate = options.releaseGateWindowsExcel === true
+    && manifest.stages.length === 1
+    && manifest.stages[0].script === windowsExcelReleaseGateScript
+    && manifest.stages[0].status === 'passed'
+    && manifest.stages[0].exitCode === 0
+    && manifest.stages[0].signal === null;
   await saveManifest(runRoot, manifest);
   return {
     runRoot,
@@ -446,16 +476,53 @@ function resolveNpmCli(env) {
   return candidate;
 }
 
+export function parseDiagnosticVerificationArgs(args) {
+  const options = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--windows-excel' || arg === '--release-gate-windows-excel') {
+      const key = arg === '--windows-excel' ? 'includeWindowsExcel' : 'releaseGateWindowsExcel';
+      if (options[key]) throw new Error(`The ${arg} option is duplicate.`);
+      options[key] = true;
+      continue;
+    }
+    if (arg === '--native-test-build-dump-target') {
+      if (options.nativeTestBuildDumpTarget !== undefined) {
+        throw new Error('The native Test build dump target option is duplicate.');
+      }
+      const target = args[++index];
+      if (target !== 'invalid' && target !== 'corrected') {
+        throw new Error('The native Test build dump target must be invalid or corrected.');
+      }
+      options.nativeTestBuildDumpTarget = target;
+      continue;
+    }
+    throw new Error(`Unknown diagnostic verification option: ${arg}`);
+  }
+  if (options.releaseGateWindowsExcel && options.includeWindowsExcel) {
+    throw new Error('The standard Windows Excel release gate cannot be combined with a diagnostic profile.');
+  }
+  if (options.nativeTestBuildDumpTarget !== undefined && !options.releaseGateWindowsExcel) {
+    throw new Error('A native Test build dump target requires --release-gate-windows-excel.');
+  }
+  return options;
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2);
-  if (args.some((arg) => arg !== '--windows-excel') || args.length > 1) {
-    console.error('Usage: node scripts/diagnosticVerification.mjs [--windows-excel]');
+  let options;
+  try {
+    options = parseDiagnosticVerificationArgs(process.argv.slice(2));
+  } catch (error) {
+    console.error(`Usage: node scripts/diagnosticVerification.mjs [--windows-excel | --release-gate-windows-excel [--native-test-build-dump-target invalid|corrected]]\n${boundedError(error)}`);
     process.exitCode = 2;
-  } else {
+  }
+  if (options) {
     try {
-      const result = await runDiagnosticVerification({ includeWindowsExcel: args.includes('--windows-excel') });
+      const result = await runDiagnosticVerification(options);
       console.error(`Diagnostic evidence saved: ${result.runRoot}`);
-      console.error('This diagnostic profile is not a release gate.');
+      if (!options.releaseGateWindowsExcel) {
+        console.error('This diagnostic profile is not a release gate.');
+      }
       process.exitCode = result.exitCode;
     } catch (error) {
       console.error(`Diagnostic verification could not complete: ${boundedError(error)}`);

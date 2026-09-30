@@ -1,4 +1,4 @@
-import { cp, lstat, mkdir, mkdtemp } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, statfs } from 'node:fs/promises';
 import * as path from 'node:path';
 
 export interface ExtensionHostLogProfile {
@@ -7,6 +7,7 @@ export interface ExtensionHostLogProfile {
 }
 
 const diagnosticRunName = /^run-\d{8}T\d{9}Z-[0-9a-f]{16}$/;
+const minimumFullDumpFreeBytes = 8n * 1024n * 1024n * 1024n;
 
 export function resolveExtensionHostFailureLogRoot(
   extensionDevelopmentPath: string,
@@ -19,6 +20,33 @@ export function resolveExtensionHostFailureLogRoot(
     return path.join(runRoot, 'extension-host');
   }
   return path.join(extensionDevelopmentPath, '.tmp', 'extension-host-failures');
+}
+
+export async function prepareNativeTestBuildDumpRoot(
+  extensionDevelopmentPath: string,
+  env: NodeJS.ProcessEnv = process.env,
+  readAvailableBytes: (directory: string) => Promise<bigint> = async directory => {
+    const storage = await statfs(directory, { bigint: true });
+    return storage.bavail * storage.bsize;
+  }
+): Promise<string> {
+  const runRoot = env.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT;
+  const runId = env.VBA_TOOLS_DIAGNOSTIC_RUN_ID;
+  const evidenceRoot = resolveExtensionHostFailureLogRoot(extensionDevelopmentPath, env);
+  if (runRoot === undefined || runId !== path.basename(runRoot)
+      || evidenceRoot !== path.join(runRoot, 'extension-host')) {
+    throw new Error('A native Test build dump requires a valid existing local diagnostic run root and matching ID.');
+  }
+  const entry = await lstat(runRoot).catch(() => undefined);
+  if (!entry?.isDirectory() || entry.isSymbolicLink()) {
+    throw new Error('A native Test build dump requires a valid existing local diagnostic run root and matching ID.');
+  }
+  const dumpRoot = path.join(evidenceRoot, 'native-test-build-dumps');
+  await ensureUnlinkedEvidenceDirectory(dumpRoot);
+  if (await readAvailableBytes(dumpRoot) < minimumFullDumpFreeBytes) {
+    throw new Error('A native Test build full dump requires at least 8 GiB of free space.');
+  }
+  return dumpRoot;
 }
 
 export async function saveExtensionHostFailureLogs(
@@ -58,7 +86,7 @@ export async function saveExtensionHostFailureLogs(
   return destination;
 }
 
-async function ensureUnlinkedEvidenceDirectory(directory: string): Promise<void> {
+export async function ensureUnlinkedEvidenceDirectory(directory: string): Promise<void> {
   const fullPath = path.resolve(directory);
   if (process.platform === 'win32' && path.win32.normalize(fullPath).startsWith('\\\\')) {
     throw new Error('Refusing linked diagnostic evidence directory: network or device path');

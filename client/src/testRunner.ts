@@ -55,6 +55,7 @@ import './extensionHost/testFixtureCleanup.test';
 import './extensionHost/restrictedModeExtensionHost.test';
 import './extensionHost/sourceProvenance.test';
 import './extensionHost/integrationFailureDiagnostics.test';
+import './extensionHost/snapshotInputEvidence.test';
 import './extensionHost/renameFailureDiagnostics.test';
 import './nativeLineBreakText.test';
 import './intrinsicHostEventCatalogLifecycle.test';

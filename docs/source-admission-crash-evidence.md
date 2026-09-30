@@ -193,3 +193,47 @@ comparison was unavailable. No obvious profiler module or heap-verification
 error was found. These checks weaken a stale-binary or simple field-race
 explanation but do not exclude transient stack/code corruption, runtime state,
 or other process-environment effects.
+
+## Current-Syntax COM-free replay on 2026-09-30
+
+The same three fixed lines, token oracle, and .NET 10.0.12 runtime were replayed
+against current Syntax assembly SHA-256
+`2BDB96A902DA7E4F3B335D4C08C2C1B0FFF305FB9585289F65A2903D83919C60`.
+The diagnostic executable SHA-256 was
+`F4F848C7173BD3446100AEAE32C65EB0D8C38294E2809020C0E47298E00896AE`;
+the three input UTF-8 SHA-256 values were
+`0E859B90703B3ADC3B3F63328B2C2A71CA2527722CFB585B79DEF8521B6B4E4B`,
+`2B13873395B6CB313C571B39F33D7F39689392FA73A14193A29D6F32190A808A`,
+and `EAE681E6053EA0BC819D86CCAB5A8CBF9D75EB40522E97246607A6CB0EC56FFD`.
+One unmonitored fresh process raised a `NullReferenceException` in
+`LexerState.IsAtEnd` after 596,445 completed iterations. Ten fresh processes
+under a first-chance ProcDump monitor each completed five million iterations;
+their success is not a correction, because capture changes timing. With only
+the per-child .NET full-dump crash variables enabled, two fresh processes
+completed five million iterations and the third raised native `0xC0000005`
+after at least 1.6 million completed iterations. The 116,732,734-byte local
+full dump has SHA-256
+`151006676A5E6FA00370C38041707030E9DA8D2F3F66F9E723F89FFAF9251073`.
+No Excel, COM, TypeLib, or extension host was loaded in this replay.
+
+The dump's original exception record reports a write access violation at
+`0x7ffbebe0a239`, targeting `0x44fffffef4`. This is the `mov [rbp-0x12c], eax`
+local-variable store in `VbaLexer.Tokenize`, just after the call to
+`ReadCandidateLength`. The saved `RBP=0x4500000020` calculates exactly that
+invalid target; saved `RSP=0x456078d920` remains in the stack. The inspected
+lexer state, source text, and 128-character input were valid; heap verification
+checked 121,843 objects with zero errors. Both JIT methods were reported as
+`MinOptJitted`. The bad frame pointer's origin is unknown: these observations
+do not isolate product code, JIT/runtime, CPU, or another source of transient
+stack/register corruption.
+
+For a one-factor comparison, `DOTNET_TieredCompilation=0` was applied only to
+the fresh minimizer child while binary, runtime, input, and five-million-call
+limit stayed fixed. Seven attempts completed; attempt eight raised another
+`0xC0000005` after at least 4.1 million calls, this time with the managed
+stack in `LexerState.get_Source` / `get_IsAtEnd` / `Advance` /
+`ReadIdentifierOrKeyword`. Disabling tiered compilation is therefore **not**
+a demonstrated workaround. The first full dump and WER event records remain
+local; no dump or source content is committed or uploaded. This is a related
+COM-free lexer failure, not proof of the original published CLI fault's cause
+or of Issue #415's historical `System.Uri` exception.

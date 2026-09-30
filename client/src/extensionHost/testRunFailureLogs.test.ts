@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
 import { runWithExtensionHostCleanup } from './testRunCleanup';
-import { resolveExtensionHostFailureLogRoot, saveExtensionHostFailureLogs } from './testRunFailureLogs';
+import { prepareNativeTestBuildDumpRoot, resolveExtensionHostFailureLogRoot,
+  saveExtensionHostFailureLogs } from './testRunFailureLogs';
 
 test('Extension Host failure logs join a validated diagnostic verification run', () => {
   const extensionRoot = path.resolve('extension');
@@ -21,6 +22,60 @@ test('Extension Host failure logs join a validated diagnostic verification run',
       VBA_TOOLS_DIAGNOSTIC_RUN_ROOT: '//invalid.example/share/run-20260925T101530123Z-0123456789abcdef'
     }), path.join(extensionRoot, '.tmp', 'extension-host-failures'));
   }
+});
+
+test('native Test build dump opt-in rejects an invalid diagnostic run root', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'vba-tools-invalid-dump-root-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await assert.rejects(prepareNativeTestBuildDumpRoot(root, {
+    VBA_TOOLS_DIAGNOSTIC_RUN_ROOT: path.join(root, 'not-a-run')
+  }, async () => 100n * 1024n * 1024n * 1024n), /valid existing local diagnostic run root/);
+});
+
+test('native Test build dump opt-in uses an existing diagnostic run root with enough space', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'vba-tools-valid-dump-root-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const runRoot = path.join(root, 'run-20260930T150700123Z-0123456789abcdef');
+  await mkdir(runRoot);
+  const prepared = await prepareNativeTestBuildDumpRoot(root, {
+    VBA_TOOLS_DIAGNOSTIC_RUN_ROOT: runRoot,
+    VBA_TOOLS_DIAGNOSTIC_RUN_ID: path.basename(runRoot)
+  }, async () => 9n * 1024n * 1024n * 1024n);
+  assert.equal(prepared, path.join(runRoot, 'extension-host', 'native-test-build-dumps'));
+  assert.equal((await fs.stat(prepared)).isDirectory(), true);
+});
+
+test('native Test build dump opt-in rejects insufficient local free space', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'vba-tools-small-dump-root-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const runRoot = path.join(root, 'run-20260930T150700123Z-0123456789abcdef');
+  await mkdir(runRoot);
+  await assert.rejects(prepareNativeTestBuildDumpRoot(root, {
+    VBA_TOOLS_DIAGNOSTIC_RUN_ROOT: runRoot,
+    VBA_TOOLS_DIAGNOSTIC_RUN_ID: path.basename(runRoot)
+  }, async () => 0n),
+    /at least 8 GiB of free space/);
+});
+
+test('native Test build dump opt-in fails closed without a run ID or through a linked parent', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'vba-tools-linked-dump-root-'));
+  const outside = await mkdtemp(path.join(tmpdir(), 'vba-tools-linked-dump-outside-'));
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  });
+  const runName = 'run-20260930T150700123Z-0123456789abcdef';
+  await mkdir(path.join(outside, runName));
+  const linked = path.join(root, 'linked');
+  await symlink(outside, linked, 'junction');
+  const runRoot = path.join(linked, runName);
+  await assert.rejects(prepareNativeTestBuildDumpRoot(root, {
+    VBA_TOOLS_DIAGNOSTIC_RUN_ROOT: runRoot
+  }, async () => 100n * 1024n * 1024n * 1024n), /matching ID/);
+  await assert.rejects(prepareNativeTestBuildDumpRoot(root, {
+    VBA_TOOLS_DIAGNOSTIC_RUN_ROOT: runRoot,
+    VBA_TOOLS_DIAGNOSTIC_RUN_ID: runName
+  }, async () => 100n * 1024n * 1024n * 1024n), /linked diagnostic evidence directory/);
 });
 
 test('Extension Host failure capture retains only isolated profile logs after cleanup', async t => {

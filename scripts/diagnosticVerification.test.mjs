@@ -7,6 +7,7 @@ import path from 'node:path';
 
 import {
   diagnosticReleaseScripts,
+  parseDiagnosticVerificationArgs,
   runDiagnosticVerification
 } from './diagnosticVerification.mjs';
 
@@ -42,6 +43,182 @@ test('diagnostic verification continues independent stages after a failure and r
     assert.equal(await fs.readFile(path.join(result.runRoot, manifest.stages[1].stderrFile), 'utf8'),
       'test:devtool stderr');
   } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('explicit release-gate mode runs the exact standard Windows Excel script once with a local run identity', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-gate-test-'));
+  try {
+    const observed = [];
+    const result = await runDiagnosticVerification({
+      root,
+      releaseGateWindowsExcel: true,
+      echo: false,
+      getIdentity: async () => ({ commit: 'a'.repeat(40), dirtyPaths: [] }),
+      execute: async ({ script, env, onStdout }) => {
+        observed.push({ script, env });
+        onStdout(Buffer.from('standard gate passed'));
+        return { exitCode: 0, signal: null, pid: 4321 };
+      }
+    });
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(observed.map(({ script }) => script), ['verify:release:windows-excel']);
+    assert.equal(observed[0].env.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT, result.runRoot);
+    assert.equal(observed[0].env.VBA_TOOLS_DIAGNOSTIC_RUN_ID, path.basename(result.runRoot));
+    assert.equal(observed[0].env.VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET, undefined);
+    assert.match(path.basename(result.runRoot), /^run-\d{8}T\d{9}Z-[0-9a-f]{16}$/);
+    assert.equal(result.manifest.profile, 'release-gate-windows-excel');
+    assert.equal(result.manifest.releaseGate, true);
+    assert.deepEqual(result.manifest.plannedScripts, ['verify:release:windows-excel']);
+    assert.equal(result.manifest.stages[0].command, 'npm run verify:release:windows-excel');
+    assert.equal(result.manifest.stages[0].launcherPid, 4321);
+    assert.equal(await fs.readFile(path.join(result.runRoot, result.manifest.stages[0].stdoutFile), 'utf8'),
+      'standard gate passed');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a failed standard Windows Excel release gate retains bounded evidence without a release-gate success claim', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-gate-test-'));
+  try {
+    const result = await runDiagnosticVerification({
+      root,
+      releaseGateWindowsExcel: true,
+      maxLogBytes: 8,
+      echo: false,
+      getIdentity: async () => ({ commit: 'b'.repeat(40), dirtyPaths: [] }),
+      execute: async ({ onStderr }) => {
+        onStderr(Buffer.from('1234567890FAIL'));
+        return { exitCode: 17, signal: null };
+      }
+    });
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.manifest.releaseGate, false);
+    assert.equal(result.manifest.complete, true);
+    assert.deepEqual(result.manifest.stages.map((stage) => stage.status), ['failed']);
+    assert.equal(result.manifest.stages[0].stderrOmittedBytes, 6);
+    assert.equal(await fs.readFile(path.join(result.runRoot, result.manifest.stages[0].stderrFile), 'utf8'),
+      '12\n...[omitted 6 bytes]...\n90FAIL');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('the standard Windows Excel gate cannot be smuggled into a diagnostic script list', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-gate-test-'));
+  try {
+    await assert.rejects(runDiagnosticVerification({
+      root,
+      scripts: ['verify:release:windows-excel'],
+      getIdentity: async () => ({ commit: 'b'.repeat(40), dirtyPaths: [] }),
+      execute: async () => { throw new Error('must not run'); }
+    }), /known nonempty release-stage scripts/);
+    assert.equal(await fs.stat(path.join(root, '.tmp')).catch(() => null), null);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI parsing makes standard gate and exact native Test build dump target explicit', () => {
+  assert.deepEqual(parseDiagnosticVerificationArgs([]), {});
+  assert.deepEqual(parseDiagnosticVerificationArgs(['--windows-excel']), { includeWindowsExcel: true });
+  assert.deepEqual(parseDiagnosticVerificationArgs(['--release-gate-windows-excel']),
+    { releaseGateWindowsExcel: true });
+  assert.deepEqual(parseDiagnosticVerificationArgs([
+    '--release-gate-windows-excel', '--native-test-build-dump-target', 'corrected'
+  ]), { releaseGateWindowsExcel: true, nativeTestBuildDumpTarget: 'corrected' });
+  assert.throws(() => parseDiagnosticVerificationArgs(['--native-test-build-dump-target', 'invalid']),
+    /requires --release-gate-windows-excel/);
+  assert.throws(() => parseDiagnosticVerificationArgs([
+    '--release-gate-windows-excel', '--native-test-build-dump-target', 'other'
+  ]), /invalid or corrected/);
+  assert.throws(() => parseDiagnosticVerificationArgs(['--release-gate-windows-excel', '--windows-excel']),
+    /cannot be combined/);
+  assert.throws(() => parseDiagnosticVerificationArgs(['--release-gate-windows-excel', '--release-gate-windows-excel']),
+    /duplicate/);
+  assert.throws(() => parseDiagnosticVerificationArgs(['--unknown']), /Unknown diagnostic verification option/);
+});
+
+test('release-gate mode opts only its npm child into the selected native Test build dump phase', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-gate-test-'));
+  try {
+    let childEnv;
+    const previousTarget = process.env.VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET;
+    const result = await runDiagnosticVerification({
+      root,
+      releaseGateWindowsExcel: true,
+      nativeTestBuildDumpTarget: 'invalid',
+      echo: false,
+      getIdentity: async () => ({ commit: 'c'.repeat(40), dirtyPaths: [] }),
+      execute: async ({ env }) => {
+        childEnv = env;
+        return { exitCode: 0, signal: null };
+      }
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(childEnv.VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET, 'invalid');
+    assert.equal(childEnv.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT, result.runRoot);
+    assert.equal(childEnv.VBA_TOOLS_DIAGNOSTIC_RUN_ID, path.basename(result.runRoot));
+    assert.equal(process.env.VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET, previousTarget);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('diagnostic profiles do not inherit an ambient native Test build dump target', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-'));
+  const previousTarget = process.env.VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET;
+  process.env.VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET = 'invalid';
+  try {
+    let childTarget;
+    const result = await runDiagnosticVerification({
+      root,
+      scripts: ['test:extension-host'],
+      echo: false,
+      getIdentity: async () => ({ commit: 'd'.repeat(40), dirtyPaths: [] }),
+      execute: async ({ env }) => {
+        childTarget = env.VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET;
+        return { exitCode: 0, signal: null };
+      }
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(childTarget, undefined);
+    assert.equal(result.manifest.releaseGate, false);
+  } finally {
+    if (previousTarget === undefined) delete process.env.VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET;
+    else process.env.VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET = previousTarget;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('release-gate capture does not propagate ambient .NET dump controls to every test child', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-gate-test-'));
+  const names = ['DOTNET_DbgEnableMiniDump', 'DOTNET_DbgMiniDumpType', 'DOTNET_DbgMiniDumpName'];
+  const previous = new Map(names.map((name) => [name, process.env[name]]));
+  for (const name of names) process.env[name] = 'ambient-unsafe-value';
+  try {
+    let childEnv;
+    const result = await runDiagnosticVerification({
+      root,
+      releaseGateWindowsExcel: true,
+      nativeTestBuildDumpTarget: 'corrected',
+      echo: false,
+      getIdentity: async () => ({ commit: 'e'.repeat(40), dirtyPaths: [] }),
+      execute: async ({ env }) => {
+        childEnv = env;
+        return { exitCode: 0, signal: null };
+      }
+    });
+    assert.equal(result.exitCode, 0);
+    for (const name of names) assert.equal(childEnv[name], undefined, name);
+    assert.equal(childEnv.VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET, 'corrected');
+  } finally {
+    for (const name of names) {
+      if (previous.get(name) === undefined) delete process.env[name];
+      else process.env[name] = previous.get(name);
+    }
     await fs.rm(root, { recursive: true, force: true });
   }
 });

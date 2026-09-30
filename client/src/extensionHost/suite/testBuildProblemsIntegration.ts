@@ -15,12 +15,18 @@ import { VbaDevDiagnosticReporter } from '../../toolDiagnostics';
 import { runWorkbookBackedProjectCommand } from '../../projectCommand';
 import { windowsPathKey } from '../../windowsPathIdentity';
 import { IntegrationFailureDiagnostics } from '../integrationFailureDiagnostics';
-import { resolveExtensionHostFailureLogRoot } from '../testRunFailureLogs';
+import { prepareNativeTestBuildDumpRoot, resolveExtensionHostFailureLogRoot } from '../testRunFailureLogs';
 
 export async function runTestBuildProblemsIntegrationTests(): Promise<void> {
   const parent = process.env.VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT;
   assert.ok(parent);
   const extensionRoot = path.resolve(__dirname, '..', '..', '..', '..');
+  const dumpTarget = process.env.VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET;
+  if (dumpTarget !== undefined && dumpTarget !== 'invalid' && dumpTarget !== 'corrected') {
+    throw new Error('VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET must be invalid or corrected.');
+  }
+  const dumpRoot = dumpTarget === undefined ? undefined
+    : await prepareNativeTestBuildDumpRoot(extensionRoot);
   const cli = path.join(extensionRoot, 'bin/vba-dev/win-x64/vba-dev.exe');
   const fixture = await mkdtemp(path.join(parent, 'test-build-problems-'));
   const source = path.join(fixture, 'src/日本語');
@@ -40,7 +46,8 @@ export async function runTestBuildProblemsIntegrationTests(): Promise<void> {
   const oldTheme = workspace.getConfiguration('workbench').inspect<string>('colorTheme')?.workspaceValue;
   const snapshots: string[] = [];
   const events: string[] = [];
-  const diagnostics = new IntegrationFailureDiagnostics();
+  const diagnostics = new IntegrationFailureDiagnostics(dumpTarget === undefined
+    ? undefined : { dumpRoot: dumpRoot!, target: dumpTarget });
   const recordEvent = (event: string): void => {
     events.push(event);
     diagnostics.record('events', event + '\n');

@@ -26,6 +26,7 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
 
     private readonly object _gate = new();
     private readonly Process _process;
+    private readonly LspChildCrashDump.Plan? _crashDumpPlan;
     private readonly Stream _stdin;
     private readonly Stream _stdout;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -52,11 +53,13 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
 
     private LanguageServerProcessHarness(
         Process process,
+        LspChildCrashDump.Plan? crashDumpPlan,
         string cacheRoot,
         bool ownsCacheRoot,
         string? projectDiagnosticsPublicationDirectory)
     {
         _process = process;
+        _crashDumpPlan = crashDumpPlan;
         _stdin = process.StandardInput.BaseStream;
         _stdout = process.StandardOutput.BaseStream;
         _cacheRoot = cacheRoot;
@@ -130,19 +133,23 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
             environment,
             serverArguments,
             publicationDirectory);
+        var crashDumpPlan = LspChildCrashDump.TryConfigure(startInfo);
 
         try
         {
             var process = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("Failed to start the language server process.");
+            crashDumpPlan?.Started(process, "language-server-tests");
             return Task.FromResult(new LanguageServerProcessHarness(
                 process,
+                crashDumpPlan,
                 cacheRoot,
                 ownsCacheRoot,
                 publicationDirectory));
         }
         catch
         {
+            crashDumpPlan?.Dispose();
             if (ownsCacheRoot)
             {
                 TryDeleteDirectory(cacheRoot);
@@ -734,6 +741,11 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
             await IgnoreFailureAsync(_stderrPump);
             _stdin.Dispose();
             _stdout.Dispose();
+            _crashDumpPlan?.Finished(_process);
+            if (_process.HasExited)
+            {
+                _crashDumpPlan?.Dispose();
+            }
             _process.Dispose();
             _writeLock.Dispose();
             _operations.Dispose();
@@ -759,6 +771,24 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         if (_process.HasExited)
         {
             return;
+        }
+
+        if (_crashDumpPlan?.IsArmed == true)
+        {
+            // A fatal child can still be writing its full dump after LSP times out.
+            using var dumpGrace = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try
+            {
+                await _process.WaitForExitAsync(dumpGrace.Token);
+            }
+            catch (OperationCanceledException) when (dumpGrace.IsCancellationRequested)
+            {
+            }
+
+            if (_process.HasExited)
+            {
+                return;
+            }
         }
 
         if (_initialized && !_shutdownRequested)
