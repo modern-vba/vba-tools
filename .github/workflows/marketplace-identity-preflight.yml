@@ -1,0 +1,65 @@
+name: Temporary Marketplace Contributor preflight
+
+on:
+  push:
+    tags:
+      - identity-preflight-20260930-9e2195f543564c2bacce7875e05e0168
+
+permissions: {}
+
+jobs:
+  probe:
+    if: github.repository == 'modern-vba/vba-tools' && github.ref == 'refs/tags/identity-preflight-20260930-9e2195f543564c2bacce7875e05e0168'
+    runs-on: windows-2025
+    environment: marketplace-release
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Exchange the protected Environment OIDC token
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Verify Azure scope and direct Marketplace Contributor assignment
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_MANAGED_IDENTITY_RESOURCE_ID: ${{ vars.AZURE_MANAGED_IDENTITY_RESOURCE_ID }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $identityJson = az identity show --ids $env:AZURE_MANAGED_IDENTITY_RESOURCE_ID --output json
+          if ($LASTEXITCODE -ne 0) { throw 'Managed identity lookup failed.' }
+          $identity = $identityJson | ConvertFrom-Json
+          if ($identity.clientId -ne $env:AZURE_CLIENT_ID -or -not $identity.principalId) {
+            throw 'OIDC principal does not match the configured managed identity.'
+          }
+          $resourceGroupScope = $env:AZURE_MANAGED_IDENTITY_RESOURCE_ID -replace '/providers/Microsoft.ManagedIdentity/userAssignedIdentities/[^/]+$', ''
+          $azureRolesJson = az role assignment list --assignee-object-id $identity.principalId --all --output json
+          if ($LASTEXITCODE -ne 0) { throw 'Azure role lookup failed.' }
+          $azureRoles = @($azureRolesJson | ConvertFrom-Json)
+          if ($azureRoles.Count -ne 1 -or
+            $azureRoles[0].roleDefinitionName -cne 'Reader' -or
+            $azureRoles[0].scope -cne $resourceGroupScope) {
+            throw 'Managed identity must have only Reader at the release identity resource group.'
+          }
+          $profileJson = az rest --method get --url https://app.vssps.visualstudio.com/_apis/profile/profiles/me --resource 499b84ac-1321-427f-aa17-267ca6975798 --output json
+          if ($LASTEXITCODE -ne 0) { throw 'Marketplace profile lookup failed.' }
+          $profile = $profileJson | ConvertFrom-Json
+          if ($profile.id -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') {
+            throw 'Marketplace identity profile is invalid.'
+          }
+          $publisherRolesJson = az rest --method get --url 'https://marketplace.visualstudio.com/_apis/securityroles/scopes/gallery.publisher/roleassignments/resources/modern-vba?api-version=3.2-preview.1' --resource 499b84ac-1321-427f-aa17-267ca6975798 --output json
+          if ($LASTEXITCODE -ne 0) { throw 'Marketplace role lookup failed.' }
+          $publisherRoles = $publisherRolesJson | ConvertFrom-Json
+          $assignments = @($publisherRoles.value)
+          $matching = @($assignments | Where-Object { $_.identity.id -ieq $profile.id })
+          if ($publisherRoles.count -ne $assignments.Count -or
+            $matching.Count -ne 1 -or
+            $matching[0].role.name -cne 'Contributor' -or
+            $matching[0].access -cne 'assigned') {
+            throw 'The OIDC identity does not have one direct Marketplace Contributor assignment.'
+          }
+          Write-Host 'OIDC identity, Reader scope, and direct Marketplace Contributor role confirmed.'
