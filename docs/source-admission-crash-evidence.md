@@ -237,3 +237,40 @@ a demonstrated workaround. The first full dump and WER event records remain
 local; no dump or source content is committed or uploaded. This is a related
 COM-free lexer failure, not proof of the original published CLI fault's cause
 or of Issue #415's historical `System.Uri` exception.
+
+## Exact Windows Excel release-gate CLR failure on 2026-09-30
+
+The standard `npm run verify:release:windows-excel` command ran under the
+opt-in diagnostic wrapper at clean commit `701cc7335250e08ef054e051a56dceb67fd7f7f3`
+with Node 26.9.0, npm 12.1.0, .NET 10.0.12, and Windows build 26200. The
+architecture check, 1,161 extension unit tests, Extension Host integration,
+3,017 vba-dev tests, 653 debug-adapter tests, and 1,938 syntax tests passed.
+Language Server testing then finished with 2,936 passes and one failure out of
+2,937 tests. The failure was
+`Server_omits_no_op_form_source_unit_file_renames_when_the_requested_identity_matches_the_exact_basename`:
+its exact `vba-language-server.exe` child exited with native `0xC0000005`.
+The standard command stopped there, before the Windows Excel integration stage;
+this run is **not** a release-gate pass. The failing test passed when rerun alone
+without rebuilding, so its source input is not a deterministic reproducer.
+
+The child capture receipt identifies process 19564 and one completed
+125,500,117-byte local full dump (SHA-256
+`E2C8BB53D17AE14CE6935F93AF10416D5F1618B360C295D5F345EA5DC3C473C0`).
+The .NET Runtime Event 1023 reports internal CLR error `0x80131506` in
+`coreclr.dll` at module offset `0x8F12E`. Microsoft public symbols resolve
+that location to `StackTraceInfo::AppendElement+0x156`. The saved native stack
+passes through `PreStubWorker` while `VbaModuleSyntax..ctor` is entered from
+`VbaSyntaxTreeParser.ParseModule` during LSP document-open analysis. The fault
+frame's `R15` was zero; SOS verified 27,193 managed objects with zero errors.
+These observations locate the fatal runtime path, not the first cause of the
+invalid state. The full dump and stderr remain local and must not be uploaded.
+
+Six other .NET Runtime Event 1023 failures observed on this PC on the same day
+also report module offset `0x8F12E`: four in LSP children and one each in
+`csc.exe` and `dotnet.exe` (seven total including this gate failure). The
+contexts include LSP startup and document analysis as well as compilation.
+This cross-process signature weakens a single fixture-input explanation, but
+does not distinguish a CLR defect, injected component, operating-system issue,
+or hardware/transient corruption. It does not establish that the historical
+#409 CLI crash or #415 URI exception has recurred. Do not treat an in-process
+retry as a recovery from the native process termination.
