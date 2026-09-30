@@ -218,6 +218,12 @@ that identity, requires its only Azure role assignment to be `Reader` at the
 `modern-vba-release-identities` resource-group scope, performs the Marketplace
 profile probe, and runs `vsce verify-pat modern-vba --azure-credential` before
 it is allowed to publish.
+Because `vsce verify-pat` also accepts read-only access, the publishing job
+additionally checks the Marketplace publisher role-assignment API. It requires
+exactly one directly assigned `Contributor` role for the same OIDC profile ID;
+`Reader`, `Owner`, inherited, missing, and duplicate assignments fail closed.
+The profile and assignment responses remain in the ephemeral job workspace and
+are not uploaded as release assets.
 
 Before authorizing a release tag, an administrator must also confirm that
 `gh api repos/modern-vba/vba-tools/immutable-releases` returns `enabled: true`
