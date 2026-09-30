@@ -251,7 +251,10 @@ Language Server testing then finished with 2,936 passes and one failure out of
 its exact `vba-language-server.exe` child exited with native `0xC0000005`.
 The standard command stopped there, before the Windows Excel integration stage;
 this run is **not** a release-gate pass. The failing test passed when rerun alone
-without rebuilding, so its source input is not a deterministic reproducer.
+without rebuilding, so its source input is not a deterministic reproducer. Its
+fixture is the five-line `Dialog.frm` UserForm source in
+`LanguageServerProcessTests.cs`; the child failed while processing `didOpen`,
+before the rename response.
 
 The child capture receipt identifies process 19564 and one completed
 125,500,117-byte local full dump (SHA-256
@@ -262,6 +265,10 @@ that location to `StackTraceInfo::AppendElement+0x156`. The saved native stack
 passes through `PreStubWorker` while `VbaModuleSyntax..ctor` is entered from
 `VbaSyntaxTreeParser.ParseModule` during LSP document-open analysis. The fault
 frame's `R15` was zero; SOS verified 27,193 managed objects with zero errors.
+The child-local `coreclr.dll` is byte-identical to the installed .NET 10.0.12
+runtime (`128AEE8C62A673D64739E585E3876B61133571CEC83A46240A62581D5465639B`),
+and both copies have valid Microsoft signatures. The dump's 61 loaded modules
+show no third-party DLL outside Windows, the .NET installation, and this build.
 These observations locate the fatal runtime path, not the first cause of the
 invalid state. The full dump and stderr remain local and must not be uploaded.
 
