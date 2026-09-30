@@ -6,10 +6,10 @@ namespace VbaLanguageServer.Tests;
 public sealed class LspChildCrashDumpTests
 {
     private const string RunId = "run-20260930T120000000Z-0123456789abcdef";
-    private const long SufficientFreeBytes = 11L * 1024 * 1024 * 1024;
+    private const long SufficientFreeBytes = 21L * 1024 * 1024 * 1024;
 
     [Fact]
-    public void Diagnostic_run_arms_only_one_LSP_child_and_stops_after_one_dump()
+    public void Diagnostic_run_arms_two_concurrent_LSP_children_but_not_a_third()
     {
         if (!OperatingSystem.IsWindows()) return;
         var parent = Directory.CreateTempSubdirectory("vba-lsp-dumps-").FullName;
@@ -22,6 +22,8 @@ public sealed class LspChildCrashDumpTests
             {
                 Assert.NotNull(firstLease);
                 Assert.True(firstLease.IsArmed);
+                Assert.Equal(Path.Combine(runRoot, "lsp-crash-dumps"),
+                    firstLease.DiagnosticDirectory);
                 Assert.Equal("1", first.Environment["DOTNET_DbgEnableMiniDump"]);
                 Assert.Equal("4", first.Environment["DOTNET_DbgMiniDumpType"]);
                 var dumpPath = first.Environment["DOTNET_DbgMiniDumpName"];
@@ -29,19 +31,36 @@ public sealed class LspChildCrashDumpTests
                 Assert.Contains("%p", dumpPath);
                 Assert.Contains("%t", dumpPath);
 
-                var concurrent = NewStartInfo();
-                using var concurrentPlan = LspChildCrashDump.TryConfigure(
-                    concurrent, runRoot, RunId, SufficientFreeBytes);
-                Assert.NotNull(concurrentPlan);
-                Assert.False(concurrentPlan.IsArmed);
-                Assert.Equal("slot-busy", concurrentPlan.SkipReason);
-                Assert.False(concurrent.Environment.ContainsKey("DOTNET_DbgEnableMiniDump"));
+                var second = NewStartInfo();
+                using var secondLease = LspChildCrashDump.TryConfigure(
+                    second, runRoot, RunId, SufficientFreeBytes);
+                Assert.NotNull(secondLease);
+                Assert.True(secondLease.IsArmed);
+                Assert.NotEqual(dumpPath, second.Environment["DOTNET_DbgMiniDumpName"]);
+
+                var third = NewStartInfo();
+                using var thirdPlan = LspChildCrashDump.TryConfigure(
+                    third, runRoot, RunId, SufficientFreeBytes);
+                Assert.NotNull(thirdPlan);
+                Assert.False(thirdPlan.IsArmed);
+                Assert.Equal(firstLease.DiagnosticDirectory, thirdPlan.DiagnosticDirectory);
+                Assert.Equal("slot-busy", thirdPlan.SkipReason);
+                Assert.False(third.Environment.ContainsKey("DOTNET_DbgEnableMiniDump"));
+
+                secondLease.Dispose();
+                var replacement = NewStartInfo();
+                using var replacementLease = LspChildCrashDump.TryConfigure(
+                    replacement, runRoot, RunId, SufficientFreeBytes);
+                Assert.NotNull(replacementLease);
+                Assert.True(replacementLease.IsArmed);
+                Assert.NotEqual(dumpPath, replacement.Environment["DOTNET_DbgMiniDumpName"]);
             }
 
             using (var nextLease = LspChildCrashDump.TryConfigure(
                        NewStartInfo(), runRoot, RunId, SufficientFreeBytes))
             {
                 Assert.NotNull(nextLease);
+                Assert.True(nextLease.IsArmed);
             }
 
             File.WriteAllBytes(Path.Combine(runRoot, "lsp-crash-dumps", "lsp-1.dmp"), [1]);
@@ -50,6 +69,46 @@ public sealed class LspChildCrashDumpTests
             Assert.NotNull(exhausted);
             Assert.False(exhausted.IsArmed);
             Assert.Equal("dump-budget-exhausted", exhausted.SkipReason);
+        }
+        finally
+        {
+            Directory.Delete(parent, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Existing_dump_stops_new_arms_even_while_other_children_are_armed()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var parent = Directory.CreateTempSubdirectory("vba-lsp-dumps-").FullName;
+        var runRoot = Directory.CreateDirectory(Path.Combine(parent, RunId)).FullName;
+        try
+        {
+            using (var firstLease = LspChildCrashDump.TryConfigure(
+                       NewStartInfo(), runRoot, RunId, SufficientFreeBytes))
+            using (var secondLease = LspChildCrashDump.TryConfigure(
+                       NewStartInfo(), runRoot, RunId, SufficientFreeBytes))
+            {
+                Assert.NotNull(firstLease);
+                Assert.NotNull(secondLease);
+                Assert.True(firstLease.IsArmed);
+                Assert.True(secondLease.IsArmed);
+
+                File.WriteAllBytes(Path.Combine(runRoot, "lsp-crash-dumps", "first.dmp"), [1]);
+                var later = NewStartInfo();
+                using var laterPlan = LspChildCrashDump.TryConfigure(
+                    later, runRoot, RunId, SufficientFreeBytes);
+                Assert.NotNull(laterPlan);
+                Assert.False(laterPlan.IsArmed);
+                Assert.Equal("dump-budget-exhausted", laterPlan.SkipReason);
+                Assert.False(later.Environment.ContainsKey("DOTNET_DbgEnableMiniDump"));
+            }
+
+            using var afterRelease = LspChildCrashDump.TryConfigure(
+                NewStartInfo(), runRoot, RunId, SufficientFreeBytes);
+            Assert.NotNull(afterRelease);
+            Assert.False(afterRelease.IsArmed);
+            Assert.Equal("dump-budget-exhausted", afterRelease.SkipReason);
         }
         finally
         {
@@ -82,7 +141,7 @@ public sealed class LspChildCrashDumpTests
 
             var lowSpace = NewStartInfo();
             using var skipped = LspChildCrashDump.TryConfigure(
-                lowSpace, runRoot, RunId, 9L * 1024 * 1024 * 1024);
+                lowSpace, runRoot, RunId, 19L * 1024 * 1024 * 1024);
             Assert.NotNull(skipped);
             Assert.False(skipped.IsArmed);
             Assert.Equal("insufficient-disk-space", skipped.SkipReason);
@@ -167,7 +226,7 @@ public sealed class LspChildCrashDumpTests
             startInfo.ArgumentList.Add("exit");
             startInfo.ArgumentList.Add("0");
             using var plan = LspChildCrashDump.TryConfigure(
-                startInfo, runRoot, RunId, 9L * 1024 * 1024 * 1024);
+                startInfo, runRoot, RunId, 19L * 1024 * 1024 * 1024);
             Assert.NotNull(plan);
             Assert.False(plan.IsArmed);
             using var child = Process.Start(startInfo);

@@ -14,7 +14,8 @@ internal static class LspChildCrashDump
 {
     private const string RunRootEnvironmentVariable = "VBA_TOOLS_DIAGNOSTIC_RUN_ROOT";
     private const string RunIdEnvironmentVariable = "VBA_TOOLS_DIAGNOSTIC_RUN_ID";
-    private const long MinimumFreeBytes = 10L * 1024 * 1024 * 1024;
+    private const int MaximumConcurrentDumps = 2;
+    private const long MinimumFreeBytes = MaximumConcurrentDumps * 10L * 1024 * 1024 * 1024;
     private const long MaximumReceiptBytes = 2L * 1024 * 1024;
     private const int MaximumReceiptLineBytes = 4096;
     private static readonly Regex RunName = new(
@@ -81,19 +82,27 @@ internal static class LspChildCrashDump
                 return new Plan(dumpDirectory, null, null, "dump-budget-exhausted");
             }
 
-            var slotPath = Path.Combine(dumpDirectory, ".armed");
-            FileStream slot;
-            try
+            SlotLease? lease = null;
+            for (var index = 0; index < MaximumConcurrentDumps; index++)
             {
-                slot = new FileStream(slotPath, FileMode.CreateNew, FileAccess.Write,
-                    FileShare.None, bufferSize: 1, FileOptions.None);
+                var slotPath = Path.Combine(dumpDirectory, $".armed-{index}");
+                try
+                {
+                    var slot = new FileStream(slotPath, FileMode.CreateNew,
+                        FileAccess.Write, FileShare.None, bufferSize: 1, FileOptions.None);
+                    lease = new SlotLease(slot, slotPath);
+                    break;
+                }
+                catch (IOException)
+                {
+                    // Try the next slot without waiting or changing child timing.
+                }
             }
-            catch (IOException)
+
+            if (lease is null)
             {
                 return new Plan(dumpDirectory, null, null, "slot-busy");
             }
-
-            var lease = new SlotLease(slot, slotPath);
             try
             {
                 if (Directory.EnumerateFiles(dumpDirectory, "*.dmp").Any())
@@ -145,6 +154,7 @@ internal static class LspChildCrashDump
     {
         public bool IsArmed => slot is not null;
         public string? SkipReason => skipReason;
+        internal string DiagnosticDirectory => dumpDirectory;
 
         public void Started(Process process, string phase)
         {
