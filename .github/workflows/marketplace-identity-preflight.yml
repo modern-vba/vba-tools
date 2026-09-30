@@ -42,7 +42,7 @@ jobs:
           $azureRoles = @($azureRolesJson | ConvertFrom-Json)
           if ($azureRoles.Count -ne 1 -or
             $azureRoles[0].roleDefinitionName -cne 'Reader' -or
-            $azureRoles[0].scope -cne $resourceGroupScope) {
+            $azureRoles[0].scope -ne $resourceGroupScope) {
             throw 'Managed identity must have only Reader at the release identity resource group.'
           }
           $profileJson = az rest --method get --url https://app.vssps.visualstudio.com/_apis/profile/profiles/me --resource 499b84ac-1321-427f-aa17-267ca6975798 --output json
