@@ -256,6 +256,13 @@ fixture is the five-line `Dialog.frm` UserForm source in
 `LanguageServerProcessTests.cs`; the child failed while processing `didOpen`,
 before the rename response.
 
+On the same product-code state, a separate clean-HEAD diagnostic profile ran
+the nine release stages after LSP testing; all passed, including
+`package:verify` and its VSIX verification. A separate direct
+`npm run test:windows-excel-integration` passed all 48 vba-dev, six debug-adapter,
+and six cross-product Excel tests. These independent results expose no second
+failure but cannot replace the failed standard gate or an exact-main run.
+
 The child capture receipt identifies process 19564 and one completed
 125,500,117-byte local full dump (SHA-256
 `E2C8BB53D17AE14CE6935F93AF10416D5F1618B360C295D5F345EA5DC3C473C0`).
