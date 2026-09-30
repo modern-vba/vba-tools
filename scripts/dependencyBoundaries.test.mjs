@@ -226,3 +226,35 @@ test('a consumer assembly copied outside its product folder is rejected by HintP
 
   await assert.rejects(verifyDependencyBoundaries({ root }), /HintPath.*lib\/vba-language-server\.dll/);
 });
+
+test('local release and VS Code test outputs are not dependency sources', async (t) => {
+  const root = await repository(t, {
+    'tools/vba-language-server/src/Allowed.cs': 'using VbaDev.Domain;',
+    '.tmp/diagnostic/Generated.csproj': '<Project><ItemGroup><Reference Include="VbaDev.Domain" /></ItemGroup></Project>',
+    '.vscode-test/extensions/Generated.props': '<Project><ItemGroup><Reference Include="VbaLanguageServer.Cli" /></ItemGroup></Project>'
+  });
+
+  const { dependencies } = await verifyDependencyBoundaries({ root });
+  assert.deepEqual(dependencies, [{ source: 'tools/vba-language-server/src/Allowed.cs', kind: 'product contract',
+    target: 'VbaDev.Domain', targetOwner: 'VbaDev' }]);
+});
+
+test('a large non-generated directory does not overflow the repository walk', async (t) => {
+  const root = await repository(t, {
+    'tools/vba-language-server/src/Allowed.cs': 'using VbaDev.Domain;'
+  });
+  const largeDirectory = path.join(root, 'fixtures', 'many-files');
+  await fs.mkdir(largeDirectory, { recursive: true });
+  const entries = Array.from({ length: 130_000 }, (_, index) => ({
+    name: `fixture-${index}.txt`,
+    isDirectory: () => false,
+    isFile: () => true
+  }));
+  const originalReaddir = fs.readdir.bind(fs);
+  t.mock.method(fs, 'readdir', async (directory, options) =>
+    path.resolve(directory) === largeDirectory ? entries : originalReaddir(directory, options));
+
+  const { dependencies } = await verifyDependencyBoundaries({ root });
+  assert.deepEqual(dependencies, [{ source: 'tools/vba-language-server/src/Allowed.cs', kind: 'product contract',
+    target: 'VbaDev.Domain', targetOwner: 'VbaDev' }]);
+});
