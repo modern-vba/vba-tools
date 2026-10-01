@@ -311,6 +311,13 @@ export function assertExtensionDebugPackage(packageJson) {
   const vbaDebugger = Array.isArray(debuggers)
     ? debuggers.find((candidate) => isRecord(candidate) && candidate.type === 'vba')
     : undefined;
+  const breakpoints = packageJson.contributes?.breakpoints;
+  if (
+    !Array.isArray(breakpoints) ||
+    !breakpoints.some((candidate) => isRecord(candidate) && candidate.language === 'vba')
+  ) {
+    throw new Error('Extension package metadata must enable VBA source breakpoints.');
+  }
   const launchProperties = vbaDebugger?.configurationAttributes?.launch?.properties;
   if (
     !isRecord(launchProperties) ||

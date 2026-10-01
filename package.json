@@ -88,6 +88,11 @@
         "configuration": "./language-configuration.json"
       }
     ],
+    "breakpoints": [
+      {
+        "language": "vba"
+      }
+    ],
     "debuggers": [
       {
         "type": "vba",

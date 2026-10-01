@@ -644,6 +644,20 @@ test('extension package metadata activates the packaged VBA debug entry point dy
   }
 });
 
+test('extension package metadata enables VBA source breakpoints independently of debugger languages', async () => {
+  const packageJson = JSON.parse(
+    await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
+  );
+  const withoutSourceBreakpoints = structuredClone(packageJson);
+  delete withoutSourceBreakpoints.contributes.breakpoints;
+
+  assert.doesNotThrow(() => assertExtensionDebugPackage(packageJson));
+  assert.throws(
+    () => assertExtensionDebugPackage(withoutSourceBreakpoints),
+    /VBA source breakpoints/i
+  );
+});
+
 test('extension package metadata declares limited Restricted Mode support', async () => {
   const packageJson = JSON.parse(
     await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
