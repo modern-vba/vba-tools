@@ -145,6 +145,7 @@ import {
 } from './vscodeDebugIntegration';
 import type { VbaDebugConfiguration } from './vscodeDebugConfiguration';
 import { createLazyOutputChannel } from './lazyOutputChannel';
+import { completeExtensionActivation } from './activationCompletion';
 import {
   runResolvedVbaDevCommandInvocation,
   runVbaDevCommandInvocation,
@@ -1046,27 +1047,36 @@ export async function activate(
   }
   await projectManifestLanguageServerSync?.flush();
   await workbookBackedTestExplorer.refresh();
-  await promptForActiveWorkbookBackedProject(
-    context,
-    isWorkspaceTrusted(),
-    managedToolingCommands.find(
-      (command) => command.commandId === 'vbaTools.doctor'
+  return completeExtensionActivation({
+    promptForFirstRunDoctor: () => promptForActiveWorkbookBackedProject(
+      context,
+      isWorkspaceTrusted(),
+      managedToolingCommands.find(
+        (command) => command.commandId === 'vbaTools.doctor'
       )?.handler
-  );
-  if (hostEventCatalogTestProbe === undefined) {
-    return undefined;
-  }
-  return {
-    companionExecutable: hostEventCatalogTestProbe.createCompanionApi(),
-    intrinsicHostEventCatalog: hostEventCatalogTestProbe.createApi(async () => {
-      const languageClient = client;
-      if (languageClient === undefined) {
-        throw new Error('The VBA language client is unavailable.');
+    ),
+    reportFirstRunDoctorPromptError: (error) => {
+      extensionOutputChannel.appendLine(
+        `VBA Tools could not complete the first-run Doctor prompt: ${error instanceof Error ? error.message : String(error)}`
+      );
+    },
+    createResult: () => {
+      if (hostEventCatalogTestProbe === undefined) {
+        return undefined;
       }
-      await languageClient.restart();
-      await projectManifestLanguageServerSync?.flush();
-    })
-  };
+      return {
+        companionExecutable: hostEventCatalogTestProbe.createCompanionApi(),
+        intrinsicHostEventCatalog: hostEventCatalogTestProbe.createApi(async () => {
+          const languageClient = client;
+          if (languageClient === undefined) {
+            throw new Error('The VBA language client is unavailable.');
+          }
+          await languageClient.restart();
+          await projectManifestLanguageServerSync?.flush();
+        })
+      };
+    }
+  });
 }
 
 export async function deactivate(): Promise<void> {

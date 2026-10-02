@@ -1515,6 +1515,53 @@ test('First-run doctor prompt can run doctor once for the workspace', async () =
   assert.equal(doctorRuns, 1);
 });
 
+test('First-run doctor prompt preserves its choice and state while notification and Doctor are pending', async () => {
+  const state = new MemoryPromptState();
+  let resolveAnswer!: (answer: string | undefined) => void;
+  const answer = new Promise<string | undefined>((resolve) => {
+    resolveAnswer = resolve;
+  });
+  let resolveDoctor!: () => void;
+  const doctor = new Promise<void>((resolve) => {
+    resolveDoctor = resolve;
+  });
+  let signalNotification!: () => void;
+  const notificationShown = new Promise<void>((resolve) => {
+    signalNotification = resolve;
+  });
+  let signalDoctor!: () => void;
+  const doctorStarted = new Promise<void>((resolve) => {
+    signalDoctor = resolve;
+  });
+  let completed = false;
+
+  const prompt = promptForFirstRunDoctor({
+    workspaceState: state,
+    showInformationMessage: () => {
+      signalNotification();
+      return answer;
+    },
+    runDoctor: () => {
+      signalDoctor();
+      return doctor;
+    }
+  });
+  void prompt.then(() => { completed = true; });
+
+  await notificationShown;
+  assert.equal(completed, false);
+  assert.equal(state.get(FirstRunDoctorPromptState.Prompted), undefined);
+
+  resolveAnswer('Run Doctor');
+  await doctorStarted;
+  assert.equal(state.get(FirstRunDoctorPromptState.Prompted), true);
+  assert.equal(completed, false);
+
+  resolveDoctor();
+  await prompt;
+  assert.equal(completed, true);
+});
+
 test('First-run doctor prompt supports a workspace do-not-ask-again choice', async () => {
   const state = new MemoryPromptState();
   let prompts = 0;
