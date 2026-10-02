@@ -731,3 +731,46 @@ The 2026-09-26 frozen six-catalog baseline is not the 2026-09-11 catalog
 state, and the historical failing URI was never captured. Thus an exact
 original-binary/input replay cannot be claimed. The URI-root-cause,
 actual failure-boundary regression, and release gate remain unresolved.
+
+## Fresh release-gate and debugger observations on 2026-10-02
+
+After the development environment update, an exact
+`npm run verify:release:windows-excel` run on the existing release branch
+passed the architecture, extension, Extension Host, vba-dev, debug-adapter,
+and 1,938 Syntax tests. Its `VbaLanguageServer.Tests` testhost then exited
+with a fatal `AccessViolationException` at `VbaSourceText.get_Text`, reached
+from `LexerState.Slice` during the large manifest-project validation test.
+The Windows Excel phase was not reached, so this was **not** a passing
+release-gate run. The generated 96-module, 1,324,622-byte project was
+preserved under ignored
+`.tmp/diagnostic-verification/release-gate-20261002-124914-fixture`;
+the copied files match the original source hashes. This preserves the
+fixture, not necessarily the bytes read by the failing process at the
+instant of failure.
+
+A failure-only assertion path now reports the active source URI, UTF-16
+length and hash, and exception type if the test's post-semantic module
+reparse fails. It preserves the original exception. In five fresh targeted
+VSTest hosts with crash blame enabled, four passed and one failed with a
+managed `NullReferenceException` in `VbaLexer.CreateToken` at the numeric
+literal path. This is a different manifestation from the full-gate access
+violation; the failing URI still was not captured for the fatal case.
+
+An isolated .NET 10.0.12 check showed that ProcDump's type-name filter
+`-f System.NullReferenceException` did not produce a dump for a first-chance
+managed NRE, while filtering on the CLR exception code would capture other
+managed exceptions too. A local CDB/SOS script was therefore checked with
+an isolated process: it ignored a preceding unrelated managed exception and
+captured a first-chance NRE before execution resumed. In the actual targeted
+test, three fresh debugged hosts passed. A later host terminated with an
+internal CLR error (`0x80131506`) during validation, before a matching NRE
+was observed. With first-chance access-violation capture also armed, five
+more hosts passed and the sixth failed with
+`ArgumentOutOfRangeException` in
+`VbaCallSyntaxParser.IsAssignmentTarget` at its token-index access. No
+NRE or access-violation dump was produced in these latter runs. The local
+logs remain under ignored `.tmp/diagnostic-verification/cdb-nre-20261002*`.
+Debugger attachment changes timing, and the different exceptions do not
+prove a single cause. They do show that one exception-specific dump filter
+alone cannot capture every observed failure mode. No source-analysis root
+cause or release fix is established by these results.
