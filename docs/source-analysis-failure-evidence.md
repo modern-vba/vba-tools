@@ -774,3 +774,27 @@ Debugger attachment changes timing, and the different exceptions do not
 prove a single cause. They do show that one exception-specific dump filter
 alone cannot capture every observed failure mode. No source-analysis root
 cause or release fix is established by these results.
+
+A subsequent scoped CDB run captured a first-chance native access violation
+in its third fresh testhost. The 328,608,733-byte full-memory user dump and
+the matching testhost identity, binary hashes, and debugger log remain only
+under ignored
+`.tmp/diagnostic-verification/cdb-nre-20261002T045403Z-887670cb`.
+The captured thread was inside the named large-project test, following
+project diagnostics through `ParseModule`, `VbaLexer.Tokenize`,
+`VbaIdentifier.IsWhitespace(U+0020)`, and `Cp2Ranges` into CoreCLR's
+`RuntimeHelpers.CreateSpan<int>`. The fault was therefore during analysis,
+not debugger startup. At the fault, CoreCLR attempted an indirect call with
+a noncanonical target read through a stack address; the OS CFG thunk raised
+`0xC0000005`, and the subsequent same-process `0xC0000409` is consistent
+with an indirect-call guard failure. The dump identifies that invalid
+target, but not why CoreCLR obtained it. It does not distinguish a runtime
+or JIT fault from earlier memory corruption, and it does not establish a
+VBA lexer defect. No dump was uploaded. No WHEA-Logger event was found in
+the 13:45–14:05 local-time interval around this run.
+
+As a separate control, the self-contained Windows x64 Syntax-only probe
+published from the current source parsed the preserved 96 modules in ten
+fresh host processes, all passing with 85,502 argument lists. This control
+uses a Release-published Syntax DLL, not the Debug DLL loaded by the
+failing testhost, and success cannot clear the full release gate.
