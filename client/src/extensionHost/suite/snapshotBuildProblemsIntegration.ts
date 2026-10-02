@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
 import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -12,6 +13,7 @@ import { decodeProjectManifestBytes } from '../../projectManifestBytes';
 import { parseDebugSnapshotBuildReport, DebugSnapshotBuildReport } from '../../debugSnapshotBuildReport';
 import { windowsPathKey } from '../../windowsPathIdentity';
 import { runWithExtensionHostFixtureCleanup } from '../testFixtureCleanup';
+import { runWithForegroundAssist } from '../foregroundAssist';
 
 export async function runSnapshotBuildProblemsIntegrationTests(): Promise<void> {
   const parent = process.env.VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT;
@@ -122,14 +124,23 @@ export async function runSnapshotBuildProblemsIntegrationTests(): Promise<void> 
     assert.deepEqual(await readFile(binPath), previousOutput);
     assert.deepEqual(await readFile(templatePath), template);
 
-    // Leave an unsaved comment so the successful generation is also editor-owned.
-    await replaceText(callerUri, validCaller + "' unsaved successful generation\r\n");
-    const started = await debug.startDebugging(undefined, configuration);
+    // The unsaved marker binds foreground assistance to this fixture's generation.
+    const ownerToken = randomBytes(16).toString('hex');
+    await replaceText(callerUri, validCaller + `' unsaved successful generation ${ownerToken}\r\n`);
+    const started = await runWithForegroundAssist({
+      executable: path.join(extensionRoot, '.tmp', 'extension-host-foreground-assist',
+        'vba-test-foreground-assist.exe'),
+      arguments: ['Book1.xlsm', ownerToken]
+    }, async () => {
+      const launched = await debug.startDebugging(undefined, configuration);
+      assert.equal(launched, true);
+      await waitFor(() => reports.length === 2, 'successful build report');
+      assert.equal(reports[1].exitCode, 0);
+      for (const session of [...ownedSessions]) await debug.stopDebugging(session);
+      await waitFor(() => ownedSessions.size === 0, 'successful session cleanup');
+      return launched;
+    });
     assert.equal(started, true);
-    await waitFor(() => reports.length === 2, 'successful build report');
-    assert.equal(reports[1].exitCode, 0);
-    for (const session of [...ownedSessions]) await debug.stopDebugging(session);
-    await waitFor(() => ownedSessions.size === 0, 'successful session cleanup');
     await waitFor(() => languages.getDiagnostics(callerUri).every(item => item.source !== 'vba-dev'), 'resolved snapshot Problems');
     assert.ok(languages.getDiagnostics(callerUri).some(item => item.source === 'snapshot-native-independent'));
     assert.equal(caller.isDirty, true);

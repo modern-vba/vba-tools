@@ -15,5 +15,8 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\VbaDebugAdapter.Cli\VbaDebugAdapter.Cli.csproj" />
+    <Compile Include="..\VbaDebugAdapter.ForegroundAssist\ForegroundAssistLoop.cs" Link="ForegroundAssistLoop.cs" />
+    <Compile Include="..\VbaDebugAdapter.ForegroundAssist\ForegroundAssistProtocol.cs" Link="ForegroundAssistProtocol.cs" />
+    <Compile Include="..\VbaDebugAdapter.ForegroundAssist\DebugWorkbookIdentity.cs" Link="DebugWorkbookIdentity.cs" />
   </ItemGroup>
 </Project>

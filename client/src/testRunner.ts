@@ -49,6 +49,7 @@ import './toolDiagnostics.test';
 import './blockSkeletonInsertionTransaction.test';
 import './blockSkeletonInsertion.test';
 import './extensionHost/configuration.test';
+import './extensionHost/foregroundAssist.test';
 import './extensionHost/testRunCleanup.test';
 import './extensionHost/testRunFailureLogs.test';
 import './extensionHost/testFixtureCleanup.test';
