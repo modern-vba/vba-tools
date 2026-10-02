@@ -972,3 +972,11 @@ per-process JSONL remain ignored under
 `.tmp/diagnostic-verification/syntax-only-probe/managed-control`. This
 independent failure weakens a Syntax-only explanation but does not establish
 a root cause or authorize a product-code workaround.
+
+An immediately following interleaved 10-pair comparison held the instrumented
+control binary, input, worker count, and bundled runtime fixed while changing
+only process-local `DOTNET_TieredCompilation` between `1` and `0`. All ten
+fresh processes in each arm passed. The prior three-process control cohort
+had failed twice with `0`, so this later 20-process success is not evidence
+of resolution or of a reliable setting-based workaround. Per-run receipts
+and the summary are under the same ignored control directory.
