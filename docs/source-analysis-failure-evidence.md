@@ -889,3 +889,86 @@ unknown. The clone outputs, hashes, and per-run TRX files remain ignored under
 `.tmp/diagnostic-verification/create-token-ivt-repair-20261002T144825Z`.
 No clone change has been adopted in the product. The release gate remains
 failed, and no issue closure or release conclusion follows from these trials.
+
+## Single-input lexer reproduction on 2026-10-03
+
+A failure-only, local JSONL observer in an ignored Syntax clone captured a
+managed `NullReferenceException` in `LexerState.Slice` on the second fresh
+TieredCompilation-off xUnit host. At the operation reported on the
+`currentSource.Length` line, the captured local `currentSource` and
+`sourceAtCall` were null and the length had not been assigned. In the same
+catch path, `SourceText` and its `Text`
+were nonnull, with a 26-character UTF-16 source and valid slice offsets
+22–25. The outer `CreateToken` observer independently read the same source
+object and valid start/end positions. Its source hash matches the trimmed
+line `result = ResolveValue(174)` in the frozen `Caller068.bas` input. This
+shows an inconsistent value at the failure point; it does not distinguish a
+transient null source getter, an inlining/JIT fault before local assignment,
+or earlier corruption. Both JSONL events and the TRX are retained under
+ignored `.tmp/diagnostic-verification/create-token-slice-jsonl-20261003`.
+
+A self-contained microprobe then repeatedly called only the public
+`VbaTokenStream.FromText` API with that exact 26-character input, checking
+all eight token kinds, texts, and ranges. It pinned the original Debug
+Syntax DLL (SHA-256
+`7C91051EB95A24AACB6EE701C97C94F558B3DD68262E29BFD7D0E825A48A772B`)
+and .NET 10.0.12. With TieredCompilation off, two workers passed four fresh
+processes and failed one with a lexer-position `NullReferenceException` at
+iteration 671,108 of one worker. A separate one-worker build failed its
+first fresh process at iteration 1,171,447, with a `NullReferenceException`
+in `CreateToken`. Thus the full 96-module input, language server, VS Code,
+Excel, and a race between two parsing workers are not necessary to reproduce
+the symptom. A single process result is not an independent trial per token.
+
+An ignored staged-locals diagnostic DLL retained the same assembly identity,
+friend attributes, and public API. Its isolated xUnit smoke passed; ten
+fresh TieredCompilation-off xUnit hosts passed eight times, failed once with
+a managed position-getter null reference, and once with a native access
+violation at the same getter. No staged `Slice` event occurred, so the source
+getter stage remains unidentified. In the single-worker microprobe with this
+diagnostic DLL, four of five fresh processes passed. The other failed at
+iteration 948,559 with a range exception: `Slice` received start offset 9
+and end offset `1,606,418,432` (`0x5FC00000`), while pre/post raw cursor
+offsets were 21 and a catch-time position reread was 21, the same source
+object had length 26, and its complete UTF-16 hash matched the fixed input.
+The passed argument and later cursor observation disagree; the evidence does
+not establish where the argument changed or whether the observer perturbed
+the failure. Microprobe code and per-process JSONL remain ignored under
+`.tmp/diagnostic-verification/syntax-only-probe/lexer-microprobe`; binary
+hashes are in run logs and the comparison package README.
+No workaround or product fix has been accepted from these observations.
+
+## Syntax-independent managed control on 2026-10-03
+
+A separate self-contained .NET 10.0.12 program contains no Syntax DLL and
+never loads the Syntax assembly. It replays the same eight fixed token
+boundaries using independent snapshot, cursor, string-slice, and record
+objects, then checks every token. Its bundled `coreclr.dll`, `clrjit.dll`,
+and CoreLib hashes match the lexer microprobe. It does not copy the lexer
+algorithm, and its allocation profile is not matched to the Syntax probe.
+
+With one worker, the first two-million-iteration fresh process failed at
+iteration 1,647,036 in `ControlReader.AdvanceTo` with an end-offset range
+exception. The post-catch source was nonnull, length 26, and the cursor was
+at offset 21; that initial build did not record the actual argument. A
+failure-only instrumented build then ran in three fresh processes: one
+passed, one reported a token-validation mismatch, and one failed the range
+guard at iteration 1,259,606. The guard's catch path recorded an actual
+`endOffset` argument of 7 against raw cursor offset 25 and source length
+26. The loop's catch-time expected index was 7, but its local expected
+token was the earlier whitespace token (6–7); a post-failure reread of
+static `Expected[7]` was the final punctuation token (25–26), and all eight
+static boundaries were intact. The input's complete UTF-16 hash matched
+`result = ResolveValue(174)`. An independent read-only review found no
+deterministic fixture boundary error or code path that ordinarily selects
+token 1 at index 7. The recorded argument origin string is derived from the
+catch-time index, not a separate observation of the earlier array read.
+Likewise the guard operands and static array were read again after the
+condition fired. These facts show an inconsistent local/argument state,
+but do not distinguish JIT/runtime behavior, host memory corruption, or an
+unseen control-probe defect. The instrumented token mismatch lacks actual
+token fields and cannot be further localized. Source, binary hashes, and
+per-process JSONL remain ignored under
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control`. This
+independent failure weakens a Syntax-only explanation but does not establish
+a root cause or authorize a product-code workaround.
