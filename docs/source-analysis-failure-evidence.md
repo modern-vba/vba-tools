@@ -798,3 +798,47 @@ published from the current source parsed the preserved 96 modules in ten
 fresh host processes, all passing with 85,502 argument lists. This control
 uses a Release-published Syntax DLL, not the Debug DLL loaded by the
 failing testhost, and success cannot clear the full release gate.
+
+## Fixed-binary runtime and VM comparisons on 2026-10-02
+
+The self-contained Release Syntax-only package was copied into the dedicated
+Windows 11/Excel test VM through the existing enhanced session and extracted
+without changing VM security settings. One guest execution under its bundled
+.NET 10.0.12 completed. Its locally returned JSONL has 195 records: 97 input
+files, 96 source modules, 96 parse starts and completions, and 85,502
+argument lists with `passed: true`. After excluding machine-specific paths
+and process ID, every ordered record, source byte/UTF-16 hash, module count,
+and running total matches the host sanity run. This verifies the parsed
+inputs and result; the guest log alone does not independently attest the
+executable or DLL hashes or the process exit code. The returned log is under
+ignored `.tmp/diagnostic-verification/syntax-only-probe/guest-results-20261002`.
+One successful guest execution is not a stability comparison.
+
+An independent self-contained Syntax-only package retained the **exact**
+Debug `VbaTools.Syntax.dll` used by the failing testhost (SHA-256
+`7C91051EB95A24AACB6EE701C97C94F558B3DD68262E29BFD7D0E825A48A772B`).
+Ten fresh host processes with process-local `DOTNET_TieredCompilation=0`
+each parsed the same 96 modules and passed. Thus sequential Syntax parsing
+with that Debug DLL and setting alone did not reproduce the targeted test's
+failure; this does not exclude concurrency or other testhost paths.
+
+For a closer comparison, ten interleaved pairs ran the same prebuilt
+large-project xUnit test with `--no-build --no-restore`, changing only the
+testhost setting `DOTNET_TieredCompilation` between explicit `1` and `0`.
+The test DLL SHA-256 was
+`496EEC4A994C0B06ED9DFFDB3BD4E386FE33B0A27CFF11422819398435414152`;
+the Syntax DLL was the exact Debug binary above. The `1` arm passed 10/10.
+The `0` arm passed 5/10 and failed 5/10: two fatal native access violations
+in `VbaLexer.LexerState.Position`, and three managed null-reference failures
+in lexer cursor/slice paths. No failure was merely the test timeout. The
+failure-only receipt identified `Caller032.bas` in one `0`-arm failure with
+UTF-16 SHA-256
+`BED6430FD5F383CF7765393A82ECB5DA134943A1667EC75CD3EA8FB6EE30B2FA`,
+matching that module's successful guest input exactly. Logs and per-run TRX
+files remain under ignored
+`.tmp/diagnostic-verification/tiering-ab-20261002T134609Z-adf0f08d`.
+This is a useful high-frequency feedback loop, not proof that tiered
+compilation causes the defect: disabling it changes JIT code versions and
+timing, and the ordinary release gate had already crashed with the default
+setting. Neither disabling tiering nor a successful VM probe is a release
+fix or an acceptance result.
