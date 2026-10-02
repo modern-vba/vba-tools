@@ -842,3 +842,50 @@ compilation causes the defect: disabling it changes JIT code versions and
 timing, and the ordinary release gate had already crashed with the default
 setting. Neither disabling tiering nor a successful VM probe is a release
 fix or an acceptance result.
+
+## Isolated Syntax and runtime-setting controls on 2026-10-02
+
+A two-worker, self-contained Syntax probe ran the exact Debug Syntax DLL and
+the same frozen 96-module input in one fresh process per trial. Each worker
+created its own `ParseModule` calls; the input strings were immutable. With
+`DOTNET_TieredCompilation=0`, the first 10 trials passed 9/10. The failure was
+a managed `NullReferenceException` in `VbaLexer.CreateToken` while one worker
+parsed `Caller045.bas`; the other worker completed that same module. The input
+UTF-16 SHA-256 was
+`F2FB2349FB7F97C5B5182A9C98026D66F856849AE6705659C106E61ABF287527`.
+Thirty further fresh trials of the unmodified probe passed 29/30. The failure
+was a process fast-fail (`0xC0000409`), with Windows Error Reporting naming
+`coreclr.dll` version `10.0.1226.42308`. The archived WER report has no stack
+or retained dump, so the faulting thread and input are unknown. The probe
+source, per-run JSONL, summaries, and local WER details remain ignored under
+`.tmp/diagnostic-verification/syntax-only-probe/concurrent-probe`. This
+establishes that the failure can occur without VS Code, Excel, or the language
+server. It does not establish a Syntax-owned race or a CLR root cause. A
+read-only audit found fresh, private lexer cursor state per tokenization and
+no credible shared mutable state on the failing path.
+
+A disposable diagnostic build changed only the `Cp2Ranges` getter from an
+embedded `ReadOnlySpan<int>` blob to an equivalent static array. Ten
+interleaved TieredCompilation-off xUnit pairs passed 7/10 for both the original
+and the variant. The variant still had a native access violation. Ten more
+interleaved pairs held the original Debug DLL fixed and changed only
+`DOTNET_ReadyToRun`: both explicit `1` and `0` passed 9/10, with a managed
+null-reference failure in the former and a range failure in the latter.
+Neither code-shape change nor runtime setting is a demonstrated prevention.
+All 40 per-run TRX files and binary-hash receipts remain ignored under
+`.tmp/diagnostic-verification/cp2-array-variant-20261002T140204Z`.
+
+A failure-only `CreateToken` observer was built only in an ignored clone. Its
+initial package parsed 30/30 two-worker trials, but those successes do not
+show a fix: both chance and changed JIT/timing are plausible. The first clone
+also omitted the original friend-assembly attributes and was incompatible
+with the xUnit test output; its failed xUnit comparison is invalid. After
+restoring all three original `InternalsVisibleTo` attributes and checking the
+assembly identity and API, the corrected clone passed a smoke test. Ten
+interleaved xUnit pairs then passed 9/10 for both original and observer DLLs;
+each had one managed lexer null-reference failure. The test result XML did
+not expose the observer's `Exception.Data`, so the failing operands remain
+unknown. The clone outputs, hashes, and per-run TRX files remain ignored under
+`.tmp/diagnostic-verification/create-token-ivt-repair-20261002T144825Z`.
+No clone change has been adopted in the product. The release gate remains
+failed, and no issue closure or release conclusion follows from these trials.
