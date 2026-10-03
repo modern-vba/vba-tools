@@ -348,6 +348,6 @@
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.3.2",
     "yauzl": "^3.4.0",
-    "yazl": "^2.5.1"
+    "yazl": "^3.3.1"
   }
 }
