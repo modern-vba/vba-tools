@@ -980,3 +980,242 @@ fresh processes in each arm passed. The prior three-process control cohort
 had failed twice with `0`, so this later 20-process success is not evidence
 of resolution or of a reliable setting-based workaround. Per-run receipts
 and the summary are under the same ignored control directory.
+
+## VM and runtime follow-up on 2026-10-03
+
+The dedicated Windows 11/Excel VM ran the same one-worker, two-million-iteration
+single-input lexer probe with the pinned Debug Syntax DLL and bundled .NET
+10.0.12 runtime. Its first fresh process recorded a `NullReferenceException`
+in `VbaLexer.CreateToken` at iteration 10,955. The fixed 26-code-unit source
+hash and Syntax DLL hash match the host package. Its returned JSONL (SHA-256
+`44C4C8483B2DE99AE279F3B95E173B327205A3108C76C828338EC161D98F81B7`)
+is retained locally under ignored `.tmp/diagnostic-verification/vm-return-20261003`.
+The log records `passed: false`; the guest process exit code was not
+independently captured.
+
+The separate Syntax-free managed control in that VM used the exact pinned
+control DLL, source hash, and .NET 10.0.12 runtime files. One fresh process
+passed all two million iterations. The next failed at iteration 58,249 with
+`ArgumentOutOfRangeException` in `ControlReader.AdvanceTo`: its guard recorded
+an end offset of 7 against cursor offset 8, while the catch-time loop index
+was 3 and `Expected[3].End` remained 9. The catch-time expected token was
+instead the earlier whitespace token spanning 6–7; the complete static token
+boundaries were intact. `VbaTools.Syntax.dll` was neither present nor loaded.
+The returned pass/failure JSONL SHA-256 values are respectively
+`B08B1022A69961C9C4637835D54DD2697D5D0776703404668A8A2C8904BE0CA3`
+and `EB05C3BCA4B71EC2330CD781C15AC65D0558CC7E46BF62D16A3CBFE6CB2AEF0A`.
+Both are in the same ignored local return directory. This reproduces the
+inconsistent fixed-input control state in the VM, but the VM shares the host's
+physical CPU and memory; it is not an independent-hardware test.
+
+A follow-up in that VM held the managed control DLL, executable, fixed input,
+one-worker setting, and two-million-iteration limit constant while replacing
+the complete bundled runtime with .NET 10.0.8. Five fresh processes (PIDs
+6404, 10372, 2244, 564, and 1868) each completed all two million iterations
+with `passed: true`, no `worker-failure`, and no Syntax assembly present or
+loaded. Every `run-start` recorded the same managed DLL SHA-256
+`62C57B806E81634C52AC36A6D2CAD9F1E61A23319E2D5387E2C1B460888E4068`,
+input UTF-16 SHA-256
+`7226C5FC048DEE46F743D4106CF4977D9B511F9DDA09EE50F27E32B70DEA01A3`,
+and pinned .NET 10.0.8 runtime-file hashes. The five returned JSONL SHA-256
+values, in run order, are
+`16A3F44F57338C905DFA402A936289031888F45FF2A6CA1186C18C0F5E1875F5`,
+`E0552C53D5A6B757ADDC1E16B811AE390EAB75DB9E972EEBE88B8D493D62EE79`,
+`A3B30490D79B72EB4E33712E06575288BD1FB4B4A76516B7ED845326D1594B3C`,
+`6D417CBD8FAC8E2D7BA26C6753800EC491036FCB87F210EA011B2DF05952695D`,
+and `383CEF978A4BD6AF718C286EA6038A8EE53B809EA756466323F25B5DB7680FB9`.
+They remain in the ignored local VM return directory. This bounded success
+does not establish a .NET 10.0.8 fix: the same control already failed on the
+host with 10.0.8, and the VM comparison with 10.0.12 has only one pass and one
+failure. The guest JSONL records application completion, not an independently
+captured process exit code; its tiering environment field is unset, whereas
+the earlier host 10.0.8 failure explicitly set `DOTNET_TieredCompilation=0`.
+The VM still shares the host's physical CPU and memory.
+
+During this follow-up, the host's `VmConnect.exe` separately terminated twice
+while the guest logs were being handled. Windows Application events at 10:37
+and 10:41 JST record respectively a .NET Framework 4.8 FailFast and an
+`AccessViolationException` in Windows Forms accessibility-related stacks,
+with corresponding Application Error records. The guest's fourth control log
+was already complete and was recovered after reconnecting. These host UI
+process failures are distinct from `ManagedControl.exe` results; they may be
+related to accessibility/UI interaction and do not establish a hardware or
+product-code cause.
+
+On the host, a further 10-pair interleaved control comparison kept the .NET
+10.0.12 binaries, one worker, input, and tiering-off setting fixed, changing
+only `DOTNET_JITMinOpts` between `0` and `1`. Smoke-process JIT disassembly
+confirmed optimized `Replay` code in the baseline and MinOpts code in the
+treatment. The baseline passed 10/10; MinOpts passed 8/10. One MinOpts process
+exited with `0xC0000005` after starting its 1,970,001st iteration batch; its
+last managed stack was in the control's `Source` getter. The other failed at
+iteration 282,485 with `NullReferenceException` in the same getter, while
+failure-time observations found a nonnull snapshot, reader, source, and intact
+fixed input. Windows Application events correlate the access violation with
+that exact process, but WER records its faulting module as unknown and retains
+no dump. The 10/10 baseline success does not establish a rate difference;
+MinOpts is not a prevention. The harness, process logs, JIT preflight, and
+summary remain under ignored
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/jit-minopts-ab-20261002T213946787Z-cea7ee55`.
+
+A separate self-contained .NET 10.0.8 control package retained the exact
+managed DLL, executable, and fixed input, while replacing the complete
+bundled runtime and its version sidecars. Its first full host process failed
+at iteration 452,662 with an end offset of 7 against cursor offset 25. The
+catch-time index was 7, but `Expected[7].End` remained 26; the catch-time
+token again resembled the earlier 6–7 whitespace token. This rules out a
+failure limited to the .NET 10.0.12 patch on this host, not a shared runtime
+or physical-host cause. The pinned hashes, JSONL, and receipt remain under
+ignored `.tmp/diagnostic-verification/syntax-only-probe/managed-control/runtime-1008-host-full-20261002T215142597Z-c1b110a3`.
+No product-code change, stable workaround, or release-gate pass follows from
+these diagnostic trials.
+
+A read-only host event review found four earlier WHEA-Logger ID 19 corrected
+processor-core/internal-parity machine checks between August 28 and September
+22, along with earlier Kernel-Power 41 restarts and bugchecks. Windows Memory
+Diagnostics on September 28 was cancelled, not passed. There was no WHEA or
+Kernel-Power event in the October 3 06:20–07:00 JST comparison window, but
+Desktop Window Manager crashed at 06:31 JST, before the Syntax-free control's
+06:39 access violation. These are independent signs of host-level instability,
+not proof that the same fault caused a specific managed exception. Because the
+VM shares that physical host, its recurrence cannot distinguish a shared
+runtime defect from CPU, memory, firmware, power, or other host-level causes.
+An identical payload on a genuinely separate physical machine, or a completed
+hardware diagnostic, would provide a stronger discriminator; neither is
+currently available as a passing comparison.
+
+## Fixed-cohort .NET 10.0.12 incidence on the host on 2026-10-03
+
+An instrumented Syntax-free managed-control package pinned the executable,
+control DLL, bundled .NET 10.0.12 CoreCLR/JIT/CoreLib, 26-code-unit input,
+one worker, two million iterations per child, and
+`DOTNET_TieredCompilation=0`. The existing harness attempted 100 sequential
+fresh child processes regardless of ordinary test failures. Package hashes
+passed its preflight. Each completed child JSONL verified the input and
+binary hashes, and no Syntax DLL was present or loaded. This measures the
+isolated control on this host, not the product or the release gate.
+
+Of 100 attempts, 79 passed, 16 recorded `ArgumentOutOfRangeException` in
+`ControlReader.AdvanceTo` for an `endOffset` behind the raw cursor, and four
+recorded `InvalidDataException` for a token mismatch. The 20 managed control
+symptoms yield an observed per-process rate of 20/100 (20%; descriptive 95%
+Wilson interval 13.3%–28.9%). The narrower range-exception rate was 16/100
+(16%; 10.1%–24.4%). One additional child, run 71, exited before a `run-start`
+record with code `-2147450743`: stderr and Windows .NET Runtime event 1023
+reported `System.Private.CoreLib.dll` load failure, missing type
+`System.SByte`, and HRESULT `0x80131522`. Its CoreLib file's subsequent
+SHA-256 still matched the pinned package. Counting this distinct startup
+failure gives 21/100 nonpasses (21%; 14.2%–30.0%). The other 99 JSONL files
+parse completely; two numerical PIDs were reused, so process identity is
+based on each launch/receipt rather than PID uniqueness. There were no WHEA
+events in the 10:59–11:05 JST execution window, which does not exclude a
+physical-host cause.
+
+Per-run JSONL, stderr, and exit receipts plus `run-summary.json` remain local
+and ignored under
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/instrumented-w1-runs-20261003T020013071Z-302911f7`.
+The intervals describe this short sequential cohort under one environment;
+temporal clustering and shared host conditions mean they are not independent
+hardware evidence or a portable product failure probability. No stable
+workaround or release clearance follows from this result.
+
+## Fixed-cohort original Syntax incidence on the host on 2026-10-03
+
+The original self-contained lexer microprobe, rather than a rebuild from its
+later-edited source, pinned `VbaTools.Syntax.dll` SHA-256
+`7C91051EB95A24AACB6EE701C97C94F558B3DD68262E29BFD7D0E825A48A772B`
+and the bundled .NET 10.0.12 runtime. It used the same 26-code-unit input,
+one worker, two million lexer iterations per fresh process, and disabled
+tiered compilation. All 100 sequential processes started with matching
+source, Syntax, runtime, and package hashes. The 100 receipts and JSONL files
+were independently reconciled with the cohort summary; there were no
+timeouts, launch errors, or unconfirmed child processes.
+
+Of 100 processes, 76 passed. Thirteen logged a managed
+`NullReferenceException` (13%; descriptive 95% Wilson interval 7.8%–21.0%),
+six exited with `0xC0000005` access violation (6%; 2.8%–12.5%), four logged
+a lexer `ArgumentOutOfRangeException`, and one failed a token-count check
+with `InvalidDataException`. Five of the six access-violation processes had
+an explicit `AccessViolationException` stderr trace in Syntax; the sixth had
+the exit code but empty stderr. All failures combined were 24/100 (24%;
+16.7%–33.2%). The first 50 processes had 16 failures, versus eight in the
+last 50; this small cohort does not establish a temporal cause.
+
+The package and per-run receipts remain local and ignored under
+`.tmp/diagnostic-verification/syntax-only-probe/lexer-microprobe/incidence-original-w1-20261003T021958413Z-8c85b4a6`.
+The current probe source pins a different, staged Syntax variant, so rebuilding
+it would not reproduce this cohort. These per-process rates are for the fixed
+microprobe on this host, not the full product, its release tests, or an
+independent physical machine. Together with the Syntax-free cohort, they
+show recurrence on .NET 10.0.12 but do not identify whether Syntax, the
+runtime, or shared host conditions cause any particular failure.
+
+## Fixed-cohort Syntax-free control incidence in the VM on 2026-10-03
+
+The dedicated `VBA-TOOLS-TEST` Hyper-V VM ran one approved, sequential
+100-process cohort from its local disk. The transferred package passed the
+launcher's complete 192-file manifest and pinned-hash preflight. Every child
+reported the same instrumented control DLL, CoreCLR, JIT, CoreLib, 26-code-unit
+input hash, .NET 10.0.12 x64 runtime, one worker, two million iterations, and
+disabled tiered compilation as the host control cohort. No Syntax DLL was
+present or loaded. The 100 child directories, 100 raw JSONL files, 100
+per-child receipt entries, and cohort events reconcile; all raw JSONL files
+parse. One numerical PID was reused only after its earlier child ended.
+
+Ninety-nine processes passed. Child 2 failed at iteration 1,447,860 with
+`ArgumentOutOfRangeException` for `endOffset` in
+`ControlReader.AdvanceTo`. At the failing guard, the requested offset was 7
+behind raw cursor offset 25 in the 26-code-unit source. The catch-time
+`Expected[7].End` was 7 while a separate array-boundary observation retained
+26, matching the host control's class of anomaly. There were no token
+mismatches, access-violation exits, startup/no-log failures, timeouts, malformed
+logs, or unconfirmed child processes. The observed VM failure rate was 1/100
+(1%; descriptive 95% Wilson interval 0.18%–5.45%). The host's same-binary
+Syntax-free cohort had 20 managed symptoms and one separate startup failure
+among 100 attempts.
+
+The complete copied evidence remains local and ignored under
+`.tmp/diagnostic-verification/vm-return-20261003/cohort-20261003T031258719Z-5525aec0485e4fd7a07348aec74cd5c9`.
+The VM shares the host's physical CPU and memory and ran later, so the lower
+observed rate cannot identify a hardware, host software, hypervisor, runtime,
+or timing cause. The VM recurrence shows that the fault is not confined to
+the host Windows installation, but this isolated control is neither a product
+failure-rate estimate nor a release-gate result.
+
+## Fixed-cohort .NET 10.0.8 Syntax-free control incidence in the VM on 2026-10-03
+
+The same dedicated `VBA-TOOLS-TEST` VM ran a later, sequential 100-process
+cohort from its local disk with a self-contained .NET 10.0.8 child payload.
+The launcher verified the 191-file child manifest, pinned binary hashes, input
+hash, and absence of `VbaTools.Syntax.dll` before starting. The managed-control
+DLL SHA-256 (`62C57B806E81634C52AC36A6D2CAD9F1E61A23319E2D5387E2C1B460888E4068`)
+and 26-code-unit input SHA-256
+(`7226C5FC048DEE46F743D4106CF4977D9B511F9DDA09EE50F27E32B70DEA01A3`)
+matched the earlier .NET 10.0.12 VM cohort. Each child reported one worker,
+two million iterations, and `DOTNET_TieredCompilation=0`. The bundled
+CoreCLR, JIT, and CoreLib hashes differed as expected with the runtime version.
+
+All 100 launches produced a child directory, raw JSONL, and receipt; all 100
+raw JSONL files parse, and their start/completion events match the 100 receipt
+entries. The cohort completed without a timeout, unsafe child, malformed log,
+or startup failure. Ninety-nine children passed. Child 8 exited with code 1
+after a managed `InvalidDataException`: token 6 differed from its expected kind,
+text, or half-open range at iteration 1,658,177. Its `run-start` reported
+.NET 10.0.8 x64 and confirmed that no Syntax assembly was loaded. There was
+no `ArgumentOutOfRangeException` or access-violation exit in this cohort.
+The observed any-failure rate was 1/100 (1%; descriptive 95% Wilson interval
+0.18%–5.45%).
+
+The earlier .NET 10.0.12 VM cohort also had 99 passes and one failure among
+100 fresh processes, but its failure was an `ArgumentOutOfRangeException` at
+iteration 1,447,860 rather than a token mismatch. Equal aggregate counts in
+two small, non-randomized cohorts do not establish equal true failure rates,
+nor do different observed symptoms prove that the patch changed the failure
+mechanism. Both cohorts used the same VM and physical host at different times.
+The result shows that the isolated Syntax-free control can fail under .NET
+10.0.8 in this VM; it does not isolate runtime, host, hypervisor, or hardware
+as the cause and does not measure product or release-test reliability.
+
+The copied 10.0.8 receipt, summary, and per-child evidence remain local and
+ignored under
+`.tmp/diagnostic-verification/vm-return-20261003/cohort-20261003T080259381Z-49c88cfe76ed41a3bddc751a2cf9f75c`.
