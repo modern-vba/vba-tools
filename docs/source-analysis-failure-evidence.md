@@ -1219,3 +1219,87 @@ as the cause and does not measure product or release-test reliability.
 The copied 10.0.8 receipt, summary, and per-child evidence remain local and
 ignored under
 `.tmp/diagnostic-verification/vm-return-20261003/cohort-20261003T080259381Z-49c88cfe76ed41a3bddc751a2cf9f75c`.
+
+## Candidate release verification and fixed-control follow-up on 2026-10-03
+
+The single candidate branch was clean at commit
+`5da9de17f29fa8879fa7f0e6806a7a53033a8ef4`. Its
+`npm run diagnose:release:windows-excel` profile completed 20 stages: 19
+passed, including VSIX package verification and all three real-Excel stages;
+`test:language-server` failed (2 failures, 2,935 passes). One Language Server
+child exited with `0xC0000005`/CLR internal error while handling a fixed
+`textDocument/didOpen` request; a second child exited with the same code
+while registering a project reconciliation scope. The first child has a local
+full dump and exact request SHA-256
+`883A82BF23A9187E13D387ABFF339CC83197D22E1EB2AC5D1292E7579B290862`.
+The terminal dump does not retain a first-fault exception context; neither
+stack identifies the first corrupting operation. The run root is
+`.tmp/diagnostic-verification/run-20261003T083745377Z-7183956c577da203`.
+
+The unmodified, fail-fast `npm run verify:release:windows-excel` on the same
+commit failed again in `test:language-server`: 2,936 passes and one failed
+process test out of 2,937. A different child closed stdout while the fixed
+conditional-array rename test awaited a response; its exit was `0xC0000409`.
+The fixture URI was `file:///C:/work/ConditionalArrayRename.bas`, and its
+198-byte UTF-8 text had SHA-256
+`CDE1C632FCE0AADB8503FFA21681F78E392063094F1AC945BEEE4DF163C47034`.
+No matching Windows Application/WER crash record or first-fault dump was
+found for this standard run. The standard gate stopped at this failure, so
+the separate diagnostic profile's later Excel passes do **not** make the
+standard release gate pass.
+
+The pinned, self-contained .NET 10.0.12 Syntax-free control was then run on
+this host in two sequential, randomized affinity comparisons. Each fresh
+child used one worker, two million iterations, the same 26-code-unit input,
+and the same complete 192-file package (inventory SHA-256
+`85BD5B4E09E50243F26EFE64BE8870DB5A71626475171EDF475B3F8AF2979616`).
+The launcher set and read back affinity while each child was suspended,
+before managed startup. Across 150 paired trials, high-performance logical
+processors `0–3` had six managed failures in 150 children: five range
+exceptions and one token mismatch. Efficiency logical processors `4–11`
+had zero failures in 150 children. All 300 children had valid start records,
+fixed binary/input hashes, and confirmed termination; no timeout, payload
+drift, residual child, or new WHEA event was observed during either cohort.
+The raw paired receipts are local under
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/affinity-ab-20261003T091840607Z-df16fcde`
+and
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/affinity-ab-20261003T092408191Z-9f3d7ea7`.
+This is an exploratory same-host correlation, not proof of a defective core,
+firmware, JIT, or a safe efficiency-core-only workaround.
+
+The failed control's catch-time records repeatedly showed a copied
+`ExpectedToken` with boundaries `6–7` at a later token index while a fresh
+read of `Expected[index]` retained its proper boundary (`9` or `25`). An
+interleaved three-arm cohort compared the unchanged baseline, failure-only
+token-field capture, and a pre-`AdvanceTo` invariant check for 30 children
+per arm. The baseline failed 9/30, token-field capture 8/30, and pre-call
+check 0/30. One token-field failure recorded an actual zero-length
+`NumericLiteral` at offset 25 where fresh `Expected[7]` was `Punctuation`
+`25–26`. A separate balanced 30-pair run compared the baseline with a
+minimal end-only pre-call comparison: baseline failed 12/30, end-only 0/30.
+All packages differed only in their managed control DLL; raw logs, hashes,
+receipts, and run summaries are local under
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/three-arm-20261003T093204727Z-929180dc`
+and
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/end-only-pair-20261003T094450860Z-4f0355d9`.
+The pre-call checks also change JIT code generation and timing. A local
+.NET 10.0.12 `Replay` disassembly comparison showed a specific change: the
+baseline passes its copied `expected.End` register to `AdvanceTo`, whereas
+the end-only variant passes the freshly read `Expected[index].End` after
+comparison. The variant also changes stack size and register allocation.
+Both disassemblies and the smoke receipts are under
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/jit-compare-20261003T094707993Z-b315d9af`.
+The variants' absence of failures cannot be promoted to a product fix or
+release mitigation, and the earliest instruction at which the copied value
+diverges is still unknown.
+
+The physical host is a VAIO VJS127 with BIOS `R1100VR` dated 2025-08-08.
+Historical corrected WHEA processor-core/internal-parity events involved
+APIC IDs 0, 1, and 9; none was recorded during the two affinity cohorts.
+The 2026-09-28 Windows Memory Diagnostic was cancelled, not passed. VAIO
+publishes [BIOS R1130VR](https://solutions.vaio.com/6713) for this model,
+but its published changes do not establish a fix for these CLR/control
+failures. A complete memory/CPU diagnostic and an independent physical-host
+comparison remain open discriminators. Updating firmware first would change
+the measurement baseline; no firmware or system setting was changed in these
+experiments.
