@@ -265,12 +265,25 @@ public sealed class VbaDebugAdapterCommandLine
             var capabilities = await vbaDevCapabilitiesProbe
                 .ProbeAsync(vbaDevPath, cancellationToken)
                 .ConfigureAwait(false);
-            if (!AdvertisesRequiredSnapshotBuildFeature(capabilities))
+            if (capabilities.ExitCode != 0)
+            {
+                await WriteLineAsync(
+                    standardError,
+                    "The supplied vba-dev capability inspection failed with exit code " +
+                    $"0x{unchecked((uint)capabilities.ExitCode):X8}; compatibility could not be verified.")
+                    .ConfigureAwait(false);
+                return 1;
+            }
+
+            var admission = VbaDevCapabilityAdmission.Admit(
+                capabilities.StandardOutput, RequiredVbaDevCapabilities);
+            if (!admission.IsAccepted)
             {
                 await WriteLineAsync(
                     standardError,
                     "The supplied vba-dev executable is incompatible; " +
-                    "it must advertise build.sourceSnapshot 2.0 and build.sourceSnapshotAnalysis 1.0.").ConfigureAwait(false);
+                    "it must advertise build.sourceSnapshot 2.0 and build.sourceSnapshotAnalysis 1.0. " +
+                    $"Capability response rejected: {admission.Rejection!.Kind}.").ConfigureAwait(false);
                 return 1;
             }
 
@@ -473,11 +486,6 @@ public sealed class VbaDebugAdapterCommandLine
         }
         return completion.Complete();
     }
-
-    private static bool AdvertisesRequiredSnapshotBuildFeature(
-        VbaDevCapabilitiesProbeResult capabilities)
-        => capabilities.ExitCode == 0 &&
-           VbaDevCapabilityAdmission.Admit(capabilities.StandardOutput, RequiredVbaDevCapabilities).IsAccepted;
 
     private static string ToolVersion
         => typeof(VbaDebugAdapterCommandLine).Assembly

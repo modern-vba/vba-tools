@@ -1382,3 +1382,87 @@ red, and no product fix, issue closure, main integration, or release is
 justified by these observations. A controlled firmware/host comparison or
 independent physical machine remains necessary to separate host and runtime
 causes before deciding how to handle the blocker.
+
+## Post-firmware host retest on 2026-10-05
+
+After the maintainer updated the same VJS127 host and rebooted at 21:25:43
+JST, Windows reported BIOS `R1130VR` and Intel Management Engine firmware
+`16.1.42.2872`. The installed runtime remained .NET `10.0.12`. Both firmware
+components changed before retesting, so any change in incidence cannot be
+attributed to either update separately. No WHEA-Logger event was recorded after
+that reboot during the following trials.
+
+The unchanged, pinned Syntax-free control first completed 100 randomized
+performance/efficiency pairs without a managed failure: 0/100 children in
+each arm, with matching package inventory and valid affinity-before-resume
+receipts. One subsequent four-logical-processor comparison stopped after 40
+successful children when its name-wide process guard briefly found another
+`ManagedControl` process. It did not capture that process's PID or path; no
+child 41 was started, and the partial run is not a completed cohort. A fresh
+unchanged rerun and three further completed comparisons each ran 25 children
+on logical processors `0`, `1`, `2`, and `3`. Across those four complete
+cohorts, processor `0` failed once in 100 fresh children and each other
+processor failed zero times in 100. All four cohorts completed without a
+harness error, timeout, invalid affinity receipt, or package inventory change.
+
+The processor-`0` failure was the first child of the fourth cohort, at worker
+iteration 842,932. `ControlReader.AdvanceTo` received copied end offset `7`
+behind the correct current reader offset `8`; a fresh `Expected[3]` array read
+returned end offset `9`, and the source and complete expected boundary list
+were intact. The process reported `ArgumentOutOfRangeException`, and its
+`syntaxAssemblyLoaded` value was `false`. Static review found one worker, no
+source path that writes the expected-token array after initialization, and
+matching IL for the pinned and inspected control methods. These observations
+do not identify whether the transient value discrepancy arose in JIT/CLR,
+processor execution, or another host mechanism. They show that the firmware
+update did **not** eliminate the isolated failure. The complete local summaries
+are under `.tmp/diagnostic-verification/syntax-only-probe/managed-control/`:
+`affinity-ab-20261005T123121749Z-8d28f8b4`, the partial
+`affinity-sibling-threads-20261005T123826887Z-0d5cb6d4`, and the four complete
+`affinity-sibling-threads-20261005T124304086Z-760d6db3`,
+`affinity-sibling-threads-20261005T131606476Z-37a37ad3`,
+`affinity-sibling-threads-20261005T131842931Z-f906dd9f`, and
+`affinity-sibling-threads-20261005T132131093Z-7387b30c` directories.
+
+At clean candidate commit `53c164a13753a49f2e90d3311dc3e5c543361438`,
+an unmodified `npm run verify:release:windows-excel` exited `0` without CPU
+affinity restriction. It passed all 2,937 language-server tests, VSIX packaging,
+and the Windows/Excel integration groups of 48 VbaDev, six Debug Adapter, and
+six cross-product tests. Its ignored console log is
+`.tmp/diagnostic-verification/post-firmware-normal-gate-20261005T1248JST.log`
+(SHA-256 `130196B21D0F9AA3BAF9FA6A4C4815365972EEBD095CC13F833C37DF60757941`).
+An immediate second unmodified gate passed the language-server and packaging
+stages and all 48 VbaDev Excel tests, but stopped at Debug Adapter Excel
+integration with two failures among six tests. The restart-build test expected
+a VBA namespace preflight failure but received a different, truncated
+`vba-dev snapshot build exited with code` message. A later test reported that
+the packaged adapter ended before DAP response 1 and printed its generic
+`vba-dev` capability-incompatibility message. The gate exited `1`; the
+cross-product Excel tests were not run in that attempt. Its ignored log is
+`.tmp/diagnostic-verification/post-firmware-normal-gate-repeat2-20261005.log`
+(SHA-256 `83893D74FBA7A1D3405DB7C3D1B9258E836E3D8D0E8C1E1484F00F048B6A15F0`).
+
+Application `.NET Runtime` event 1023, record `82620`, at 22:47:41.905 JST
+reported that `vba-dev.exe` terminated on CoreCLR `10.0.12` internal error
+`0x80131506`. Its timing closely matches the first Debug Adapter failure, but
+the test log did not retain the child PID, exit code, or complete build error,
+so this is not an exact process-identity join. No second matching Application
+event was found for the later capability failure. The packaged executable
+currently advertises both required features; 100 direct capability probes
+returned valid responses, and a standalone rerun of the six Debug Adapter
+Excel tests passed all six. This rules out a consistently stale or
+incompatible packaged executable but does not explain the intermittent
+second failure or establish that the CoreCLR event caused both failures.
+
+The capability startup path previously collapsed nonzero probe exits and
+response-admission rejections into the same incompatibility line. A narrow
+test-first diagnostic change on this branch now distinguishes a nonzero probe
+exit by unsigned hexadecimal code from a zero-exit response rejection by
+fixed `CapabilityRejectionKind`, without exposing raw child stdout/stderr.
+The three new targeted cases failed before the change and passed afterward;
+the complete non-Excel Debug Adapter suite passed 660 tests with six Excel
+tests skipped. This improves the next-occurrence evidence and is not a
+correction for a CoreCLR crash, the original URI failure, or the isolated
+control discrepancy. The changed candidate still needs a clean full gate.
+No issue closure, `main` integration, tag, or release follows from these
+mixed observations.

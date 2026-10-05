@@ -57,6 +57,64 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         Assert.Contains("incompatible", ReadUtf8(error), StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task FailedCapabilityProbeReportsItsExitCodeWithoutLeakingProcessOutput()
+    {
+        var runner = new RecordingStdioRunner();
+        var workspaces = new CapabilityRejectedWorkspaceManager();
+        var probe = new RecordingVbaDevCapabilitiesProbe(new(
+            unchecked((int)0x80131506), "private stdout", "private stderr"));
+        var commandLine = CreateCommandLine(runner, probe, workspaces);
+        var executablePath = Path.GetFullPath("vba-dev.exe");
+        using var output = new MemoryStream();
+        using var error = new MemoryStream();
+
+        var result = await commandLine.InvokeAsync(
+            ["--stdio", "--vba-dev", executablePath, "--session", "0123456789abcdef0123456789abcdef"],
+            Stream.Null, output, error, CancellationToken.None);
+
+        Assert.Equal(1, result);
+        Assert.Equal([executablePath], probe.Invocations);
+        Assert.Empty(runner.Invocations);
+        Assert.Equal(0, workspaces.Invocations);
+        Assert.Empty(ReadUtf8(output));
+        var diagnostic = ReadUtf8(error);
+        Assert.Contains("capability inspection failed", diagnostic, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("0x80131506", diagnostic, StringComparison.Ordinal);
+        Assert.DoesNotContain("private stdout", diagnostic, StringComparison.Ordinal);
+        Assert.DoesNotContain("private stderr", diagnostic, StringComparison.Ordinal);
+        Assert.DoesNotContain("incompatible", diagnostic, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("private invalid json", "InvalidJson")]
+    [InlineData("{\"featureVersions\":{}}", "MissingCapability")]
+    public async Task RejectedCapabilityResponseReportsKindWithoutLeakingPayload(
+        string response, string rejectionKind)
+    {
+        var runner = new RecordingStdioRunner();
+        var workspaces = new CapabilityRejectedWorkspaceManager();
+        var probe = new RecordingVbaDevCapabilitiesProbe(new(0, response, "private stderr"));
+        var commandLine = CreateCommandLine(runner, probe, workspaces);
+        var executablePath = Path.GetFullPath("vba-dev.exe");
+        using var output = new MemoryStream();
+        using var error = new MemoryStream();
+
+        var result = await commandLine.InvokeAsync(
+            ["--stdio", "--vba-dev", executablePath, "--session", "0123456789abcdef0123456789abcdef"],
+            Stream.Null, output, error, CancellationToken.None);
+
+        Assert.Equal(1, result);
+        Assert.Equal([executablePath], probe.Invocations);
+        Assert.Empty(runner.Invocations);
+        Assert.Equal(0, workspaces.Invocations);
+        Assert.Empty(ReadUtf8(output));
+        var diagnostic = ReadUtf8(error);
+        Assert.Contains("incompatible", diagnostic, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(rejectionKind, diagnostic, StringComparison.Ordinal);
+        Assert.DoesNotContain("private", diagnostic, StringComparison.Ordinal);
+    }
+
     private sealed class CapabilityRejectedWorkspaceManager : IVbaDebugSessionWorkspaceManager
     {
         public int Invocations { get; private set; }
