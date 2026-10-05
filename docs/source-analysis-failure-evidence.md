@@ -1303,3 +1303,73 @@ failures. A complete memory/CPU diagnostic and an independent physical-host
 comparison remain open discriminators. Updating firmware first would change
 the measurement baseline; no firmware or system setting was changed in these
 experiments.
+
+## Host diagnostic and CPU-affinity follow-up on 2026-10-05
+
+The user-supplied VAIO online custom diagnostic reported `Success` at 100%:
+ten CPU checks and the Write Memory and Memory Address checks all passed.
+The local `diag-result.txt` receipt has SHA-256
+`BCFD4997AC0669E75D0D42C8AB5B39FC2FED8A4289CDA7C077022A5889EB35F2`.
+It contains private device inventory and remains outside this repository.
+These short checks found no fault at the time; they do not exercise each
+logical processor with the failing .NET workload for a prolonged period.
+The host still reported BIOS `R1100VR`; no firmware or persistent affinity
+setting was changed during the following comparisons.
+
+At clean candidate commit `f8525fea1b587c4836c2880f752ad2899bb1cd74`,
+the same pinned, Syntax-free .NET 10.0.12 control package ran 100 new
+randomized performance/efficiency pairs. All 200 children had valid start
+receipts, pre-resume affinity readback, matching before/after package
+inventory, and no timeout. Performance logical processors `0–3` failed
+once in 100 children with `ArgumentOutOfRangeException` at iteration
+456,729; efficiency processors `4–11` failed zero times in 100. The
+failing copied token end was `7`, while a fresh array read at the current
+index was `22`. The complete local receipts are under
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/affinity-ab-20261005T104600519Z-81b041a1`.
+
+Two further sequential, randomized comparisons kept the same pinned
+package, one worker, two million iterations per fresh process, and
+suspended-launch affinity verification. The first ran 25 children each
+on logical processors `0`, `2`, `4`, and `9`: processor `0` failed twice
+with range exceptions, while the other three had no failures. The second
+ran 25 each on the four performance-core siblings `0`, `1`, `2`, and `3`:
+processor `0` failed three times (two range exceptions and one token
+mismatch), while the other three had no failures. CPU-set metadata mapped
+`0/1` to one physical core and `2/3` to another. The two cohorts therefore
+observed five failures in 50 processor-`0` children versus zero in 150
+other single-processor children. Their local receipts are under
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/affinity-per-logical-cpu-20261005T110916414Z-f9593a43`
+and
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/affinity-sibling-threads-20261005T111540336Z-5b719201`.
+Both completed with matching package inventory and without invalid starts,
+affinity readbacks, or timeouts. No WHEA-Logger event was recorded during
+the October 5 trials. These exploratory same-host counts associate this
+particular failure with logical processor `0`; they do not distinguish a
+physical defect from firmware, OS scheduling, or CPU-dependent JIT behavior.
+
+The unmodified `npm run verify:release:windows-excel` on that commit failed
+at `test:language-server`: 2,935 passed and two LSP children exited with
+`0xC0000005` in different process tests. The corresponding Application log
+has .NET Runtime event 1023 records `82376` and `82377` at 20:05:52 and
+20:06:07 JST, both reporting CoreCLR internal error `0x80131506`. No
+matching first-fault dump or Application Error/WER crash record was found.
+The fail-fast gate did not reach its later stages. The local console log is
+`.tmp/diagnostic-verification/release-gate-20261005T195500/console.log`
+(SHA-256 `35389899FB0EEF6077878C8CE008AA2448FAF12549F61CAE265E050869E20F2A`).
+
+As a **diagnostic contrast only**, a fresh shell excluded logical processor
+`0` with temporary process affinity `0x0FFE`; its testhost, LSP, Node, and
+Excel children were observed to inherit that mask. One standalone
+`test:language-server` run passed all 2,937 tests. A following full
+`verify:release:windows-excel` run exited `0`, including VSIX packaging
+and Windows/Excel integration (48 VbaDev, six Debug Adapter, and six
+cross-product tests passed). The temporary shell restored its prior
+affinity before exiting. Logs remain under
+`.tmp/diagnostic-verification/lsp-no-lp0-20261005` and
+`.tmp/diagnostic-verification/release-gate-no-lp0-20261005`.
+One diagnostic pass under altered CPU scheduling is **not** an unmodified
+release-gate pass or a product workaround. The ordinary release gate remains
+red, and no product fix, issue closure, main integration, or release is
+justified by these observations. A controlled firmware/host comparison or
+independent physical machine remains necessary to separate host and runtime
+causes before deciding how to handle the blocker.
