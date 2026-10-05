@@ -1314,7 +1314,11 @@ It contains private device inventory and remains outside this repository.
 These short checks found no fault at the time; they do not exercise each
 logical processor with the failing .NET workload for a prolonged period.
 The host still reported BIOS `R1100VR`; no firmware or persistent affinity
-setting was changed during the following comparisons.
+setting was changed during the following comparisons. The installed Intel
+Management Engine Interface firmware property reported `16.1.38.2676`.
+VAIO offers [version `16.1.42.2872`](https://solutions.vaio.com/6709)
+for VJS127, but does not attribute this particular failure to the older
+version.
 
 At clean candidate commit `f8525fea1b587c4836c2880f752ad2899bb1cd74`,
 the same pinned, Syntax-free .NET 10.0.12 control package ran 100 new
@@ -1343,9 +1347,14 @@ and
 `.tmp/diagnostic-verification/syntax-only-probe/managed-control/affinity-sibling-threads-20261005T111540336Z-5b719201`.
 Both completed with matching package inventory and without invalid starts,
 affinity readbacks, or timeouts. No WHEA-Logger event was recorded during
-the October 5 trials. These exploratory same-host counts associate this
-particular failure with logical processor `0`; they do not distinguish a
-physical defect from firmware, OS scheduling, or CPU-dependent JIT behavior.
+these three control cohorts. A later corrected WHEA-Logger event 19
+(record `119376`) occurred at 20:28:06 JST during the temporary-affinity
+full gate: processor-core internal parity error, APIC ID `9`. Its mapping
+to the tested logical-processor indices and any causal connection to the
+managed failures remain unestablished. These exploratory same-host counts
+associate this particular failure with logical processor `0`; they do not
+distinguish a physical defect from firmware, OS scheduling, or CPU-dependent
+JIT behavior.
 
 The unmodified `npm run verify:release:windows-excel` on that commit failed
 at `test:language-server`: 2,935 passed and two LSP children exited with
