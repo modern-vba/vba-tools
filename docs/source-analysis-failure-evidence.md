@@ -1475,3 +1475,43 @@ The branch was clean and synchronized with its remote at that commit.
 This successful run does not erase the preceding intermittent gate failure or
 identify the underlying host/runtime mechanism. No issue closure, `main`
 integration, tag, or release follows from these mixed observations.
+
+## Clean-branch full-gate recurrence on 2026-10-06
+
+The next clean, synchronized candidate was
+`cdaba1d0a769246a73c4d5d54a098c171938a4be`. Relative to the preceding
+passing `36a7627` gate, only this evidence document changed; executable source
+did not. An unmodified `npm run verify:release:windows-excel` passed 2,937
+language-server tests, VSIX packaging, and all 48 VbaDev Windows/Excel tests,
+but failed one of six Debug Adapter Windows/Excel tests and exited `1`. The
+cross-product Excel group was not run. The ignored console log is
+`.tmp/diagnostic-verification/post-firmware-normal-gate-final-cdaba1d-20261005.log`
+(SHA-256 `72D711D0336D74282B32FFB32412C180FEC067B05ECCDA7607D32F7F52D2DA48`).
+
+The failing `AbruptPackagedAdapterExitKillsItsExactExcelProcessAndLeavesScopedCleanup`
+case stopped at its launch-success assertion before it could kill the adapter
+or verify exact Excel-process cleanup. The adapter remained alive and returned
+`DebugSetupError: vba-dev snapshot build exited with code -1073741819`.
+The child stderr began `Fatal error. 0x80131506` with a stack led by
+`System.String.Concat`, `VbaCallableSignaturePresentation.Assemble`, and
+`VbaProjectReferenceCatalogSet.CreateSourceSignature`. The signed process exit
+corresponds to `0xC0000005`. Application `.NET Runtime` event 1023, record
+`82633`, at 00:05:05 JST reports a `vba-dev.exe` CoreCLR `10.0.12` internal
+error `0x80131506` in the same interval. The event does not include a child
+PID, so its identity is not an exact join to the test's process; the matching
+executable, time, and fatal code are strong but bounded evidence. No WHEA
+event was recorded from the post-firmware reboot through this run, and no
+Excel, testhost, or vba-dev process remained afterward.
+No dump for this event was found in the local diagnostic, CrashDumps, temporary,
+or archived WER locations. The existing opt-in integration dump hook targets
+the native Test build, not this Debug Adapter snapshot-build child.
+
+This is a failure in a packaged product subprocess reached by the integration
+test, not a demonstrated bug in the test's abrupt-termination assertion. It
+does not show that the string-concatenation source expression is defective:
+the fatal CLR error has appeared at unrelated managed locations in earlier
+trials, and the Syntax-free control still failed after the firmware update.
+No specific first corrupting operation, historical failing URI, shared root
+cause, or corrective mitigation is established. The normal full release gate
+therefore remains unstable, and #415 and the release cannot be closed on this
+evidence.
