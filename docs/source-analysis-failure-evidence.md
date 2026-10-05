@@ -1463,6 +1463,15 @@ The three new targeted cases failed before the change and passed afterward;
 the complete non-Excel Debug Adapter suite passed 660 tests with six Excel
 tests skipped. This improves the next-occurrence evidence and is not a
 correction for a CoreCLR crash, the original URI failure, or the isolated
-control discrepancy. The changed candidate still needs a clean full gate.
-No issue closure, `main` integration, tag, or release follows from these
-mixed observations.
+control discrepancy. The changed candidate at
+`36a76274ce105e447e4e4080ac555cfcb05fe642` then passed one unmodified
+`npm run verify:release:windows-excel` run with exit code `0`: 2,937 language
+server tests, VSIX packaging, and the Windows/Excel groups of 48 VbaDev, six
+Debug Adapter, and six cross-product tests all passed. Its ignored console
+log is `.tmp/diagnostic-verification/post-firmware-normal-gate-commit36a7627-20261005.log`
+(SHA-256 `836142E053EA7D199A311AC9EB73DC19D18DA043A25C24548273CA910C88381E`).
+No `.NET Runtime` event 1023 or WHEA-Logger event was found during this run.
+The branch was clean and synchronized with its remote at that commit.
+This successful run does not erase the preceding intermittent gate failure or
+identify the underlying host/runtime mechanism. No issue closure, `main`
+integration, tag, or release follows from these mixed observations.
