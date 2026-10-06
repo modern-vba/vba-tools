@@ -1,13 +1,16 @@
+using System.Security.Cryptography;
+using System.Text;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using VbaTools.Syntax;
 using VbaLanguageServer.Workspace;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace VbaLanguageServer.Tests;
 
 [Collection(VbaDocumentAnalysisPerformanceTestCollection.Name)]
-public sealed class VbaLargeProjectValidationResponsivenessTests
+public sealed class VbaLargeProjectValidationResponsivenessTests(ITestOutputHelper output)
 {
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
 
@@ -57,11 +60,7 @@ public sealed class VbaLargeProjectValidationResponsivenessTests
                 .WaitAsync(TestTimeout);
             var argumentListCount = semanticResult.ProjectSnapshot
                 .SourceDocuments
-                .Sum(pair =>
-                    VbaSyntaxTree.ParseModule(pair.Key, pair.Value)
-                        .Module
-                        .ArgumentLists
-                        .Count);
+                .Sum(pair => CountArgumentLists(pair.Key, pair.Value));
 
             Assert.True(
                 semanticResult.ProjectSnapshot.SourceDocuments.Count >= 90,
@@ -100,6 +99,34 @@ public sealed class VbaLargeProjectValidationResponsivenessTests
         }
 
         Assert.True(validationWasCancelled);
+    }
+
+    private int CountArgumentLists(string uri, string source)
+    {
+        try
+        {
+            return VbaSyntaxTree.ParseModule(uri, source)
+                .Module
+                .ArgumentLists
+                .Count;
+        }
+        catch (Exception error)
+        {
+            // [DEBUG-415-large-project-v1] Keep the original failure while identifying its input.
+            try
+            {
+                var sourceHash = Convert.ToHexString(
+                    SHA256.HashData(Encoding.Unicode.GetBytes(source)));
+                output.WriteLine(
+                    $"Parse failure: uri={uri}, utf16Length={source.Length}, utf16Sha256={sourceHash}, exception={error.GetType().FullName}");
+            }
+            catch (Exception)
+            {
+                // Diagnostics must not replace the original parse failure.
+            }
+
+            throw;
+        }
     }
 
     private sealed class BlockingProjectValidationObserver

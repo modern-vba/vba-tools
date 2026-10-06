@@ -3,7 +3,7 @@
 All notable user-facing changes to the independently versioned `vba-dev` CLI
 are recorded here. Extension changes remain in the repository root changelog.
 
-## [0.1.0] - 2026-09-14
+## [0.1.0] - 2026-10-06
 
 ### Added
 
@@ -15,3 +15,5 @@ are recorded here. Extension changes remain in the repository root changelog.
   Excel-free project check, and scoped active Doctor command surfaces.
 - Caller-owned `build.sourceSnapshot` 1.0 snapshot build input with paired
   caller-selected output for independently hosted tooling.
+- Bounded local diagnostic evidence for incomplete Build, Publish, and
+  build-before-test source analysis, with the report path printed on failure.

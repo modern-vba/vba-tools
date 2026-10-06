@@ -15,6 +15,14 @@ cancellation token. The result contains exit code, stdout, and stderr; a nonzero
 exit remains data. Consumers retain command arguments, JSON interpretation,
 capability policy, diagnostics, and snapshot/generation ownership.
 
+Consumers may make one additional, bounded attempt only for an independently
+side-effect-free capability probe whose previous result proves terminal
+process exit and complete stream capture with an abnormal OS-level status.
+Ordinary nonzero exits, cancellation, and `ProcessLifecycleException` do not
+authorize a retry. `ProcessInvocation` continues to return the observed result
+without classifying crashes or implementing policy; no snapshot build or other
+state-changing invocation is replayed automatically.
+
 Capability interpretation is now delegated to the separate neutral
 `VbaTools.CapabilityAdmission` Module designated in ADR 0039. Consumers declare
 their own required command schemas and feature versions and decide what to do

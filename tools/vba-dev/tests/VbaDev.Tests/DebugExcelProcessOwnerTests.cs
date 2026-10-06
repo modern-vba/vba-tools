@@ -751,7 +751,8 @@ internal sealed class FakeDebugOwnedProcess(
     Action? killAction = null,
     List<string>? events = null,
     bool exitOnKill = true,
-    Exception? hasExitedAfterDisposeError = null)
+    Exception? hasExitedAfterDisposeError = null,
+    bool deferExitObservation = false)
     : IDebugOwnedProcess
 {
     private readonly TaskCompletionSource completion =
@@ -802,8 +803,13 @@ internal sealed class FakeDebugOwnedProcess(
         events?.Add("process-exit");
         ExitCode = exitCode;
         hasExited = true;
-        completion.TrySetResult();
+        if (!deferExitObservation)
+        {
+            completion.TrySetResult();
+        }
     }
+
+    public void CompleteExitObservation() => completion.TrySetResult();
 
     public void Dispose()
     {

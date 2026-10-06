@@ -2,7 +2,10 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const ignoredDirectories = new Set(['.git', '.vs', 'node_modules', 'bin', 'obj', 'out', 'coverage']);
+const ignoredDirectories = new Set([
+  '.git', '.vs', '.tmp', '.vscode-test', '.vscode-test-web', '.vscode-test-insiders',
+  'node_modules', 'bin', 'obj', 'out', 'coverage'
+]);
 // These are explicitly designated foundations, not every directory outside a product.
 // The integration-test owner may consume public products and is not a foundation.
 const foundationOwners = new Set(['VbaTools.Syntax', 'VbaTools.Semantics', 'VbaTools.ContentLengthFraming', 'VbaTools.ProjectMetadata', 'VbaTools.ProcessInvocation', 'VbaTools.CapabilityAdmission', 'VbaTools.SourceIdentity']);
@@ -148,14 +151,18 @@ function sourceDependencies(source, text, root) {
   return dependencies;
 }
 
-async function filesUnder(directory, prefix = '') {
+async function filesUnder(directory) {
   const files = [];
-  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-    const relative = `${prefix}${entry.name}`;
-    if (entry.isDirectory() && !ignoredDirectories.has(entry.name)) {
-      files.push(...await filesUnder(path.join(directory, entry.name), `${relative}/`));
-    } else if (entry.isFile()) {
-      files.push(relative);
+  const pendingDirectories = [{ absolute: directory, prefix: '' }];
+  while (pendingDirectories.length) {
+    const current = pendingDirectories.pop();
+    for (const entry of await fs.readdir(current.absolute, { withFileTypes: true })) {
+      const relative = `${current.prefix}${entry.name}`;
+      if (entry.isDirectory() && !ignoredDirectories.has(entry.name)) {
+        pendingDirectories.push({ absolute: path.join(current.absolute, entry.name), prefix: `${relative}/` });
+      } else if (entry.isFile()) {
+        files.push(relative);
+      }
     }
   }
   return files.sort();

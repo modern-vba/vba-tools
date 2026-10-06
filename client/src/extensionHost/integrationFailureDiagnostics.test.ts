@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
+import { spawn, type SpawnOptionsWithoutStdio } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
 import test from 'node:test';
 import { runCompanionCommand } from '../devtoolCommand';
 import { IntegrationFailureDiagnostics } from './integrationFailureDiagnostics';
@@ -95,3 +99,77 @@ test('spawn failure remains a command failure with its original error in diagnos
   assert.match(diagnostics.format(), /error:.*ENOENT/);
   assert.doesNotMatch(diagnostics.format(), /close: code=0/);
 });
+
+test('opt-in native Test build capture gives only its selected vba-dev child a local full dump path',
+  { timeout: 10000 }, async context => {
+    const root = await mkdtemp(path.join(tmpdir(), 'vba-tools-native-test-dump-'));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    const inheritedDumpName = process.env.DOTNET_DbgMiniDumpName;
+    const launches: { executablePath: string; args: string[]; options: SpawnOptionsWithoutStdio }[] = [];
+    const start = (executablePath: string, args: string[], options: SpawnOptionsWithoutStdio) => {
+      launches.push({ executablePath, args, options });
+      return spawn(process.execPath, ['-e', 'process.stdout.write("ok\\n")'], options);
+    };
+    const diagnostics = new IntegrationFailureDiagnostics({ dumpRoot: root, target: 'corrected' }, start);
+    diagnostics.beginPhase('Explorer corrected unsaved source');
+    const snapshot = path.join(root, 'snapshot-1');
+    await mkdir(snapshot);
+    await writeFile(path.join(snapshot, 'Caller.bas'), 'Attribute VB_Name = "Caller"\n');
+    const args = ['test', '--source-snapshot', snapshot, '--format', 'ndjson'];
+    const child = diagnostics.startProcess(path.join(root, 'vba-dev.exe'), args);
+    await new Promise<void>((resolve, reject) => {
+      child.onError?.(reject);
+      child.onClose?.((code) => code === 0 ? resolve() : reject(new Error(`Child exited ${code}`)));
+    });
+
+    assert.equal(launches.length, 1);
+    assert.deepEqual(launches[0].args, args);
+    const environment = launches[0].options.env;
+    assert.equal(environment?.DOTNET_DbgEnableMiniDump, '1');
+    assert.equal(environment?.DOTNET_DbgMiniDumpType, '4');
+    assert.equal(path.dirname(environment?.DOTNET_DbgMiniDumpName ?? ''), root);
+    assert.match(path.basename(environment?.DOTNET_DbgMiniDumpName ?? ''),
+      /^vba-dev-[0-9a-f-]+-%p\.dmp$/);
+    assert.equal(process.env.DOTNET_DbgMiniDumpName, inheritedDumpName);
+    assert.match(diagnostics.format(), /Explorer corrected unsaved source/);
+    assert.match(diagnostics.format(), /--source-snapshot/);
+    assert.match(diagnostics.format(), /close: code=0 signal=null/);
+    const metadata = (await readdir(root)).filter(name => name.endsWith('.jsonl'));
+    assert.equal(metadata.length, 1);
+    const records = (await readFile(path.join(root, metadata[0]), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(records[0].args, args);
+    assert.equal(records[0].sourceSnapshot, snapshot);
+    assert.equal(records[0].snapshotEvidence.status, 'complete');
+    assert.deepEqual(records[0].snapshotEvidence.files.map((file: { path: string }) => file.path), ['Caller.bas']);
+    assert.equal(typeof records[0].pid, 'number');
+    assert.equal(records[1].exitCode, 0);
+  });
+
+test('native Test build dump opt-in never arms another phase, executable, or second child',
+  { timeout: 10000 }, async context => {
+    const root = await mkdtemp(path.join(tmpdir(), 'vba-tools-native-test-scope-'));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    const launches: SpawnOptionsWithoutStdio[] = [];
+    const start = (_executablePath: string, _args: string[], options: SpawnOptionsWithoutStdio) => {
+      launches.push(options);
+      return spawn(process.execPath, ['-e', 'process.exit(0)'], options);
+    };
+    const diagnostics = new IntegrationFailureDiagnostics({ dumpRoot: root, target: 'invalid' }, start);
+    const args = ['test', '--source-snapshot', path.join(root, 'snapshot')];
+    const run = async (executablePath: string): Promise<void> => {
+      const child = diagnostics.startProcess(executablePath, args);
+      await new Promise<void>((resolve, reject) => {
+        child.onError?.(reject);
+        child.onClose?.(code => code === 0 ? resolve() : reject(new Error(`Child exited ${code}`)));
+      });
+    };
+    diagnostics.beginPhase('Explorer corrected unsaved source');
+    await run(path.join(root, 'vba-dev.exe'));
+    diagnostics.beginPhase('Explorer invalid unsaved source');
+    await run(path.join(root, 'not-vba-dev.exe'));
+    await run(path.join(root, 'vba-dev.exe'));
+    await run(path.join(root, 'vba-dev.exe'));
+    assert.deepEqual(launches.map(options => options.env?.DOTNET_DbgEnableMiniDump),
+      [undefined, undefined, '1', undefined]);
+    assert.equal((await readdir(root)).filter(name => name.endsWith('.jsonl')).length, 1);
+  });

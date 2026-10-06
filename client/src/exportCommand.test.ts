@@ -4,6 +4,45 @@ import * as path from 'node:path';
 
 import { runExportCommand } from './exportCommand';
 
+test('explicit export crash shows abnormal termination without replay', async () => {
+  const executablePath = path.resolve('tools', 'vba-dev.exe');
+  const errors: string[] = [];
+  let launches = 0;
+  const result = await runExportCommand({
+    extensionRoot: path.resolve('extension'),
+    vbaDevResolver: { resolve: async () => ({
+      executablePath, bundledPath: executablePath, source: 'bundled',
+      capabilities: { toolVersion: '0.1.0', contractVersion: '1.0', commands: {} }
+    }) },
+    workspaceRoots: [],
+    fileExists: async () => false,
+    findProjectManifests: async () => [],
+    chooseProject: async () => undefined,
+    resolveCommandPaletteTarget: async () => undefined,
+    readTextFile: async () => '',
+    showWarningMessage: async () => undefined,
+    runWithProgress: async task => task({
+      isCancellationRequested: false,
+      onCancellationRequested: () => ({ dispose: () => undefined })
+    }),
+    startProcess: () => {
+      launches += 1;
+      return {
+        onStdout: () => undefined,
+        onStderr: () => undefined,
+        onExit: listener => listener(0xC0000005, null),
+        kill: () => undefined
+      };
+    },
+    outputChannel: { append: () => undefined, appendLine: () => undefined, show: () => undefined },
+    showErrorMessage: async message => { errors.push(message); }
+  }, { mode: 'explicit', workingDirectory: path.resolve('work'), workbookPath: 'Book.xlsm' });
+
+  assert.equal(launches, 1);
+  assert.equal(result?.exitCode, 0xC0000005);
+  assert.match(errors[0] ?? '', /terminated abnormally.*0xC0000005.*not retried/i);
+});
+
 test('cleanup export cancellation obtains exact consent before resolving vba-dev', async () => {
   const projectRoot = path.resolve('test-work', 'BookProject');
   const manifestPath = path.join(projectRoot, 'vba-project.json');

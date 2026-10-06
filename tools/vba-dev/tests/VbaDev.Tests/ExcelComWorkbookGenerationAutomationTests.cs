@@ -287,41 +287,6 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
     }
 
     [Fact]
-    public async Task SaveTimeoutIdentifiesTheStageAndTerminatesOnlyTheAttachedOwnerAfterGrace()
-    {
-        var events = new List<string>();
-        var dispatcher = new RecordingGenerationDispatcher(events);
-        var lifecycle = new FakeWorkbookGenerationLifecycle(events)
-        {
-            BlockSaveUntilTermination = true
-        };
-        var automation = new ExcelComWorkbookGenerationAutomation(
-            new RecordingGenerationDispatcherFactory(dispatcher),
-            lifecycle);
-        var timeouts = WorkbookAutomationTimeouts.Default with
-        {
-            WorkbookSave = TimeSpan.FromMilliseconds(20),
-            ProcessCleanup = TimeSpan.Zero
-        };
-
-        var error = await Assert.ThrowsAsync<WorkbookAutomationTimeoutException>(() => automation.RunAsync(
-            "staged.xlsm",
-            timeouts,
-            async (session, cancellationToken) =>
-            {
-                await session.SaveAsync(cancellationToken);
-                return true;
-            },
-            CancellationToken.None));
-
-        Assert.Equal(WorkbookAutomationStageKind.WorkbookSave, error.Stage.Kind);
-        Assert.Equal("staged.xlsm", error.Stage.Item);
-        Assert.Equal(1, lifecycle.Owner.TerminationCalls);
-        Assert.Contains("cleanup-session:00:00:00", events);
-        Assert.DoesNotContain("cleanup-host:00:00:00", events);
-    }
-
-    [Fact]
     public async Task ModuleEnumerationTimeoutIdentifiesInspectionInsteadOfRemoval()
     {
         var events = new List<string>();
@@ -472,34 +437,41 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         var events = new List<string>();
         var lifecycle = new FakeWorkbookGenerationLifecycle(events)
         {
-            BlockSaveUntilTermination = true,
             CleanupError = new COMException("The RPC server is unavailable.")
         };
-        // A blocked Save must return control so its stage deadline can be armed.
         var automation = new ExcelComWorkbookGenerationAutomation(
-            new StaComDispatcherFactory(),
+            new RecordingGenerationDispatcherFactory(new RecordingGenerationDispatcher(events)),
             lifecycle);
         var timeouts = WorkbookAutomationTimeouts.Default with
         {
             WorkbookSave = TimeSpan.FromMilliseconds(20),
             ProcessCleanup = TimeSpan.Zero
         };
+        var originalTimeout = new WorkbookAutomationTimeoutException(
+            new WorkbookAutomationStage(WorkbookAutomationStageKind.WorkbookSave, "staged.xlsm"),
+            timeouts.WorkbookSave);
 
         var error = await Assert.ThrowsAsync<WorkbookAutomationTimeoutException>(() =>
-            automation.RunAsync(
+            automation.RunAsync<bool>(
                 "staged.xlsm",
                 timeouts,
-                async (session, cancellationToken) =>
+                async (_, _) =>
                 {
-                    await session.SaveAsync(cancellationToken);
-                    return true;
+                    // Stage interruption has real-STA coverage in WorkbookAutomationStageExecutorTests.
+                    // Here exact owner release is established before testing COM-cleanup arbitration.
+                    await lifecycle.CapturedController!.RequestCleanupAsync(TimeSpan.Zero);
+                    throw originalTimeout;
                 },
                 CancellationToken.None));
 
+        Assert.Same(originalTimeout, error);
         Assert.Equal(WorkbookAutomationStageKind.WorkbookSave, error.Stage.Kind);
         Assert.Equal(1, lifecycle.Owner.TerminationCalls);
+        Assert.True(lifecycle.Owner.HasExited);
         Assert.Contains("cleanup-session:00:00:00", events);
+        Assert.DoesNotContain("cleanup-host:00:00:00", events);
         Assert.Equal(1, lifecycle.Owner.DisposeCalls);
+        Assert.Equal("dispatcher-dispose", events[^1]);
     }
 
     [Fact]
@@ -742,10 +714,15 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         Assert.True(lifecycle.Owner.HasExited);
     }
 
-    [Fact]
-    public async Task RuntimeWithholdsSuccessfulWorkWhenDispatcherRetirementStalls()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RuntimeWithholdsResultsWhenDispatcherRetirementStalls(bool failOperation)
     {
         var lifecycle = new FakeWorkbookGenerationLifecycle([]);
+        var operationError = new WorkbookAutomationTimeoutException(
+            new WorkbookAutomationStage(WorkbookAutomationStageKind.WorkbookSave, "staged.xlsm"),
+            TimeSpan.FromMilliseconds(20));
         var runtime = new AutomationExcelProcessRuntime(
             new RecordingGenerationDispatcherFactory(new DisposalBlockedGenerationDispatcher()),
             lifecycle);
@@ -756,17 +733,61 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             {
                 ProcessCleanup = TimeSpan.FromMilliseconds(20)
             },
-            static (_, _) => Task.FromResult("completed work"),
+            (_, _) => failOperation
+                ? Task.FromException<string>(operationError)
+                : Task.FromResult("completed work"),
             CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
 
         Assert.True(outcome.Evidence.ProcessReleaseVerified);
         Assert.False(outcome.Evidence.DispatcherRetired);
-        Assert.Null(outcome.Evidence.OperationFailure);
+        if (failOperation)
+            Assert.Same(operationError, outcome.Evidence.OperationFailure);
+        else
+            Assert.Null(outcome.Evidence.OperationFailure);
         Assert.NotNull(outcome.Evidence.DispatcherFailure);
         var failure = Assert.Throws<WorkbookAutomationCleanupException>(() => outcome.GetReleasedResult());
         var facts = WorkbookAutomationTerminalFacts.Analyze(failure);
         Assert.True(facts.IsRecognized);
         Assert.True(facts.ProcessReleaseProven);
+        Assert.False(facts.DispatcherRetired);
+        Assert.True(facts.HasUnprovedLifecycle);
+        if (failOperation)
+            Assert.Contains(facts.Failures, item => ReferenceEquals(item.Error, operationError));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RuntimeDoesNotTreatCompletedDisposalFailureAsRetirement(bool canceled)
+    {
+        var disposalError = new InvalidOperationException("dispatcher disposal failed");
+        var canceledToken = new CancellationToken(canceled: true);
+        var disposal = canceled ? Task.FromCanceled(canceledToken) : Task.FromException(disposalError);
+        var operationError = new WorkbookAutomationTimeoutException(
+            new WorkbookAutomationStage(WorkbookAutomationStageKind.WorkbookSave, "staged.xlsm"),
+            TimeSpan.FromMilliseconds(20));
+        var runtime = new AutomationExcelProcessRuntime(
+            new RecordingGenerationDispatcherFactory(new RecordingGenerationDispatcher([], disposal)),
+            new FakeWorkbookGenerationLifecycle([]));
+
+        var outcome = await runtime.RunWorkbookAsync(
+            "staged.xlsm", WorkbookAutomationTimeouts.Default with { ProcessCleanup = TimeSpan.Zero },
+            (_, _) => Task.FromException<string>(operationError), CancellationToken.None);
+
+        Assert.True(outcome.Evidence.ProcessReleaseVerified);
+        Assert.False(outcome.Evidence.DispatcherRetired);
+        Assert.Same(operationError, outcome.Evidence.OperationFailure);
+        var failure = Assert.IsType<WorkbookAutomationReleasedProcessCleanupException>(outcome.Evidence.DispatcherFailure);
+        if (canceled)
+        {
+            var cancellation = Assert.IsAssignableFrom<OperationCanceledException>(failure.InnerException);
+            Assert.Equal(canceledToken, cancellation.CancellationToken);
+        }
+        else
+        {
+            Assert.Same(disposalError, failure.InnerException);
+        }
+        Assert.Throws<WorkbookAutomationCleanupException>(() => outcome.GetReleasedResult());
     }
 
     [Fact]
@@ -967,7 +988,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         public IStaComDispatcher Create() => dispatcher;
     }
 
-    private sealed class RecordingGenerationDispatcher(List<string> events) : IStaComDispatcher
+    private sealed class RecordingGenerationDispatcher(List<string> events, Task? disposal = null) : IStaComDispatcher
     {
         public int InvokeCalls { get; private set; }
 
@@ -981,7 +1002,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         public ValueTask DisposeAsync()
         {
             events.Add("dispatcher-dispose");
-            return ValueTask.CompletedTask;
+            return disposal is null ? ValueTask.CompletedTask : new ValueTask(disposal);
         }
     }
 

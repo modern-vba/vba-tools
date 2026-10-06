@@ -6,9 +6,9 @@ import {
   createExtensionHostRuntimeSelection
 } from './configuration';
 
-test('Extension Host tests pin the reviewed stable VS Code 1.138.0 runtime', () => {
+test('Extension Host tests pin the reviewed stable VS Code 1.139.1 runtime', () => {
   assert.deepEqual(createExtensionHostRuntimeSelection({}), {
-    version: '1.138.0',
+    version: '1.139.1',
     vscodeExecutablePath: undefined
   });
 });

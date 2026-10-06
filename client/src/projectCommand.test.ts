@@ -361,7 +361,7 @@ test('managed build escalates after its cooperative cancellation grace period', 
   assert.equal(result.exitCode, 1);
   assert.equal(result.cancelled, false);
   assert.deepEqual(errors, [
-    'Build failed. See the VBA Tools output for details.'
+    'VbaDev closed after a force-termination request following cancellation; the command outcome is uncertain. See VBA Tools Output.'
   ]);
 });
 
@@ -533,6 +533,45 @@ test('WorkbookBackedProject command stops without another notification after a r
   assert.equal(processStarts, 0);
   assert.deepEqual(notifications, []);
 });
+
+for (const commandName of ['build', 'test', 'publish'] as const) {
+  test(`${commandName} crash is shown as abnormal termination without command replay`, async () => {
+    const projectRoot = path.join('C:', 'work', 'BookProject');
+    const executablePath = path.join('D:', 'tools', 'vba-dev.exe');
+    const notifications: string[] = [];
+    let launches = 0;
+    await runWorkbookBackedProjectCommand({
+      toolCommandName: commandName,
+      title: `VBA Tools: ${toTitle(commandName)}`,
+      extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
+      vbaDevResolver: { resolve: async () => ({
+        executablePath, bundledPath: executablePath, source: 'bundled',
+        capabilities: { toolVersion: '0.1.0', contractVersion: '1.0', commands: {} }
+      }) },
+      activeFilePath: path.join(projectRoot, 'vba-project.json'),
+      workspaceRoots: [path.dirname(projectRoot)],
+      fileExists: async () => true,
+      findProjectManifests: async () => [],
+      chooseProject: async () => undefined,
+      resolveCommandPaletteTarget: createDocumentTargetResolver(projectRoot),
+      startProcess: () => {
+        launches += 1;
+        return {
+          onStdout: () => undefined,
+          onStderr: () => undefined,
+          onExit: listener => listener(0xC0000005, null),
+          kill: () => undefined
+        };
+      },
+      outputChannel: { append: () => undefined, appendLine: () => undefined, show: () => undefined },
+      showWarningMessage: async () => undefined,
+      showErrorMessage: async message => { notifications.push(message); }
+    });
+
+    assert.equal(launches, 1);
+    assert.match(notifications[0] ?? '', /terminated abnormally.*0xC0000005.*not retried/i);
+  });
+}
 
 function toTitle(commandName: string): string {
   return commandName[0].toUpperCase() + commandName.slice(1);

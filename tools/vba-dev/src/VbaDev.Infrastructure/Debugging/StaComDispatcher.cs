@@ -4,11 +4,12 @@ namespace VbaDev.Infrastructure.Debugging;
 
 internal sealed class StaComDispatcher : IStaComDispatcher
 {
+    private readonly object lifetimeGate = new();
     private readonly BlockingCollection<IWorkItem> workItems = new();
     private readonly TaskCompletionSource workerCompletion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Thread workerThread;
-    private int disposed;
+    private bool disposed;
 
     public StaComDispatcher()
     {
@@ -29,47 +30,67 @@ internal sealed class StaComDispatcher : IStaComDispatcher
     {
         ArgumentNullException.ThrowIfNull(operation);
         cancellationToken.ThrowIfCancellationRequested();
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
-
         var workItem = new WorkItem<T>(operation, cancellationToken);
-        try
+        lock (lifetimeGate)
         {
+            ObjectDisposedException.ThrowIf(disposed, this);
             workItems.Add(workItem, cancellationToken);
-        }
-        catch (InvalidOperationException)
-        {
-            throw new ObjectDisposedException(nameof(StaComDispatcher));
         }
 
         return workItem.Completion;
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref disposed, 1) != 0)
+        lock (lifetimeGate)
         {
-            return;
+            if (!disposed)
+            {
+                disposed = true;
+                workItems.CompleteAdding();
+            }
         }
 
-        workItems.CompleteAdding();
-        await workerCompletion.Task.ConfigureAwait(false);
-        workItems.Dispose();
+        return new ValueTask(workerCompletion.Task);
     }
 
     private void Run()
     {
+        Exception? failure = null;
         try
         {
             foreach (var workItem in workItems.GetConsumingEnumerable())
             {
                 workItem.Run();
             }
-
-            workerCompletion.TrySetResult();
         }
         catch (Exception ex)
         {
-            workerCompletion.TrySetException(ex);
+            failure = ex;
+        }
+
+        try
+        {
+            // BlockingCollection disposal must not race admission or CompleteAdding.
+            lock (lifetimeGate)
+            {
+                disposed = true;
+                workItems.Dispose();
+            }
+        }
+        catch (Exception ex)
+        {
+            failure = failure is null ? ex : new AggregateException(failure, ex);
+        }
+
+        // Publish full retirement from this worker, without a ThreadPool continuation.
+        if (failure is null)
+        {
+            workerCompletion.TrySetResult();
+        }
+        else
+        {
+            workerCompletion.TrySetException(failure);
         }
     }
 

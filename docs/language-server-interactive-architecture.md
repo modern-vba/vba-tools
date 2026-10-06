@@ -300,6 +300,9 @@ does not establish a pin. If a later managed command succeeds after the
 installation or setting is corrected, the resolver sends that exact frozen
 resolution to the existing language-server lifecycle, which publishes it
 without running another capability probe.
+An abnormal native exit during the side-effect-free capability inspection may
+receive one bounded fresh-process attempt within that same resolution. This
+does not retry a total resolution failure later or replay a managed command.
 
 ### Companion process invocation
 

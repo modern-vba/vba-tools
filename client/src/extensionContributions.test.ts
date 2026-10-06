@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { completeExtensionActivation } from './activationCompletion';
+import { FirstRunDoctorPromptState, promptForFirstRunDoctor } from './doctorCommand';
 import { minimumSupportedVscodeVersion } from './extensionHost/configuration';
 
 interface GrammarPattern {
@@ -192,6 +194,110 @@ test('extension wires Workspace Trust into every non-palette managed launch surf
     extensionSource,
     /promptForActiveWorkbookBackedProject\([\s\S]*?command\.commandId === 'vbaTools\.doctor'[\s\S]*?\?\.handler/
   );
+});
+
+test('extension activation delegates its result to the non-blocking Doctor prompt completion', () => {
+  const extensionSource = fs.readFileSync(
+    path.join(process.cwd(), 'client', 'src', 'extension.ts'),
+    'utf8'
+  );
+  const activation = extractFunctionSource(extensionSource, 'activate', 'deactivate');
+
+  assert.doesNotMatch(activation, /await promptForActiveWorkbookBackedProject\(/);
+  assert.match(
+    activation,
+    /return completeExtensionActivation\(\{\s*promptForFirstRunDoctor: \(\) => promptForActiveWorkbookBackedProject\(/
+  );
+  assert.match(
+    activation,
+    /reportFirstRunDoctorPromptError: \(error\) => \{\s*extensionOutputChannel\.appendLine\(/
+  );
+});
+
+test('activation completes while the first-run Doctor notification remains unanswered', async () => {
+  const values = new Map<string, unknown>();
+  let answerPrompt!: (answer: string | undefined) => void;
+  const answer = new Promise<string | undefined>((resolve) => {
+    answerPrompt = resolve;
+  });
+  let promptCompletion!: Promise<void>;
+  const activationApi = { ready: true };
+  const errors: unknown[] = [];
+
+  const result = completeExtensionActivation({
+    promptForFirstRunDoctor: () => {
+      promptCompletion = promptForFirstRunDoctor({
+        workspaceState: {
+          get: <T>(key: string): T | undefined => values.get(key) as T | undefined,
+          update: async (key, value) => { values.set(key, value); }
+        },
+        showInformationMessage: () => answer,
+        runDoctor: async () => { throw new Error('Doctor must await consent.'); }
+      });
+      return promptCompletion;
+    },
+    reportFirstRunDoctorPromptError: (error) => { errors.push(error); },
+    createResult: () => activationApi
+  });
+
+  assert.equal(result, activationApi);
+  assert.equal(values.get(FirstRunDoctorPromptState.Prompted), undefined);
+  answerPrompt(undefined);
+  await promptCompletion;
+  assert.equal(values.get(FirstRunDoctorPromptState.Prompted), true);
+  assert.deepEqual(errors, []);
+});
+
+test('activation completes while the user-selected Doctor command is still running', {
+  timeout: 5_000
+}, async () => {
+  let finishDoctor!: () => void;
+  const doctor = new Promise<void>((resolve) => { finishDoctor = resolve; });
+  let doctorStarted!: () => void;
+  const started = new Promise<void>((resolve) => { doctorStarted = resolve; });
+  let promptCompletion!: Promise<void>;
+  const activationApi = { ready: true };
+  const errors: unknown[] = [];
+
+  const result = completeExtensionActivation({
+    promptForFirstRunDoctor: () => {
+      promptCompletion = promptForFirstRunDoctor({
+        workspaceState: {
+          get: () => undefined,
+          update: async () => undefined
+        },
+        showInformationMessage: async () => 'Run Doctor',
+        runDoctor: () => {
+          doctorStarted();
+          return doctor;
+        }
+      });
+      return promptCompletion;
+    },
+    reportFirstRunDoctorPromptError: (error) => { errors.push(error); },
+    createResult: () => activationApi
+  });
+
+  await started;
+  assert.equal(result, activationApi);
+  finishDoctor();
+  await promptCompletion;
+  assert.deepEqual(errors, []);
+});
+
+test('a failed first-run Doctor prompt is reported after activation completes', async () => {
+  const failure = new Error('Doctor notification failed');
+  const reported: unknown[] = [];
+  const activationApi = { ready: true };
+  const result = completeExtensionActivation({
+    promptForFirstRunDoctor: async () => { throw failure; },
+    reportFirstRunDoctorPromptError: (error) => { reported.push(error); },
+    createResult: () => activationApi
+  });
+
+  assert.equal(result, activationApi);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(reported, [failure]);
 });
 
 test('registered Command Palette workflows capture one invocation target before UI and pass its resolver', () => {

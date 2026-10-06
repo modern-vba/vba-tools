@@ -694,6 +694,53 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
     }
 
     [Fact]
+    public async Task AbnormalBuildExitIsDiagnosedWithoutRetryingTheMutatingCommand()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = Path.Combine(temp.Path, "project");
+        Directory.CreateDirectory(projectRoot);
+        var executable = Path.Combine(temp.Path, "vba-dev.exe");
+        await File.WriteAllBytesAsync(executable, []);
+        await using var lease = await new VbaDebugSessionWorkspaceManager(
+                Path.Combine(temp.Path, "workspace"))
+            .ClaimAsync(DebugSessionId.Parse("0123456789abcdef0123456789abcdef"), CancellationToken.None);
+        const int fatalExitCode = unchecked((int)0x80131506);
+        var process = new RecordingBuildProcess
+        {
+            ExitCode = fatalExitCode,
+            StandardOutput = "Build reached a partial stage.",
+            StandardError = "Fatal error. Internal CLR error."
+        };
+        var sourceSet = AdmitBuildSources(new TransportedDebugSourceSnapshot(2,
+            [new TransportedDebugSource("Module1.bas", "file:///C:/source/Module1.bas", "utf8bom",
+                Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
+                    "Attribute VB_Name = \"Module1\"\nPublic Sub Run()\nEnd Sub\n")))]));
+
+        var failure = await Record.ExceptionAsync(() => new VbaDevSnapshotWorkbookBuilder(process)
+            .BuildAsync(executable, lease,
+                new VbaDevSnapshotBuildRequest(projectRoot, "Book1", "Book1.xlsm", sourceSet),
+                CancellationToken.None));
+
+        var outcome = Assert.IsAssignableFrom<IDebugFailureEvidence>(failure).FailureOutcome;
+        var buildFailure = Assert.IsType<SnapshotBuildFailedException>(outcome.PrimaryFailure);
+        Assert.Equal(fatalExitCode, buildFailure.Report.ExitCode);
+        Assert.Contains("vba-dev snapshot build", buildFailure.Message, StringComparison.Ordinal);
+        Assert.Contains(executable, buildFailure.Message, StringComparison.Ordinal);
+        Assert.Contains("terminated abnormally", buildFailure.Message, StringComparison.Ordinal);
+        Assert.Contains(fatalExitCode.ToString(), buildFailure.Message, StringComparison.Ordinal);
+        Assert.Contains("0x80131506", buildFailure.Message, StringComparison.Ordinal);
+        Assert.Contains("attempt 1 of 1", buildFailure.Message, StringComparison.Ordinal);
+        Assert.Contains("not retried", buildFailure.Message, StringComparison.Ordinal);
+        Assert.Contains("Build reached a partial stage.", buildFailure.Message, StringComparison.Ordinal);
+        Assert.Contains("Fatal error. Internal CLR error.", buildFailure.Message, StringComparison.Ordinal);
+        Assert.False(outcome.HasCleanupFailure);
+        Assert.Contains(outcome.Evidence, item => item.Kind == DebugResourceKind.Process && item.Released);
+        Assert.Single(process.Invocations);
+        Assert.False(Directory.Exists(Path.Combine(
+            lease.SessionWorkspacePath, "generations", "generation-0000000000")));
+    }
+
+    [Fact]
     public async Task SuccessfulExitWithoutAWorkbookDeletesOnlyTheGenerationWorkspace()
     {
         var root = Path.Combine(

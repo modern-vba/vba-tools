@@ -434,6 +434,37 @@ test('CommonModules list command uses selected project arguments and output chan
   ]);
 });
 
+test('CommonModules commands display a stateful process crash without replay', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  for (const operation of ['list', 'add'] as const) {
+    const errors: string[] = [];
+    let launches = 0;
+    const options = createOptions({
+      projectRoot,
+      calls: [],
+      output: [],
+      errorMessages: errors,
+      startStdout: () => '',
+      startProcess: () => {
+        launches += 1;
+        return {
+          onStdout: () => undefined,
+          onStderr: () => undefined,
+          onExit: listener => listener(0xC0000005, null),
+          kill: () => undefined
+        };
+      }
+    });
+    if (operation === 'list') {
+      await runCommonModulesListCommand(options);
+    } else {
+      await runCommonModulesAddCommand(options, ['ModuleA']);
+    }
+    assert.equal(launches, 1);
+    assert.match(errors[0] ?? '', /terminated abnormally.*0xC0000005.*not retried/i);
+  }
+});
+
 test('CommonModules command refreshes project diagnostics from failed command output', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const diagnosticRefreshes: Array<{ scopeKey: string; output: string }> = [];
@@ -554,6 +585,7 @@ function createOptions(
     routeEvents?: string[];
     reportPresentations?: Array<string | undefined>;
     informationMessages?: string[];
+    errorMessages?: string[];
     warningMessages?: string[];
     warningAction?: string;
     showOutputCalls?: string[];
@@ -675,7 +707,7 @@ function createOptions(
         }
       }
       : undefined,
-    showErrorMessage: async () => undefined,
+    showErrorMessage: async (message) => { options.errorMessages?.push(message); },
     showInformationMessage: async (message) => {
       options.informationMessages?.push(message);
     },

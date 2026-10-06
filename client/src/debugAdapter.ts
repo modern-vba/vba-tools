@@ -10,6 +10,10 @@ import {
 import type { CommandCancellationToken } from './devtoolCommand';
 
 import { admitVbaDebugAdapterCapabilities, CapabilityRejection } from './capabilityAdmission';
+import {
+  classifyAbnormalProcessError,
+  formatAbnormalProcessTermination
+} from './companionProcessTermination';
 import type { RequiredVbaDebugAdapterContract, VbaDebugAdapterCapabilities } from './capabilityAdmission';
 export type { RequiredVbaDebugAdapterContract, VbaDebugAdapterCapabilities } from './capabilityAdmission';
 
@@ -29,6 +33,8 @@ export interface CompatibleVbaDebugAdapterResolutionOptions {
   readonly runProcess?: ProcessRunner | undefined;
   readonly cancellationToken?: CommandCancellationToken | undefined;
   readonly startCapabilitiesProcess?: StartDebugAdapterProcess | undefined;
+  readonly reportDiagnostic?: ((message: string) => void) | undefined;
+  readonly isWorkspaceTrusted?: (() => boolean) | undefined;
 }
 
 export interface StartedDebugAdapterProcess {
@@ -113,21 +119,94 @@ export async function resolveCompatibleVbaDebugAdapter(
     options.cancellationToken,
     options.startCapabilitiesProcess
   ));
+  let priorAbnormalDiagnostic: string | undefined;
+  let exhaustedAbnormalProbeError: VbaDebugAdapterCompatibilityError | undefined;
 
   try {
-    const result = await runProcess(executablePath, ['capabilities', '--format', 'json']);
+    let result: ProcessResult;
+    let firstAbnormalExit: ReturnType<typeof classifyAbnormalProcessError>;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        if (attempt > 1) ensureWorkspaceTrusted(options.isWorkspaceTrusted);
+        result = await runProcess(executablePath, ['capabilities', '--format', 'json']);
+        break;
+      } catch (error) {
+        const abnormalExit = classifyAbnormalProcessError(error);
+        if (options.cancellationToken?.isCancellationRequested) {
+          if (abnormalExit?.kind === 'exit') {
+            reportDiagnostic(options, formatAbnormalProcessTermination(
+              'vba-debug-adapter', 'capabilities', executablePath, attempt, 2,
+              abnormalExit, 'not-retried'
+            ));
+          }
+          throw new VbaDebugAdapterCompatibilityError('vba-debug-adapter capabilities command was cancelled.');
+        }
+        if (abnormalExit === undefined) throw error;
+        const diagnostic = formatAbnormalProcessTermination(
+          'vba-debug-adapter', 'capabilities', executablePath, attempt, 2,
+          abnormalExit, attempt === 1 ? 'retry-pending' : 'failed'
+        );
+        reportDiagnostic(options, diagnostic);
+        if (attempt === 2) {
+          exhaustedAbnormalProbeError = new VbaDebugAdapterCompatibilityError(diagnostic);
+          throw exhaustedAbnormalProbeError;
+        }
+        firstAbnormalExit = abnormalExit;
+        priorAbnormalDiagnostic = diagnostic;
+        await new Promise<void>((resolve) => setTimeout(resolve, 50));
+        if (options.cancellationToken?.isCancellationRequested) {
+          throw new VbaDebugAdapterCompatibilityError('vba-debug-adapter capabilities command was cancelled.');
+        }
+        ensureWorkspaceTrusted(options.isWorkspaceTrusted);
+      }
+    }
     const admitted = admitVbaDebugAdapterCapabilities(result.stdout, requiredContract);
     if (!admitted.accepted) {
+      if (firstAbnormalExit !== undefined) {
+        reportDiagnostic(options, formatAbnormalProcessTermination(
+          'vba-debug-adapter', 'capabilities', executablePath, 2, 2,
+          firstAbnormalExit, 'failed'
+        ));
+      }
       throw new VbaDebugAdapterCompatibilityError(describeCapabilityRejection(executablePath, admitted.rejection));
+    }
+    if (firstAbnormalExit !== undefined) {
+      reportDiagnostic(options, formatAbnormalProcessTermination(
+        'vba-debug-adapter', 'capabilities', executablePath, 2, 2,
+        firstAbnormalExit, 'recovered'
+      ));
     }
     return Object.freeze({ executablePath, capabilities: admitted.facts });
   } catch (error) {
+    if (priorAbnormalDiagnostic !== undefined
+        && !options.cancellationToken?.isCancellationRequested
+        && error !== exhaustedAbnormalProbeError) {
+      throw new VbaDebugAdapterCompatibilityError(
+        `${priorAbnormalDiagnostic} The retry failed: ${errorMessage(error)}`
+      );
+    }
     if (error instanceof VbaDebugAdapterCompatibilityError) {
       throw error;
     }
     throw new VbaDebugAdapterCompatibilityError(
       `vba-debug-adapter at '${executablePath}' is unavailable or incompatible: ${errorMessage(error)}`
     );
+  }
+}
+
+function ensureWorkspaceTrusted(isWorkspaceTrusted: (() => boolean) | undefined): void {
+  if (isWorkspaceTrusted?.() === false) {
+    throw new VbaDebugAdapterCompatibilityError(
+      'vba-debug-adapter capability inspection stopped because Workspace Trust was lost (Restricted Mode).'
+    );
+  }
+}
+
+function reportDiagnostic(options: CompatibleVbaDebugAdapterResolutionOptions, diagnostic: string): void {
+  try {
+    options.reportDiagnostic?.(diagnostic);
+  } catch {
+    // Output reporting must not change capability admission or process selection.
   }
 }
 

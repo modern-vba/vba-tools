@@ -60,7 +60,12 @@ internal sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
             {
                 var diagnostics = new List<string>
                 {
-                    $"vba-dev snapshot build exited with code {processResult.ExitCode}."
+                    processResult.ExitCode < 0
+                        ? $"vba-dev snapshot build at '{Path.GetFullPath(vbaDevPath)}' " +
+                            $"terminated abnormally with exit code {processResult.ExitCode} " +
+                            $"(0x{unchecked((uint)processResult.ExitCode):X8}) on attempt 1 of 1; " +
+                            "the build was not retried because it may have changed workbook state."
+                        : $"vba-dev snapshot build exited with code {processResult.ExitCode}."
                 };
                 if (!string.IsNullOrWhiteSpace(processResult.StandardOutput))
                 {

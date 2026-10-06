@@ -1,0 +1,8 @@
+{
+  "kind": "synthetic-uri-identity-pair",
+  "provenance": "Constructed from neutral directory names and a shared synthetic path. Preserves URI lengths and distinct file identities without retaining captured project paths.",
+  "firstUri": "file:///C:/SyntheticSources/NeutralProject/NeutralProject/NeutralProject/NeutralProject/NeutralProject/NeutralProject/NeutralProject/NeutralProject/%E6%97%A5%E6%9C%AC/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/ObjectSet.cls",
+  "secondUri": "file:///C:/SyntheticSources/NeutralProject/NeutralProject/NeutralProject/NeutralProject/NeutralProject/NeutralProject/NeutralProject/NeutralProject/%E6%97%A5%E6%9C%AC/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/DebugInformation.cls",
+  "firstUriUtf16Length": 269,
+  "secondUriUtf16Length": 276
+}

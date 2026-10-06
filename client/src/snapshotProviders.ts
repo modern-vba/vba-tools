@@ -28,6 +28,8 @@ export interface SnapshotProviderOptions {
   readonly requiredContract?: RequiredVbaDevContract | undefined;
   readonly requiredDebugAdapterContract?: RequiredVbaDebugAdapterContract | undefined;
   readonly cancellationToken?: CommandCancellationToken | undefined;
+  readonly reportCapabilityDiagnostic?: ((message: string) => void) | undefined;
+  readonly isWorkspaceTrusted?: (() => boolean) | undefined;
 }
 
 export interface SnapshotProviders {
@@ -98,7 +100,9 @@ async function inspectSnapshotProviders(
       configuredPath: pinned.vbaDev.executablePath,
       requiredContract: options.requiredContract,
       runProcess: options.capabilitiesProcess,
-      signal
+      signal,
+      reportDiagnostic: options.reportCapabilityDiagnostic,
+      isWorkspaceTrusted: options.isWorkspaceTrusted
     });
     checkCancellation();
     const adapter = await resolveCompatibleVbaDebugAdapter({
@@ -106,7 +110,9 @@ async function inspectSnapshotProviders(
       configuredPath: pinned.adapter.executablePath,
       requiredContract: options.requiredDebugAdapterContract,
       runProcess: options.capabilitiesProcess,
-      cancellationToken
+      cancellationToken,
+      reportDiagnostic: options.reportCapabilityDiagnostic,
+      isWorkspaceTrusted: options.isWorkspaceTrusted
     });
     checkCancellation();
     validateSnapshotVersions(inspected.capabilities, adapter.capabilities);
@@ -117,7 +123,9 @@ async function inspectSnapshotProviders(
     configuredPath: options.configuredDevToolPath,
     runProcess: options.capabilitiesProcess,
     requiredContract: options.requiredContract,
-    signal
+    signal,
+    reportDiagnostic: options.reportCapabilityDiagnostic,
+    isWorkspaceTrusted: options.isWorkspaceTrusted
   })).resolve();
   checkCancellation();
   if (options.vbaDevResolver !== undefined) {
@@ -126,7 +134,9 @@ async function inspectSnapshotProviders(
       configuredPath: vbaDev.executablePath,
       requiredContract: options.requiredContract,
       runProcess: options.capabilitiesProcess,
-      signal
+      signal,
+      reportDiagnostic: options.reportCapabilityDiagnostic,
+      isWorkspaceTrusted: options.isWorkspaceTrusted
     });
     checkCancellation();
     vbaDev = { ...vbaDev, ...inspected };
@@ -137,7 +147,9 @@ async function inspectSnapshotProviders(
       configuredPath: options.configuredDebugAdapterPath,
       runProcess: options.capabilitiesProcess,
       requiredContract: options.requiredDebugAdapterContract,
-      cancellationToken
+      cancellationToken,
+      reportDiagnostic: options.reportCapabilityDiagnostic,
+      isWorkspaceTrusted: options.isWorkspaceTrusted
     }));
   checkCancellation();
   validateSnapshotVersions(vbaDev.capabilities, adapter.capabilities);

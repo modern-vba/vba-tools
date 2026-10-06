@@ -139,6 +139,25 @@ export function assertMarketplaceVisibility(metadata, expected) {
   return matchingVersion;
 }
 
+export function assertMarketplaceContributorRole(profile, assignments) {
+  if (typeof profile?.id !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(profile.id)) {
+    throw new Error('Marketplace identity profile is missing a valid ID.');
+  }
+  if (!Array.isArray(assignments?.value) ||
+    !Number.isInteger(assignments.count) || assignments.count !== assignments.value.length) {
+    throw new Error('Marketplace role assignments response is invalid.');
+  }
+  const matching = assignments.value.filter((assignment) =>
+    typeof assignment?.identity?.id === 'string' &&
+    assignment.identity.id.toLowerCase() === profile.id.toLowerCase());
+  if (matching.length !== 1 || matching[0].role?.name !== 'Contributor' ||
+    matching[0].access !== 'assigned') {
+    throw new Error('OIDC identity must have one directly assigned Marketplace Contributor role.');
+  }
+  return { publisherRole: 'Contributor' };
+}
+
 export function findMarketplaceVisibility(metadata, expected) {
   if (metadata?.publisher?.publisherName !== expected.publisher) {
     throw new Error(`Marketplace publisher must be ${expected.publisher}.`);
@@ -548,6 +567,11 @@ export async function runReleaseWorkflowCommand(
       probeExecutables: false,
       runCommand
     });
+  } else if (parsed.command === 'verify-publisher-contributor') {
+    result = assertMarketplaceContributorRole(
+      await readJson(parsed.profileJson),
+      await readJson(parsed.roleAssignmentsJson)
+    );
   } else {
     const metadata = await readJson(parsed.marketplaceJson);
     const expected = {
@@ -588,6 +612,10 @@ function parseWorkflowCommandArguments(args) {
       ['--vsix-name', 'vsixName'],
       ['--cli-archive-name', 'cliArchiveName']
     ]),
+    'verify-publisher-contributor': new Map([
+      ['--profile-json', 'profileJson'],
+      ['--role-assignments-json', 'roleAssignmentsJson']
+    ]),
     'marketplace-state': new Map([
       ['--marketplace-json', 'marketplaceJson'],
       ['--extension-version', 'extensionVersion'],
@@ -615,7 +643,8 @@ function parseWorkflowCommandArguments(args) {
     if (parsed[field] !== undefined) {
       throw new Error(`Release workflow option ${option} was supplied more than once.`);
     }
-    parsed[field] = ['metadata', 'directory', 'releaseJson', 'marketplaceJson', 'githubOutput']
+    parsed[field] = ['metadata', 'directory', 'releaseJson', 'marketplaceJson',
+      'profileJson', 'roleAssignmentsJson', 'githubOutput']
       .includes(field)
       ? path.resolve(value)
       : value;

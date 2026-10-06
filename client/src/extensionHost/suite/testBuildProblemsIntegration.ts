@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { ConfigurationTarget, Range, RelativePattern, TabInputText, Uri, WorkspaceEdit,
   commands, languages, tests, window, workspace } from 'vscode';
@@ -15,11 +15,18 @@ import { VbaDevDiagnosticReporter } from '../../toolDiagnostics';
 import { runWorkbookBackedProjectCommand } from '../../projectCommand';
 import { windowsPathKey } from '../../windowsPathIdentity';
 import { IntegrationFailureDiagnostics } from '../integrationFailureDiagnostics';
+import { prepareNativeTestBuildDumpRoot, resolveExtensionHostFailureLogRoot } from '../testRunFailureLogs';
 
 export async function runTestBuildProblemsIntegrationTests(): Promise<void> {
   const parent = process.env.VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT;
   assert.ok(parent);
   const extensionRoot = path.resolve(__dirname, '..', '..', '..', '..');
+  const dumpTarget = process.env.VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET;
+  if (dumpTarget !== undefined && dumpTarget !== 'invalid' && dumpTarget !== 'corrected') {
+    throw new Error('VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET must be invalid or corrected.');
+  }
+  const dumpRoot = dumpTarget === undefined ? undefined
+    : await prepareNativeTestBuildDumpRoot(extensionRoot);
   const cli = path.join(extensionRoot, 'bin/vba-dev/win-x64/vba-dev.exe');
   const fixture = await mkdtemp(path.join(parent, 'test-build-problems-'));
   const source = path.join(fixture, 'src/日本語');
@@ -39,7 +46,8 @@ export async function runTestBuildProblemsIntegrationTests(): Promise<void> {
   const oldTheme = workspace.getConfiguration('workbench').inspect<string>('colorTheme')?.workspaceValue;
   const snapshots: string[] = [];
   const events: string[] = [];
-  const diagnostics = new IntegrationFailureDiagnostics();
+  const diagnostics = new IntegrationFailureDiagnostics(dumpTarget === undefined
+    ? undefined : { dumpRoot: dumpRoot!, target: dumpTarget });
   const recordEvent = (event: string): void => {
     events.push(event);
     diagnostics.record('events', event + '\n');
@@ -187,6 +195,15 @@ export async function runTestBuildProblemsIntegrationTests(): Promise<void> {
     for (const dir of snapshots) await assert.rejects(stat(dir), { code: 'ENOENT' });
     console.log('Native Test build validation passed: command and Explorer errors, related navigation after cleanup, zero macro on failure, real corrected test execution, scoped clear and byte preservation.');
   } catch (error) {
+    try {
+      const failureRoot = path.join(resolveExtensionHostFailureLogRoot(extensionRoot), 'native-test-build-fixtures');
+      await mkdir(failureRoot, { recursive: true });
+      const saved = await mkdtemp(path.join(failureRoot, 'run-'));
+      await cp(fixture, path.join(saved, 'fixture'), { recursive: true });
+      console.error(`Native Test build fixture snapshot saved: ${saved}`);
+    } catch (captureError) {
+      console.error('Native Test build fixture snapshot could not be saved:', captureError);
+    }
     console.error(diagnostics.format());
     throw error;
   } finally {

@@ -132,7 +132,9 @@ export async function runDoctorCommand(options: DoctorCommandOptions): Promise<D
       configuredPath: options.configuredDebugAdapterPath,
       requiredContract: options.requiredDebugAdapterContract,
       runProcess: options.debugAdapterCapabilitiesProcess,
-      cancellationToken: options.cancellationToken
+      cancellationToken: options.cancellationToken,
+      reportDiagnostic: message => options.outputChannel.appendLine(message),
+      isWorkspaceTrusted: options.isWorkspaceTrusted
     })
   };
 

@@ -351,7 +351,8 @@ internal sealed class OwnedExcelTerminationController : IDisposable
         TimeSpan grace,
         Task launchSettlement)
     {
-        await Task.Yield();
+        // Leave the controller gate without depending on the caller's context or scheduler.
+        await Task.CompletedTask.ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         var errors = new List<Exception>();
         try
         {

@@ -38,11 +38,13 @@ internal sealed class VbaSourceAdmission
     private readonly Func<int> getActiveCodePage;
     private readonly Func<string, IReadOnlyList<string>> inventory;
     private readonly Func<string, byte[]> readAllBytes;
+    private readonly SourceAdmissionPreparseEvidence preparseEvidence;
 
     internal VbaSourceAdmission(
         Func<int> getActiveCodePage,
         Func<string, IReadOnlyList<string>>? inventory = null,
-        Func<string, byte[]>? readAllBytes = null)
+        Func<string, byte[]>? readAllBytes = null,
+        SourceAdmissionPreparseEvidence? preparseEvidence = null)
     {
         this.getActiveCodePage = getActiveCodePage
             ?? throw new ArgumentNullException(nameof(getActiveCodePage));
@@ -50,6 +52,7 @@ internal sealed class VbaSourceAdmission
             .EnumerateFiles(root, "*", SearchOption.AllDirectories)
             .ToArray());
         this.readAllBytes = readAllBytes ?? File.ReadAllBytes;
+        this.preparseEvidence = preparseEvidence ?? SourceAdmissionPreparseEvidence.FromEnvironment();
     }
 
     internal DoctorSourceAdmissionRun BeginDoctorRun(CancellationToken cancellationToken = default)
@@ -131,7 +134,7 @@ internal sealed class VbaSourceAdmission
 
             try
             {
-                var admitted = AdmitSource(source, bytes, decoded,
+                var admitted = AdmitSource(source, bytes, decoded, activeCodePage, "DoctorCapture",
                     path => capturedFiles[path].GetBytes(), cancellationToken);
                 facts.Add(new(source, decoded.Text, null, admitted, null));
             }
@@ -353,7 +356,7 @@ internal sealed class VbaSourceAdmission
         var sources = ResolveSourceFiles(paths);
         return SelectSources(root, activeCodePage,
             sources.Select(source => (SourceSelectionInput)new LiveSourceInput(
-                this, source, encoding, activeCodePage, analysis is not null)).ToArray(),
+                this, source, encoding, activeCodePage, purpose.ToString(), analysis is not null)).ToArray(),
             purpose, commonModules, cancellationToken, analysis);
     }
 
@@ -501,15 +504,17 @@ internal sealed class VbaSourceAdmission
             .ToArray();
     }
 
-    private static AdmittedVbaSource AdmitSource(
+    private AdmittedVbaSource AdmitSource(
         VbaSourceFile source,
         ImmutableArray<byte> bytes,
         DecodedSource decoded,
+        int activeCodePage,
+        string admissionPurpose,
         Func<string, ImmutableArray<byte>> readBinaryBytes,
         CancellationToken cancellationToken,
         VbaSyntaxTree? capturedSyntax = null)
     {
-        var syntax = capturedSyntax ?? VbaSyntaxTree.ParseModule(new Uri(source.SourcePath).AbsoluteUri, decoded.Text);
+        var syntax = capturedSyntax ?? ParseCapturedSource(source, bytes, decoded, activeCodePage, admissionPurpose);
         var projection = VbaCodeModuleProjection.Create(syntax);
         var projectedKind = KindFromSyntax(projection.ModuleKind);
         if (projectedKind != source.Kind)
@@ -534,6 +539,16 @@ internal sealed class VbaSourceAdmission
             syntax,
             projection,
             VbeModuleIdentityMetadataReader.Read(decoded.Text, source.Kind));
+    }
+
+    private VbaSyntaxTree ParseCapturedSource(VbaSourceFile source, ImmutableArray<byte> bytes,
+        DecodedSource decoded, int activeCodePage, string admissionPurpose)
+    {
+        var receipt = preparseEvidence.Begin(source.SourcePath, source.Kind, bytes.AsSpan(),
+            decoded.EncodingToken, activeCodePage, decoded.Text.Length, admissionPurpose);
+        var syntax = VbaSyntaxTree.ParseModule(new Uri(source.SourcePath).AbsoluteUri, decoded.Text);
+        receipt?.Complete();
+        return syntax;
     }
 
     private static DecodedSource Decode(
@@ -685,6 +700,7 @@ internal sealed class VbaSourceAdmission
         VbaSourceFile sourceFile,
         Encoding encoding,
         int activeCodePage,
+        string admissionPurpose,
         bool reportFileFailures) : SourceSelectionInput(sourceFile)
     {
         private ImmutableArray<byte> bytes;
@@ -695,13 +711,17 @@ internal sealed class VbaSourceAdmission
             => GetDecoded(cancellationToken).Text;
 
         internal override VbaSyntaxTree ReadSyntax(CancellationToken cancellationToken)
-            => syntax ??= VbaSyntaxTree.ParseModule(
-                new Uri(SourceFile.SourcePath).AbsoluteUri, GetDecoded(cancellationToken).Text);
+        {
+            if (syntax is not null) return syntax;
+            var decodedSource = GetDecoded(cancellationToken);
+            return syntax = admission.ParseCapturedSource(SourceFile, bytes, decodedSource,
+                activeCodePage, admissionPurpose);
+        }
 
         internal override AdmittedVbaSource AdmitSelectedSource(CancellationToken cancellationToken)
         {
             var decodedSource = GetDecoded(cancellationToken);
-            return AdmitSource(SourceFile, bytes, decodedSource,
+            return admission.AdmitSource(SourceFile, bytes, decodedSource, activeCodePage, admissionPurpose,
                 ReadBinaryBytes, cancellationToken, ReadSyntax(cancellationToken));
         }
 

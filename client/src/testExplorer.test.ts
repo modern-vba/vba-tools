@@ -63,6 +63,33 @@ test('snapshot Test rejects an old adapter before capture or CLI invocation', as
   assert.ok(controller.runs[0].events.some(event => event.startsWith('errored:')));
 });
 
+test('Test Explorer reports a crashed test process without replaying it', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const controller = new FakeTestController();
+  const errors: string[] = [];
+  let launches = 0;
+  const explorer = createExplorer(controller, {
+    manifests: new Map([[path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]]),
+    errorMessages: errors,
+    startProcess: () => {
+      launches += 1;
+      return {
+        onStdout: () => undefined,
+        onStderr: () => undefined,
+        onExit: listener => listener(0xC0000005, null),
+        kill: () => undefined
+      };
+    }
+  });
+  await explorer.refresh();
+
+  await explorer.run({ include: [controller.items[0]] }, uncancelledToken());
+
+  assert.equal(launches, 1);
+  assert.match(errors[0] ?? '', /terminated abnormally.*0xC0000005.*not retried/i);
+  assert.ok(controller.runs[0].events.some(event => event.startsWith('errored:')));
+});
+
 test('Test Explorer reports snapshot build errors at original sources and clears only a corrected build run', async () => {
   const projectRoot = path.resolve('C:/work/BookProject');
   const snapshot = path.resolve('C:/temp/explorer-snapshot');

@@ -30,6 +30,64 @@ test('VbaDev command output streams to the provided output channel', async () =>
   assert.match(lines.join(''), /doctor output/);
 });
 
+test('a crashed build reports its status without replaying the workbook command', async () => {
+  const lines: string[] = [];
+  let launches = 0;
+  const result = await runVbaDevCommand({
+    executablePath: 'C:\\tools\\vba-dev.exe',
+    args: ['build', '--project', 'C:\\Project'],
+    outputChannel: {
+      append: value => lines.push(value),
+      appendLine: value => lines.push(`${value}\n`),
+      show: () => undefined
+    },
+    startProcess: () => {
+      launches += 1;
+      return {
+        onStdout: () => undefined,
+        onStderr: () => undefined,
+        onExit: listener => listener(0xC0000005, null),
+        kill: () => undefined
+      };
+    }
+  });
+
+  assert.equal(launches, 1);
+  assert.equal(result.exitCode, 0xC0000005);
+  assert.equal(result.cancelled, false);
+  assert.match(result.message, /terminated abnormally.*0xC0000005/);
+  assert.match(lines.join(''), /role=vba-dev.*stage=build.*attempt=1\/1.*0xC0000005/);
+});
+
+test('an uncancelled signal reports abnormal termination rather than an ordinary command failure', async () => {
+  const lines: string[] = [];
+  let launches = 0;
+  const result = await runVbaDevCommand({
+    executablePath: 'C:\\tools\\vba-dev.exe',
+    args: ['import', '--from', 'C:\\Source'],
+    outputChannel: {
+      append: value => lines.push(value),
+      appendLine: value => lines.push(`${value}\n`),
+      show: () => undefined
+    },
+    startProcess: () => {
+      launches += 1;
+      return {
+        onStdout: () => undefined,
+        onStderr: () => undefined,
+        onExit: listener => listener(null, 'SIGABRT'),
+        kill: () => undefined
+      };
+    }
+  });
+
+  assert.equal(launches, 1);
+  assert.equal(result.cancelled, false);
+  assert.match(result.message, /terminated abnormally.*signal SIGABRT/);
+  assert.match(result.stderr, /role=vba-dev.*stage=import.*signal=SIGABRT/);
+  assert.match(lines.join(''), /role=vba-dev.*stage=import.*signal=SIGABRT/);
+});
+
 test('VbaDev background command records output without revealing the channel', async () => {
   const lines: string[] = [];
   let reveals = 0;
@@ -780,12 +838,13 @@ test('an ordinary stdin-v1 command escalates only after its cooperative grace pe
   let closeListener: ((exitCode: number | null, signal: string | null) => void) | undefined;
   let kills = 0;
   let settled = false;
+  const output: string[] = [];
   const running = runVbaDevCommand({
     executablePath: 'vba-dev.exe',
     args: ['build', '--cancellation-transport', 'stdin-v1'],
     outputChannel: {
       append: () => undefined,
-      appendLine: () => undefined,
+      appendLine: (value) => { output.push(value); },
       show: () => undefined
     },
     cancellationTransport: 'stdin-v1',
@@ -825,6 +884,11 @@ test('an ordinary stdin-v1 command escalates only after its cooperative grace pe
   assert.equal(result.exitCode, 1);
   assert.equal(result.cancelled, false);
   assert.equal(result.cancellationRequested, true);
+  assert.match(result.message, /closed after a force-termination request following cancellation.*outcome is uncertain/i);
+  assert.match(result.stderr, /force-termination request.*signal=SIGTERM.*outcome=uncertain/i);
+  assert.match(output.join('\n'), /force-termination request.*signal=SIGTERM.*outcome=uncertain/i);
+  assert.doesNotMatch(result.stderr, /terminated abnormally/i);
+  assert.doesNotMatch(output.join('\n'), /terminated abnormally/i);
 });
 
 test('authoritative close cancels the cooperative grace escalation timer', async () => {

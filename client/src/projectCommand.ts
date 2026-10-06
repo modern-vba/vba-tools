@@ -39,7 +39,8 @@ export async function runWorkbookBackedProjectCommand(
 
   const commandTitle = options.title.replace('VBA Tools: ', '');
   if (!result.cancelled && result.exitCode !== 0) {
-    await options.showErrorMessage(`${commandTitle} failed. See the VBA Tools output for details.`);
+    await options.showErrorMessage(result.failureMessage
+      ?? `${commandTitle} failed. See the VBA Tools output for details.`);
   } else if (!result.cancelled && result.exitCode === 0) {
     reportCancellationDeliveryFailureAfterTrustedSuccess(
       options,

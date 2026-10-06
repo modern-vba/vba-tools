@@ -375,7 +375,8 @@ async function runTestItem(
     testRun.appendOutput(result.stdout);
     testRun.appendOutput(result.stderr);
 
-    if (!result.cancelled && result.exitCode !== null && sourceSnapshot !== undefined) {
+    if (!result.cancelled && result.failureMessage === undefined
+        && result.exitCode !== null && sourceSnapshot !== undefined) {
       try {
         const output = combineVbaDevDiagnosticOutput(result.stdout, result.stderr);
         const reports = parseVbaDevSourceAnalysisReports(output);
@@ -413,7 +414,8 @@ async function runTestItem(
     } else {
       const errorMessage = firstNonEmptyLine(result.stderr, result.stdout) ?? 'vba-dev test failed. See the VBA Tools output for details.';
       testRun.errored(eventState.errorItem ?? item, errorMessage);
-      await options.showErrorMessage('VBA Tools: Test failed. See the VBA Tools output for details.');
+      await options.showErrorMessage(result.failureMessage
+        ?? 'VBA Tools: Test failed. See the VBA Tools output for details.');
     }
   } finally {
     if (sourceSnapshot !== undefined) {

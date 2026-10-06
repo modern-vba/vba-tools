@@ -2300,6 +2300,18 @@ its admission implementation or VBE projection. Decoding does not restrict
 which `VbaIdentifierForm` the resulting Unicode may contain.
 _Avoid_: CP932 fallback, locale inference, identifier-form selection, VBE import encoding
 
+**DiskSourceReadFailure**:
+A syntax-free source failure captured when reading a closed source's bytes
+throws an I/O or access-denied exception. It is reported as
+`disk-source-unavailable`, separately from `DiskSourceDecoding` failures, and
+does not terminate the language server. The failed read supplies no empty or
+last-known-good text and removes its cached text only while its publication
+generation remains current. It adds no sleep or retry. Open Unicode text remains
+authoritative; a later readable watched reload or reconciliation, or deletion,
+clears the failure through the existing source lifecycle. File and directory
+disappearance retain their absence semantics. Cancellation is not a read failure.
+_Avoid_: encoding error, source deletion, automatic repair, stale-text fallback
+
 **DiskContentIdentity**:
 An opaque equality identity derived from decoded exported-source text by
 `VbaProjectDiskInventory`. Equal decoded text has equal identity even across

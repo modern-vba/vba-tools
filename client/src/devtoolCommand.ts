@@ -1,5 +1,9 @@
 import { spawn } from 'node:child_process';
 import type { Writable } from 'node:stream';
+import {
+  classifyAbnormalProcessTermination,
+  formatAbnormalProcessTermination
+} from './companionProcessTermination';
 
 export interface VbaToolsOutputChannel {
   append(value: string): void;
@@ -44,6 +48,7 @@ export interface VbaDevCommandRunOptions {
   reportCancellationProgress?: ((message: string) => void) | undefined;
   cancellationToken?: CommandCancellationToken | undefined;
   startProcess?: StartVbaDevProcess | undefined;
+  processRole?: 'vba-dev' | 'vba-debug-adapter' | undefined;
 }
 
 export interface VbaDevCommandRunResult {
@@ -55,6 +60,7 @@ export interface VbaDevCommandRunResult {
   cancellationRequestDelivered: boolean | undefined;
   cancellationRequestError: string | undefined;
   message: string;
+  failureMessage?: string | undefined;
 }
 
 export function runVbaDevCommand(
@@ -62,6 +68,7 @@ export function runVbaDevCommand(
 ): Promise<VbaDevCommandRunResult> {
   return runCompanionCommand({
     ...options,
+    processRole: 'vba-dev',
     displayName: options.displayName ?? 'VbaDev'
   });
 }
@@ -100,6 +107,7 @@ export function runCompanionCommand(
     error?: unknown
   ) => void) | undefined;
   let forceKillTimer: NodeJS.Timeout | undefined;
+  let forceKillRequested = false;
   let settled = false;
 
   const scheduleForceKill = (): void => {
@@ -113,8 +121,10 @@ export function runCompanionCommand(
         return;
       }
       try {
+        forceKillRequested = true;
         child.kill();
       } catch (error) {
+        forceKillRequested = false;
         const message = error instanceof Error ? error.message : String(error);
         options.outputChannel.appendLine(
           `${displayName} command force termination failed: ${message}`
@@ -208,6 +218,57 @@ export function runCompanionCommand(
       const resolvedExitCode = exitCode ?? 1;
       const commandWasCancelled = resolvedExitCode === 130 ||
         (options.cancellationTransport === undefined && cancellationRequested);
+      const closedAfterForceKillRequest = forceKillRequested && !commandWasCancelled
+        && (signal !== null || resolvedExitCode !== 0);
+      const abnormalTermination = commandWasCancelled || closedAfterForceKillRequest
+        ? undefined
+        : classifyAbnormalProcessTermination(exitCode, signal);
+      const abnormalDiagnostic = abnormalTermination === undefined
+        ? undefined
+        : formatAbnormalProcessTermination(
+            options.processRole ?? 'vba-debug-adapter',
+            options.args[0] ?? 'unknown',
+            options.executablePath,
+            1,
+            1,
+            abnormalTermination,
+            'not-retried'
+          );
+      const abnormalMessage = abnormalTermination === undefined
+        ? undefined
+        : `${displayName} terminated abnormally (` +
+          (abnormalTermination.kind === 'exit'
+            ? `exit code ${abnormalTermination.hexExitCode}`
+            : `signal ${abnormalTermination.signal}`) +
+          '); the command was not retried. See VBA Tools Output.';
+      const forcedTerminationMessage = closedAfterForceKillRequest
+        ? `${displayName} closed after a force-termination request following cancellation; the command outcome is uncertain. See VBA Tools Output.`
+        : undefined;
+      if (forcedTerminationMessage !== undefined) {
+        const terminalStatus = signal !== null
+          ? `signal=${signal}`
+          : exitCode === null ? 'status=unknown'
+            : `exitCode=${exitCode}` + (exitCode < 0 || exitCode >= 0x80000000
+              ? ` exitCodeHex=0x${(exitCode >>> 0).toString(16).toUpperCase().padStart(8, '0')}`
+              : '');
+        const diagnostic = `Companion process closed after a force-termination request: ` +
+          `role=${options.processRole ?? 'vba-debug-adapter'} stage=${options.args[0] ?? 'unknown'} ` +
+          `executable=${JSON.stringify(options.executablePath)} ${terminalStatus} outcome=uncertain`;
+        stderr = stderr.length > 0 ? `${diagnostic}\n${stderr}` : `${diagnostic}\n`;
+        try {
+          options.outputChannel.appendLine(diagnostic);
+        } catch {
+          // Output failure must not prevent the process outcome from settling.
+        }
+      }
+      if (abnormalDiagnostic !== undefined) {
+        stderr = stderr.length > 0 ? `${abnormalDiagnostic}\n${stderr}` : `${abnormalDiagnostic}\n`;
+        try {
+          options.outputChannel.appendLine(abnormalDiagnostic);
+        } catch {
+          // Output failure must not prevent the process outcome from settling.
+        }
+      }
       void (async () => {
         let cancellationRequestDelivered: boolean | undefined;
         if (cancellationRequestDelivery !== undefined) {
@@ -223,9 +284,11 @@ export function runCompanionCommand(
           cancellationRequested,
           cancellationRequestDelivered,
           cancellationRequestError,
+          ...(abnormalMessage !== undefined || forcedTerminationMessage !== undefined
+            ? { failureMessage: abnormalMessage ?? forcedTerminationMessage } : {}),
           message: commandWasCancelled
             ? `${displayName} command was cancelled.`
-            : `${displayName} exited with code ${resolvedExitCode}.`
+            : abnormalMessage ?? forcedTerminationMessage ?? `${displayName} exited with code ${resolvedExitCode}.`
         });
       })();
     };

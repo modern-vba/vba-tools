@@ -24,6 +24,17 @@ to save or prune evidence produces a warning without replacing the primary
 failure, changing its exit status, or claiming successful workbook generation.
 If saving fails, preserve stderr, which includes bounded exception details.
 
+For a local correlated diagnostic run, the launcher may set
+`VBA_TOOLS_DIAGNOSTIC_RUN_ROOT` to an absolute, unique run directory whose final
+name has the form `run-YYYYMMDDTHHmmssfffZ-<16 lowercase hex digits>`. Failure
+reports then go to its `source-analysis` child, with that validated run name in
+the JSON `diagnosticRunId` field. Retention remains the newest 20 completed
+reports **within that child**, without pruning another run's files. An absent
+variable keeps the default directory and report shape. An invalid run root
+produces a warning and bounded stderr fallback instead of redirecting output
+or hiding the source-analysis failure. Successful analysis and cancellation-only
+failures still create no report or run directory.
+
 ## Evidence and limitations
 
 The local report uses schema `1.0`, independent of the public `sourceAnalysis`
@@ -41,12 +52,17 @@ schema `3.0`. It records:
   and text. Only acquired evidence is reported; missing data is not success.
 
 Sources are not reopened or copied. A decode/parse failure can therefore leave
-no tree/hash for the active source. Template contents, source text, environment
-variables, workbook bytes, and native dumps are not collected. Exception messages
-may themselves include application-provided content. Paths and reference names
-can be sensitive: inspect and redact a report before sharing it. Nothing is
-uploaded automatically. Copy important reports outside the retention directory
-before enough later failures can remove them.
+no tree/hash for the active source. Template contents, source text, raw environment
+variable values, workbook bytes, and native dumps are not collected. The validated
+run ID is the only environment-derived value added during an opt-in correlated run.
+Exception messages may themselves include application-provided content. Paths
+and reference names can be sensitive: inspect and redact a report before sharing
+it. Nothing is uploaded automatically. Copy important reports outside the
+retention directory before enough later failures can remove them.
+
+The run ID allows this handled source-analysis failure to be matched with other
+local evidence from the same launcher invocation. It does not imply that a
+native process crash or a different failure was captured by this recorder.
 
 This is a handled-managed-exception recorder, not crash monitoring. A native
 access violation, process kill, stack overflow, or out-of-memory termination may
@@ -54,6 +70,14 @@ prevent it from running. The native crash investigation in #409 remains separate
 no shared cause is assumed. A report identifies inputs and a failing stage, but
 is not a complete replay package and may not identify the individual expression
 or URI involved inside project-wide analysis.
+
+The opt-in `SourceAnalysisUriResolutionWindowsProbeTests` exact-input probe calls
+shared analysis directly and does not use the CLI evidence store. If URI
+identification throws there, its local xUnit output includes
+`probeUriIdentification=` with bounded UTF-16 code units and available origin
+context. Preserve that test output before another run. The probe does not write
+a JSON report or change the project, and absence of this field on a successful
+run is not evidence that the historical fault is fixed.
 
 ## After recurrence
 
@@ -71,3 +95,1423 @@ or URI involved inside project-wide analysis.
    may still require owned Excel metadata discovery; obtain the usual approval.
 5. Add reviewed recurrence evidence to #415. Keep the issue open until the actual
    cause and regression behavior are established, not merely because logging works.
+
+The opt-in #415 URI reproducer (`scripts/source-identity-repro/README.md`)
+accepts either its sanitized synthetic fixture or a private exact failure receipt.
+Its bounded stress loop is not part of ordinary test or release gates.
+
+## Sanitized URI isolation on 2026-09-26
+
+With the captured URI pair's five-character account segment replaced by `local`,
+the frozen SourceIdentity DLL (SHA-256
+`91D812876BAF5B45909635BD6D7D990D86E61D290DE97749BD41A247C13EECDF`)
+on Windows .NET 10.0.8 failed with `ArgumentOutOfRangeException` in
+`String.SplitInternal` in two of six fresh child processes, each bounded to
+5,000,000 identity iterations; four passed. The full original private receipt
+also replayed successfully once, which is only a non-reproduction. The sanitized
+fixture retains the URI lengths (269 and 276 UTF-16 code units) and comparison
+order. It contains no personal account name.
+
+The failing-side decoded remainder was 121 UTF-16 code units, with slash offsets
+5, 11, 18, 24, 47, 61, 71, 75, 85, and 100. A separate ignored local control
+called only `remainder.Split('/', StringSplitOptions.RemoveEmptyEntries)` on that
+exact sanitized remainder: six fresh processes and 30,000,000 total calls all
+passed. This negative control narrows the observation but does not exonerate
+`String.Split`, establish a product defect, or prove a fix.
+
+A signed ProcDump exact-child run with `-ma -e 1 -f '*ArgumentOutOfRangeException*'
+-n 1 -x` produced one local full dump on its first bounded attempt, after the
+child reported 2,300,000 completed iterations. The dump's exception object and
+generated stack confirm `ArgumentOutOfRangeException` through
+`String.SplitInternal`, `SourceIdentity.NormalizeSegments`, and `TryFromUri`.
+However, the dump comment says `Unhandled exception`, and CDB reports that the
+first/second-chance distinction is unavailable. The live stack is at later
+exception propagation, so this dump does **not** establish first-chance capture
+or reveal the failing split indices, length, or separator list. ProcDump exited
+with code 1; the child's exit code was not observed and must not be inferred.
+The dump (SHA-256
+`FDB436BB81B89C4CC89E8ED477681BCE2687A8A4E9DA4BA31FE622CF5882B1B7`),
+trial reports, and private receipt remain only under ignored local `.tmp` paths.
+The actual root cause, corrective action, and regression boundary remain open.
+
+## Live first-chance follow-up
+
+The ProcDump limitation above led to a separate **live** CDB run with SOS
+`!soe -create System.ArgumentOutOfRangeException 1`. A short startup preflight
+confirmed that the type-filtered first-chance break was installed. With the
+same frozen DLL and sanitized fixture, one five-million-iteration child passed;
+the next stopped at a first-chance CLR notification after 1,000,000 reported
+iterations. The live managed and native stacks still contained
+`String.SplitInternal` and `SourceIdentity.NormalizeSegments`. A single local
+full-memory user dump was saved at that stop (SHA-256
+`4A5EBE9C67B0803EB8376E7F54A52E6221517DFDF2511C1FD0E5FF08D0E51E34`).
+The owned child was then terminated under the debugger, not resumed.
+
+Offline inspection found a 121-code-unit input string and the expected ten
+ascending separator offsets in the live stack buffer. The allocated 11-element
+result array had no populated elements. The optimized .NET 10.0.8 Tier1 code
+has three bounds-check branches converging on the same `start`
+`ArgumentOutOfRangeException` helper; the dump does not identify the branch or
+retain its exact volatile start/length operands. A recovered callee-saved
+register conflicts with the stored separator-buffer pointer, but its provenance
+at the throw is not established. Neither a corrupted separator list nor a
+particular bad index is proven. A new controlled breakpoint at the bounds-check
+branch, before the helper call, is needed to distinguish those possibilities.
+The dump and debugger log remain ignored and local; the historical semantic
+`System.Uri` NullReferenceException has not thereby been reproduced or fixed.
+
+The 2026-09-11 stack belongs to the older `ef2c35b` identity implementation:
+`TryIdentifyDocument` admitted a file URI with `Uri.TryCreate`, then
+`TryGetLocalPath(string)` constructed a second `new Uri(uri)` for that same
+string. Commit `a78ea0a` removed the second parse from that call path by
+reusing the admitted `Uri`; later shared lexical identity work changed the
+file-path implementation again. This establishes that the exact historical
+second-parse call is absent from current semantic identity admission, not why
+the runtime threw or which URI triggered it. A generated non-file reference
+URI is not supported as the historical second-parse input by that stack alone.
+The managed NRE and newer `String.SplitInternal` exception remain distinct
+observations until an exact failing input or shared causal evidence is found.
+
+## Scoped segment-scan compatibility trial
+
+`SourceIdentity.NormalizeSegments` now scans the decoded path remainder without
+calling `String.SplitInternal`. It retains empty-segment removal, `.` and `..`
+normalization, and root clamping. This avoids the runtime call on the newly
+observed `ArgumentOutOfRangeException` path; it does not establish why that
+runtime call failed or address the historical semantic `System.Uri`
+`NullReferenceException`. The sanitized failure pair is included as a
+deterministic identity test; it does not reproduce the intermittent crash by
+itself. The high-volume reproducer remains opt-in.
+
+On the same Windows .NET 10.0.8 host, the new SourceIdentity DLL (SHA-256
+`BA862E205AF0641814AA689A0802DF439653B9EAE5497E3CF08475FB1B01A6DF`)
+completed ten fresh child runs of five million identity iterations each with
+the sanitized pair: 50,000,000 calls, ten passes, no observed exceptions. The
+frozen pre-change DLL had failed in two of six analogous runs. These bounded
+observations support the mitigation but do not prove long-term stability or a
+root cause. A three-trial read-only semantic-analysis probe of the affected
+six-TypeLib BFW project also passed. A later ten-trial run completed with zero
+diagnostics on each trial and unchanged project-tree and Excel-process checks.
+After adding SourceIdentity to the probe's assembly inventory, a further
+one-trial run passed and recorded the loaded test-path SourceIdentity DLL as
+SHA-256 `AB58698598A61EF7F345D82C9B6230F74B4FBDE4DF4E41E9EFC49253121C2DCA`.
+That DLL is distinct from the Release standalone reproducer DLL above. These
+are non-reproductions, not proof that the historical semantic failure is gone.
+Keep #415 open for the original failure's cause and regression boundary, and
+keep the local dump private.
+
+The freshly published Windows vba-dev executable (SHA-256
+`DD9C25D5F383B3DCCAABC1AEB890A50DCDD8444D8901821EDB03179790EB6CBC`)
+also completed one ordinary `build --project` against an isolated copy of the
+affected BFW project. The copy contained the same 41 files and 2,468,110
+bytes before Build; the command imported 35 source files and wrote a nonempty
+workbook only under the ignored diagnostic copy. The original bin workbook
+retained its pre-run length and UTC modification time, no Excel process
+remained, and the original repository status was unchanged. Because the copy
+has a different absolute path, this validates the published CLI workflow but
+does not replay the historical URI spellings exactly or prove that a rare NRE
+cannot recur.
+
+## Exact BFW input and process-boundary investigation on 2026-09-26
+
+The opt-in, read-only `SourceAnalysisUriResolutionWindowsProbeTests` used the
+original BFW source root and installed TypeLibs on Windows .NET 10.0.8. It
+admitted 35 source trees and six catalogs with 16,246 active definitions; the
+successful trials produced zero diagnostics. It compared the original project
+tree (41 files, 2,468,110 bytes) and Excel process IDs before and after each
+test. Fresh Debug test hosts ran at most ten `Analyze` calls each, rather than
+copying sources or building a workbook.
+
+With normal tiered compilation, intermittent `NullReferenceException`s arose
+in different managed paths, including syntax-position lookup, lexer advance,
+semantic resolution, and callable-signature presentation. One monitored trial
+instead returned `projectFatal=true` during source admission, before any
+`Analyze` call; its then-current assertion omitted the original exception
+details. Another test host terminated with `Internal CLR error (0x80131506)`
+while parsing source, and its exact-child ProcDump monitor observed
+`C0000005.ACCESS_VIOLATION` without saving a dump. These are distinct
+observations, not multiple captures of the historical `System.Uri`
+`NullReferenceException`; no failing URI was acquired in these trials. The
+completed successful and handled-failure trials checked the original project
+tree and Excel-process state. The fatal crash exited before the test's
+after-state checks, so its immediate invariants were not recorded; subsequent
+trials observed the original tree hash again. Local logs remain under ignored
+`.tmp/diagnostic-verification/issue-415-*` directories.
+
+As one controlled comparison, the same Debug DLL with
+`DOTNET_TieredCompilation=0` completed ten fresh processes with ten analyses
+each (100/100), while normal-tiered trials had failed. That finite
+non-reproduction is a reason to investigate runtime/code-generation or
+process-history effects; it does not establish a JIT, CLR, hardware, COM, or
+product-code root cause, nor does it prove that disabling tiering is a fix.
+An earlier lexical access violation was also observed with tiering disabled.
+
+For managed `NullReferenceException` and native access-violation follow-up,
+a local signed ProcDump was attached to the **exact owned** Debug
+`testhost.exe` PID after validating its executable path and start time. The
+monitor used a first-chance filter, `-ma`, and `-n 1`, with a finite test and
+monitor lifetime; it did not register a machine-wide handler. Initial monitored
+processes either passed, failed before analysis, or crashed without producing
+a matching dump. A monitor reporting no dump is not proof that no exception
+occurred: the preceding admission failure had no captured exception detail,
+and the observed CLR fatal error did not satisfy the saved-dump condition.
+Stop at the first matching full dump, verify its size/hash and exception context,
+and keep it local; dumps can contain private source, paths, and secrets. Do not
+upload the dump or treat a monitored test as a release-gate pass.
+
+To separate installed TypeLib acquisition history from later managed analysis,
+an opt-in `SourceAnalysisTypeLibReplayWindowsProbeTests` captured a baseline
+and six `input.json` TypeLib metadata snapshots in an ignored local directory.
+The baseline (SHA-256
+`5C86F4E457BE9E45E840743E6C2062C30C0E453B22107847DAAFA013204CEEB2`)
+records the ordered 35 source URI/raw-UTF-16 hashes, catalog input hashes,
+selection, 16,246 active definitions, and zero-diagnostic fingerprint. Each of
+six separate fresh test hosts re-read the **same original source root**,
+verified those hashes, rebuilt the six catalogs from the snapshots without
+COM or registry discovery, and completed ten analyses with matching results
+(60/60). This finite replay is a non-reproduction, not proof that COM history
+causes the other failures. A future COM-free failure with matching baseline
+and input fingerprints would show that prior COM acquisition is unnecessary;
+continued passes would not establish the converse. The snapshots contain
+private TypeLib metadata and absolute paths; keep them local. None of these
+observations resolves #415 or satisfies its original-URI regression criterion.
+
+A later original-input control independently acquired the installed TypeLibs
+in five fresh Debug test hosts and completed ten analyses per host (50/50),
+again with unchanged BFW project-tree and Excel-process checks. Thus this
+bounded comparison saw no failure on either the COM-backed (50/50) or
+COM-free (60/60) path. It provides no causal distinction between them and is
+not a correction or release-gate result.
+
+A third, acquisition-conditioned arm performed the installed TypeLib acquisition
+first, verified that all six acquired identities and serialized metadata hashes
+matched the frozen baseline, then analyzed with the **frozen** catalogs rather
+than reusing the acquired live catalogs. Its ordered 35-source URI/raw-UTF-16
+fingerprint was SHA-256
+`DA3786223771D8556A61BBB9E66F50CD221B3D3E955495AF2C5B7E1DBA044AFE`.
+Three fresh Debug hosts each completed ten analyses, and one post-build host
+completed three more (33/33); every trial had zero diagnostics and the baseline
+diagnostic SHA-256
+`4F53CDA18C2BAA0C0354BB5F9A3ECBE5ED12AB4D8E11BA873C2F11161202B945`.
+The earlier COM-free and COM-backed arms used a prior test-assembly build but
+the same product DLLs. Since all three bounded arms passed, this experiment
+does not distinguish their process histories, identify a cause, or complete
+#415's original-URI regression criterion.
+
+## First-chance lexer fault dump on 2026-09-26
+
+In the exact-input BFW probe's `issue-415-nre-procdump-20260926-j01` run,
+the first eight of ten analyses completed with zero diagnostics. Trial 9
+failed with `NullReferenceException` at `VbaLexer.ReadIdentifierOrKeyword`
+line 339. The post-test project tree remained 41 files with SHA-256
+`038839696C32C2D0DED55672FCD4BC19D6C5EC44EDC205087B1983B5D551C772`;
+Excel process IDs were unchanged.
+
+The exact-child ProcDump monitor was configured for first-chance exceptions.
+It logged `C0000005.ACCESS_VIOLATION`, a 350 MB full dump completed in 0.3
+seconds, and its one-dump limit reached. The monitor nevertheless exited 1
+and its wrapper reported `dumpFinalized=false`; the completed file was
+independently verified at 358,058,938 bytes with SHA-256
+`E91E2B2A25DC68070F5FF0905120D0997399C520AED9FDE6A1E972C9ADC09A74`.
+ProcDump's dump comment calls this first-chance, while CDB's generic exception
+display says the first/second-chance distinction is unavailable offline.
+
+At the saved fault, CDB identified OS thread `0x2c68` at RIP
+`0x7FF9A72D9386`: `cmp dword ptr [rcx],ecx` attempted to read address zero
+with `RCX=0`. The instruction follows a call to `LexerState.get_Position`;
+the returned and stored position reference was null. The captured `LexerState`,
+`VbaSourceText`, `start` position, and `cachedPosition` were non-null. Its raw
+offset was 77, `start.Offset` was 71, `identifierLength` was 6, and the source
+string was 127 UTF-16 code units (object size 276 bytes), with SHA-256
+`813C67DFA5F08AEA60B7F42C38EB582DB602E35C49EEF7C37E0B523E38FEC15A`.
+Its exact line matches `common-modules/WorksheetService.cls:1010` in the
+unchanged BFW source tree; the line content is not copied into this document.
+The getter source uses
+`cachedPosition ??= new VbaSyntaxPosition(...)`, which should not return null
+under ordinary managed execution. SOS `verifyobj` found four inspected objects
+valid, and `verifyheap` checked 2,145,953 objects with zero errors. These
+checks do not establish why the null return occurred; no JIT, CLR, hardware,
+or product-code root cause is supported yet. This is fault-time evidence for
+one lexer manifestation, not a reproduction of the historical `System.Uri`
+exception or completion of #415's regression criterion.
+
+Release validation remains incomplete: the full verification command stopped
+only at the known VSIX packaging Node `0xC0000005` failure after all preceding
+suites passed. A separate Windows Excel suite passed its 48, 6, and 5 tests.
+The dump and diagnostic logs remain private under ignored local `.tmp` paths;
+do not commit or upload them.
+
+A proposed shortcut that skipped document identification for generated
+`vba-reference://` URIs with escaped spaces in the authority was discarded.
+The historical stack entered a second parse of an admitted file URI, not this
+generated-reference case. The shortcut would also change identity behavior for
+some admitted reference URIs. Its finite unit-test passes therefore could not
+justify a #415 correction. The normal identity admission path remains in use.
+
+After extending the temporary lexer recorder to the faulted
+`ReadIdentifierOrKeyword` position access, the exact-input BFW probe passed ten
+analyses in one fresh Debug host (10/10, zero diagnostics). The next fresh host
+failed on its first attempted analysis, before any completed trial, with a
+managed `NullReferenceException` at `VbaPositionSyntaxIndex.FindIdentifier`
+line 683. That location is a LINQ ordering key over a statement's token range,
+not the historical URI operation or the newly instrumented lexer access.
+The same 41-file source-tree hash was observed before and after; no Excel
+process appeared. No new dump was collected because the authorized one-dump
+limit had already been reached. This second post-change manifestation prevents
+using the single successful host as stability evidence and still does not
+establish a shared cause.
+
+With both the lexer and `FindIdentifier` failure-only recorders built, a new
+bounded sequence of fresh hosts completed 80 analyses across its first eight
+hosts. Host 9 completed three analyses and then failed on attempt 4 with a
+`NullReferenceException` at `ReadIdentifierOrKeyword` line 306. Its attached
+`probeLexer` evidence identified `ReadIdentifierOrKeyword.PositionBeforeSlice`:
+`state`, `sourceText`, `cachedPosition`, and a post-failure reread of `Position`
+were non-null; raw and reread offsets were both 148, start offset 137,
+identifier length 11, and source length 195 UTF-16 code units. The source-line
+SHA-256 over UTF-16LE units was
+`6F17A8ADE7FDD515BA38451BC1937D064B0831C34B2A65604DF71DBC447AD21F`,
+matching the unchanged BFW `common-modules/WorksheetService.cls` line 1021.
+The reread describes state *after* the exception; without a second fault-time
+dump it does not itself prove the getter's return value at the failing
+instruction. The earlier one-dump native context supplies that stronger
+observation for a different line and trial. The probe again verified the
+41-file tree hash and unchanged Excel process IDs. It produced no URI or
+`FindIdentifier` graph evidence, because neither boundary failed in this host.
+
+## COM-free frozen-catalog recurrence on 2026-09-27
+
+The `ReplayCapturedMetadataWithoutComOrRegistry` arm then used the same original
+BFW source root and the previously hashed six TypeLib metadata snapshots in
+fresh Debug hosts. It verifies ordered source URI/text fingerprints, catalog
+input hashes, reference selection, definition count, and the zero-diagnostic
+baseline before and during each analysis, without installed TypeLib/COM or
+registry acquisition in that host. The first fresh host completed ten analyses.
+The second completed five with the expected diagnostic fingerprint, then failed
+on trial 6 with `NullReferenceException` at
+`VbaPositionSyntaxIndex.GetProcedureSyntaxWords` line 1569 while filtering
+significant tokens by `token.Range.Start.Offset`. This is a different syntax
+position from the URI and lexer failures. It demonstrates that fresh installed
+TypeLib/COM acquisition is **not necessary** for at least this intermittent
+failure. It does not establish whether the catalog contents, source input,
+runtime, or process state is causal, nor whether this is the same root cause as
+the historical URI failure.
+
+The replay has a post-action project-tree and Excel-process guard, but its
+failure output did not include the guard results because they were attached
+only as secondary exception data. A later read-only check found 41 project
+files and no Excel process; that alone is weaker than the in-run before/after
+receipt. The probe now emits explicit bounded before/after tree hashes,
+Excel-process counts/IDs, and a protection-check result even after an analysis
+exception, without replacing the primary failure. That revised failure path
+has not yet been observed in a fresh recurrence. No further native dump was
+collected.
+
+After adding that failure output and a `GetProcedureSyntaxWords.prefix`
+token-graph recorder, ten further fresh COM-free hosts each completed ten
+analyses (100/100) against the same frozen baseline. Every completed test
+also passed its project-tree and Excel-process guards. This finite
+non-reproduction does not reverse the earlier COM-free recurrence or prove
+that the instrumentation, runtime, or product code fixed it. No token-graph
+evidence was acquired in this follow-up because no failure occurred.
+
+## COM-free pre-catalog range failure and later native crash on 2026-09-27
+
+The next fresh frozen-catalog replay failed during source admission, **before**
+it rebuilt any catalog from the snapshot or called semantic `Analyze`. The
+failure was `ArgumentOutOfRangeException` from `System.String.Substring`,
+reached through `VbaLexer.LexerState.Slice`, `CreateToken`, and
+`ReadFixedLength` while parsing one of the original BFW sources. Its in-test
+post-state guard passed: the project tree hash was identical before and after,
+and no Excel process appeared. A separate read-only check found all 35 source
+text hashes equal to the frozen baseline. The ordinary cursor transitions in
+this lexer do not appear able to pass an out-of-range slice for an immutable
+string, but the failed invocation did not record its actual offsets, so a
+product cursor defect, runtime behavior, or process-state fault cannot yet be
+distinguished. This is not the historical `System.Uri` exception.
+
+A temporary `[DEBUG-415-lexer-v1]` failure-only recorder now preserves the
+original range exception and records `Slice` start/end offsets, the pre-call
+source length and cursor, post-failure source length/hash and cursor, and
+whether both reads used the same string object. It does not retain source
+content or change an error into a successful analysis. The probe formatter
+and handled-failure JSON store accept only these bounded fields. Syntax
+tests passed 1,938/1,938; VbaDev tests passed 3,017 with 57 skipped. These
+tests validate evidence behavior, not the cause of the intermittent fault.
+
+With that build, 13 fresh COM-free test hosts completed ten analyses each
+(130/130) against the frozen baseline. The 14th `dotnet test` invocation
+returned 1 without a handled-test failure record. Windows Application Error
+and .NET Runtime events
+at 2026-09-27 00:54 JST identify `testhost.exe` exit `0xC0000005` with an
+unhandled `AccessViolationException` in `System.Runtime.EH.DispatchEx` /
+`List<T>.Add`, reached from
+`VbaCallableSignaturePresentation.PresentParameter` during semantic analysis.
+The trial number within that host is unknown because its process terminated
+before test output could be retained. The in-test after-state guard also could
+not run. A later read-only check again found all 35 source hashes matching
+the baseline and zero Excel processes; this weaker after-the-fact check is not
+an in-run guard receipt. No additional dump was requested or copied. The
+Windows event stack is useful evidence of a native failure in a **different**
+analysis location, not proof of a common root cause or of a lexer fix. The
+original URI operation remains uncaptured and #415 is not release-ready.
+
+## Historical second-parse replay on 2026-09-27
+
+To exercise the URI operation actually present in the 2026-09-11 stack,
+commit `ef2c35b` was exported into an ignored local `.tmp` directory. This
+added no Git branch or worktree and did not change the current checkout. Its
+Release Syntax and Semantics assemblies built with .NET SDK 10.0.300; the
+resulting SHA-256 values were
+`E4439B64CB5D958EC19BFAD6DED48BBB4440D9804A07FE5C0F0EFBE8E7460C6D`
+and `00877DDFFC366F70450026AB24ED5F46ABBE2ABD80FBE29BFB95AB0CE371282D`,
+respectively. These are newly built assemblies, **not** the historical
+published binary.
+
+A COM-free, read-only harness parsed the same 35 current BFW sources after
+checking every raw UTF-16 text hash against the frozen baseline, and built
+six reference catalogs from the locally captured TypeLib metadata JSON. One
+uninstrumented trial completed. A diagnostic-only version then surrounded
+the old `TryGetLocalPath(string)` second `new Uri(uri)` with a catch that would
+retain the exact UTF-16 URI only in a local receipt and rethrow an observed
+`NullReferenceException`. Ten fresh .NET 10.0.8 x64 hosts each completed ten
+semantic analyses (100/100), with no exception or URI receipt. A later
+read-only check found all 35 source hashes unchanged and no Excel process.
+
+This is a bounded **non-reproduction**, not a correction. The old assembly
+derived 16,120 active definitions and one diagnostic from the frozen catalog
+data, versus the current replay baseline's 16,246 definitions and zero
+diagnostics. The historical published binary, precise 2026-09-11 catalog
+state, and exact failing URI are unavailable, and the diagnostic catch can
+alter rare timing/code generation. Current semantic code no longer makes this
+second parse, but the original runtime failure's cause remains unsupported.
+The native crash observed with current code is separate evidence; neither
+result justifies closing #415 or claiming release readiness.
+
+## Standalone current-build comparisons on 2026-09-27
+
+The same ignored local harness was linked to the current product assemblies,
+keeping the 35 raw-UTF-16 source hash checks and six frozen catalogs. With a
+Release build it reproduced the baseline's 16,246 active definitions and zero
+diagnostics; ten fresh standalone hosts completed ten analyses each (100/100).
+This is a configuration/process-boundary comparison with the Debug xUnit
+replay, not a proof that Release code is safe.
+
+The current Debug standalone build, without xUnit or live COM, returned a
+`NullReferenceException` in `VbaLexer.LexerState.Peek` on trial 5 after four
+successful analyses. With only `DOTNET_TieredCompilation=0` changed, another
+fresh Debug process failed on trial 10 in
+`VbaPositionSyntaxIndex.IsWord` after nine successful analyses. Neither
+failure was in `System.Uri`; disabling tiered compilation alone did not
+prevent this class of intermittent failure.
+
+To test whether reusing parsed syntax trees is required, the Debug standalone
+harness then reread and rehashed all 35 original sources and reparsed them
+before **each** analysis, while retaining the frozen catalogs. One fresh host
+completed ten analyses. The next completed four and failed during trial 5
+with `ArgumentOutOfRangeException` in `VbaLexer.LexerState.Slice` /
+`String.Substring`, reached from lexical comment inspection during semantic
+resolution. This occurrence saved the exception stack but not its diagnostic
+`Exception.Data`; actual slice operands therefore remain unobserved. After a
+local-only receipt change to include allowlisted lexer evidence, the next
+fresh-syntax process instead terminated with native `0xC0000005` in
+`VbaTokenStream.FromText` while initially parsing sources, before trial 1.
+The changed harness is a separate trial condition. A later read-only check
+again found all 35 source hashes matching the baseline and zero Excel
+processes. No additional dump was requested or copied.
+
+These observations rule out xUnit, live TypeLib/COM acquisition, tiered
+compilation, and reuse of parsed trees as **necessary conditions** for at
+least one current manifestation. They do not establish a common cause or
+show whether the old URI failure has the same cause. Windows Application
+events in the surrounding four-hour period also recorded `0xC0000005` in
+unrelated `VBCSCompiler.exe`, `codex.exe`, and `sppsvc.exe` processes; no
+WHEA-Logger event appeared in that window. This makes an environment-wide
+factor worth checking, but neither proves hardware/OS corruption nor
+exonerates product code. Keep the different stacks and binaries distinct.
+
+A further standalone control referenced **only** the current Debug Syntax
+assembly. It re-read and checked each of the 35 original source-text hashes
+before every `ParseModule` call, with no semantic analysis, catalogs, COM, or
+Excel. Twenty fresh hosts each completed ten full 35-source parses (200/200),
+with no observed exception or native termination. Afterward, all 35 source
+hashes still matched the baseline and no Excel process existed. This finite
+non-reproduction does not establish that Semantics is required: the earlier
+current Debug standalone process terminated while parsing its initial source
+set, before catalog reconstruction or analysis, and process histories differ.
+The specific failing slice operands still have not been captured.
+
+With the allowlisted receipt enabled, ten more fresh current-Debug hosts
+were scheduled for ten fresh-tree analyses each. Nine hosts completed all
+ten (90/90); one terminated before its initial preparation message with
+native `0xC0000005`. Windows Application Error event 1000 recorded
+`dotnet.exe`, an unknown faulting module, and offset zero for that process;
+there was no managed exception receipt. No `Slice` recurrence or actual
+operand evidence appeared in this bounded run. These counts must not be
+combined with the separate historical or Release cohorts as one pass rate.
+
+The ignored local harness then exercised the same exception-receipt path
+with an intentional private `Slice(0, 6)` call on a five-character synthetic
+string. It recorded the original `ArgumentOutOfRangeException`, phase
+`LexerState.Slice`, start `0`, end `6`, pre-call source length `5`, and an
+unchanged source reference. This validates capture and serialization for a
+known invalid range, not the cause of a real failure. The first canary
+attempt instead terminated with an unhandled `AccessViolationException`
+while initially parsing the 35 sources, before the intentional call; the
+Windows .NET event stack passed through `ReadOnlySpan<char>.Length` and
+`VbaIdentifier.ReadCandidateLength`. A second attempt skipped that initial
+parse and reached the expected canary. No extra dump was collected.
+
+A separate read-only 30-day System log check found four WHEA-Logger event 19
+warnings (2026-08-28, 09-04, 09-09, and 09-22 local time), all reporting
+Processor Core, Corrected Machine Check, and Internal parity error, with
+APIC IDs 0, 1, 1, and 9 respectively. There was no Application Error event
+within 30 minutes of the latest warning (09-22 09:44:42).
+[Microsoft's WHEA definitions](https://learn.microsoft.com/en-us/windows-hardware/drivers/whea/windows-hardware-error-architecture-definitions)
+describe a corrected machine check as a processor-detected condition
+corrected by hardware or firmware; it is
+nonfatal. This record is an independent reason to investigate system
+stability, **not** a proven explanation of any VBA analysis failure. The
+last 30 days contained no Windows Memory Diagnostic result in the System
+log, and its enabled Results/Debug log had zero records; that absence is
+not a clean memory-test result. The physical disk
+reported `Healthy`/`OK`, which likewise does not rule out CPU, RAM,
+firmware, or software faults.
+
+In the same 30-day Application Error event-1000 window, `0xC0000005`
+also appeared in unrelated executables, including `MsMpEng.exe` (5),
+`sppsvc.exe` (8), and `Explorer.EXE` (1). These counts exclude the deliberately
+crashing test executable and are broader than the VBA tool processes, but
+event co-occurrence alone cannot identify a common failure mechanism.
+
+A static audit of the latest `ReadOnlySpan<char>.Length` access-violation
+stack found no explicit unsafe/native or span-escaping operation in its
+immediate Syntax path. `ParseModule` creates a source wrapper around an
+immutable managed string; the lexer forms `AsSpan` from that string while
+inside its end-of-source loop, and `ReadCandidateLength` uses managed rune
+decoding and bounded span slices (`VbaSyntaxTreeParser.cs:122-130`,
+`VbaLexer.cs:34,84-86`, `VbaIdentifier.cs:157-187`). Invalid ordinary
+offsets or malformed UTF-16 would be expected to produce managed range
+handling or token results, not by themselves an access violation at span
+length. The event stack and static audit cannot locate the actual corruption,
+distinguish runtime/JIT
+from other process influences, or absolve product code.
+
+## Windows integrity checks on 2026-09-27
+
+The maintainer ran an elevated `sfc /verifyonly` twice. The first attempt
+stopped at 3% with Windows Resource Protection unable to perform the
+requested operation. CBS records the SFP verification request at 07:38:05
+local time, seven completed 100-component batches, and an eighth batch
+started without a completion record at 07:38:08. Application Error event
+1000 at that same second reports `TiWorker.exe` terminating in `ntdll.dll`
+with `0xC0000409`; the later CBS worker-restart message confirms the worker
+crash. The event does not identify why the worker terminated, and this first
+attempt says nothing about whether protected files are intact.
+
+The second elevated `sfc /verifyonly` started at 07:48:31 and reached 100%,
+reporting integrity violations. Its CBS verification batches end at
+07:49:42; the sole explicit corruption entry in the current CBS log is
+`DEPLOY [Pnp] Corrupt file: C:\Windows\System32\drivers\bthmodem.sys` at
+that time. No `[SR]` entry specifies a mismatching hash, corruption subtype,
+or a repair result. The existing file was readable (114,688 bytes, file
+version 10.0.26100.5074), but that does not contradict SFC's integrity
+finding. `/verifyonly` performed no repair.
+
+Separately, at 07:46:50, a `WinMgmt` CBS session reported
+`CBS_E_XML_PARSER_FAILURE` while reading a RollupFix package `.mum`. A
+read-only .NET XML reader subsequently traversed the current 1,708,640-byte
+file without a well-formedness error; this does not validate CBS-specific
+metadata or reconstruct the bytes seen at failure time. Neither that
+separate parser event nor the `bthmodem.sys` finding is established as the
+cause of the 07:38 worker crash, the VBA-analysis failures, or the corrected
+machine checks. No system repair, reboot, configuration change, or new dump
+was performed by this investigation.
+
+The maintainer subsequently ran elevated
+`DISM /Online /Cleanup-Image /RestoreHealth`, which completed successfully.
+The CBS summary at 08:25:04
+records 1,608 detected corruptions repaired and zero CSI manifest
+corruptions detected by that DISM pass. The following `sfc /scannow` reached
+100% but reported that some files could not be repaired. At 08:27:48 CBS
+records an XML parser failure at line 188, column 7; at 08:27:50 its `[SR]`
+entry says it cannot verify files for
+`Microsoft-Windows-Power-Policy-Definitions` version 10.0.26100.3912
+because the manifest is damaged. CBS does not give that manifest's full
+path or identify a particular unrepaired component file. At 08:28:26 the
+same SFC run records a successful one-component repair and both
+`Corrupt file` and `Repaired file` entries for `bthmodem.sys`; that earlier
+driver finding is therefore not the supported remaining SFC blocker. DISM's
+successful repair of its detected set did not establish that this later
+SFC manifest parse would succeed. Neither outcome proves a cause for the
+VBA-analysis failures, and this investigation did not initiate the system
+repair or collect a new dump.
+
+The maintainer then reran elevated `sfc /verifyonly`. It reached 100% and
+reported no integrity violations. CBS records the verification from 08:34:23
+through 08:38:01, ending with `Repairing 0 components` and `Repair complete`.
+The prior `Power-Policy-Definitions` manifest error, XML parse error, and
+`bthmodem.sys` corruption entry do not recur in this verification interval.
+This supports that the protected-file integrity check passed on this run; it
+does not establish that the earlier manifest failure's cause is understood.
+
+The verification interval was not crash-free: Application Error event 1000
+records `TiWorker.exe` crashes at 08:35:49 (`ntdll.dll`, `0xC0000409`) and
+08:36:23 (`wcp.dll`, `0xC0000005`), and CBS records worker relaunches. The
+08:35:46 and 08:36:08 verification attempts stopped mid-batch; the 08:37:01
+attempt completed all batches. The successful final SFC result therefore does
+not establish servicing-stack or machine stability.
+
+Two separate `dotnet.exe` application crashes occurred nearby. A .NET Runtime
+1025 event at 08:37:01 records a `FailFast` stack ending in
+`VbaLexer.CreateToken`; a 1026 event at 08:38:51 records an unhandled
+`AccessViolationException` in `VbaLexer`/`VbaProjectSourceAnalysis.Analyze`.
+Application Error 1000 events match their respective process IDs. The
+available event and WER records do not establish the command lines or parent
+processes. This is further evidence that lexer-path failures can recur, not
+that SFC caused them or that a particular VBA input is faulty. The historical
+URI and Slice root causes and release acceptance remain open.
+
+## Fixed-input runtime and Syntax-only comparisons on 2026-09-27
+
+The branch's opt-in frozen-catalog test used the unchanged Debug
+`VbaDev.Tests.dll` (SHA-256
+`4FB241CFE4D6741274161FBD68C83DE0DB440EB29ECB3A9709C3A527A265A389`)
+and 2026-09-26 six-catalog baseline (SHA-256
+`5C86F4E457BE9E45E840743E6C2062C30C0E453B22107847DAAFA013204CEEB2`).
+Each fresh testhost verified the same 35 raw-UTF-16 source fingerprints.
+The first local .NET 10.0.8 host completed ten zero-diagnostic analyses.
+The next host terminated with native `0xC0000005` before a completed trial;
+its .NET event stack reached `VbaPositionSyntaxIndex.GetEnclosingBlocks`.
+An independent live-TypeLib host terminated with native `0xC0000005`
+at `VbaSourceText.get_Text` during semantic re-lexing. A further
+COM-free host completed eight analyses and failed on trial nine with a
+managed `NullReferenceException` in `LexerState.Slice`; its failure-only
+receipt found the source text and position non-null, with a 68-code-unit
+source and unchanged source-tree fingerprint. These are three distinct
+manifestations, **not** reproductions of the historical `System.Uri`
+failure. The local TRX files are under ignored
+`.tmp/diagnostic-verification/issue-415-step2-20260927`; no dump was
+collected for these runs.
+
+To compare runtimes without rebuilding the test binary or changing the
+VSTest runner DLL, the same `vstest.console.dll` was invoked directly
+under each host. Module inspection of the running `testhost.exe`
+confirmed `coreclr.dll` 10.0.8 from the locally installed SDK or
+10.0.12 from `C:\Program Files\dotnet`, respectively. Five fresh hosts
+per runtime completed ten zero-diagnostic frozen-catalog analyses each
+(50/50 under each runtime). The direct-runner cohorts cannot be merged
+with the earlier `dotnet test` cohort because the launch path changed;
+the successes do not demonstrate that either runtime is safe.
+
+An ignored, standalone Syntax-only control then re-read and rehashed
+the original 35 sources before each parse and queried `GetPositionSyntax`
+at each argument-list callee. Completed trials yielded 17,036 position
+queries and the same 27,707 enclosing-block count. Under .NET 10.0.8,
+two fresh processes completed ten trials each; the third terminated
+before its first completed trial with native `0xC0000005` at
+`LexerState.get_Position` during `ParseModule`. Under .NET 10.0.12,
+one fresh process completed ten trials; the second completed three and
+then exited after a managed `NullReferenceException` at
+`LexerState.Slice` during `ParseModule`. The latter's .NET Runtime
+event 1026 names the managed exception, while Application Error 1000
+records `0xC0000005`; neither record alone identifies the first corrupt
+state. The same current Debug Syntax DLL was used in both hosts (SHA-256
+`8FE3CDCDA24305E21562E29B7975857E87187234E6381E4747FFB438A06E2AAC`).
+Afterward all 35 source hashes still matched, and no Excel process was
+running. This control excludes TypeLib acquisition, semantic analysis,
+Excel, and xUnit as necessary conditions for these lexer-path failures;
+it does **not** prove a common cause with the original URI exception.
+Upgrading only to .NET 10.0.12 is not a validated correction.
+
+A local artifact audit found no retained executable matching the
+historical published CLI SHA-256
+`AD2C508061ADFFED05DBFDE7A63AE281C9207F9122ECC6874024AE9B5707FD03`.
+The 2026-09-26 frozen six-catalog baseline is not the 2026-09-11 catalog
+state, and the historical failing URI was never captured. Thus an exact
+original-binary/input replay cannot be claimed. The URI-root-cause,
+actual failure-boundary regression, and release gate remain unresolved.
+
+## Fresh release-gate and debugger observations on 2026-10-02
+
+After the development environment update, an exact
+`npm run verify:release:windows-excel` run on the existing release branch
+passed the architecture, extension, Extension Host, vba-dev, debug-adapter,
+and 1,938 Syntax tests. Its `VbaLanguageServer.Tests` testhost then exited
+with a fatal `AccessViolationException` at `VbaSourceText.get_Text`, reached
+from `LexerState.Slice` during the large manifest-project validation test.
+The Windows Excel phase was not reached, so this was **not** a passing
+release-gate run. The generated 96-module, 1,324,622-byte project was
+preserved under ignored
+`.tmp/diagnostic-verification/release-gate-20261002-124914-fixture`;
+the copied files match the original source hashes. This preserves the
+fixture, not necessarily the bytes read by the failing process at the
+instant of failure.
+
+A failure-only assertion path now reports the active source URI, UTF-16
+length and hash, and exception type if the test's post-semantic module
+reparse fails. It preserves the original exception. In five fresh targeted
+VSTest hosts with crash blame enabled, four passed and one failed with a
+managed `NullReferenceException` in `VbaLexer.CreateToken` at the numeric
+literal path. This is a different manifestation from the full-gate access
+violation; the failing URI still was not captured for the fatal case.
+
+An isolated .NET 10.0.12 check showed that ProcDump's type-name filter
+`-f System.NullReferenceException` did not produce a dump for a first-chance
+managed NRE, while filtering on the CLR exception code would capture other
+managed exceptions too. A local CDB/SOS script was therefore checked with
+an isolated process: it ignored a preceding unrelated managed exception and
+captured a first-chance NRE before execution resumed. In the actual targeted
+test, three fresh debugged hosts passed. A later host terminated with an
+internal CLR error (`0x80131506`) during validation, before a matching NRE
+was observed. With first-chance access-violation capture also armed, five
+more hosts passed and the sixth failed with
+`ArgumentOutOfRangeException` in
+`VbaCallSyntaxParser.IsAssignmentTarget` at its token-index access. No
+NRE or access-violation dump was produced in these latter runs. The local
+logs remain under ignored `.tmp/diagnostic-verification/cdb-nre-20261002*`.
+Debugger attachment changes timing, and the different exceptions do not
+prove a single cause. They do show that one exception-specific dump filter
+alone cannot capture every observed failure mode. No source-analysis root
+cause or release fix is established by these results.
+
+A subsequent scoped CDB run captured a first-chance native access violation
+in its third fresh testhost. The 328,608,733-byte full-memory user dump and
+the matching testhost identity, binary hashes, and debugger log remain only
+under ignored
+`.tmp/diagnostic-verification/cdb-nre-20261002T045403Z-887670cb`.
+The captured thread was inside the named large-project test, following
+project diagnostics through `ParseModule`, `VbaLexer.Tokenize`,
+`VbaIdentifier.IsWhitespace(U+0020)`, and `Cp2Ranges` into CoreCLR's
+`RuntimeHelpers.CreateSpan<int>`. The fault was therefore during analysis,
+not debugger startup. At the fault, CoreCLR attempted an indirect call with
+a noncanonical target read through a stack address; the OS CFG thunk raised
+`0xC0000005`, and the subsequent same-process `0xC0000409` is consistent
+with an indirect-call guard failure. The dump identifies that invalid
+target, but not why CoreCLR obtained it. It does not distinguish a runtime
+or JIT fault from earlier memory corruption, and it does not establish a
+VBA lexer defect. No dump was uploaded. No WHEA-Logger event was found in
+the 13:45–14:05 local-time interval around this run.
+
+As a separate control, the self-contained Windows x64 Syntax-only probe
+published from the current source parsed the preserved 96 modules in ten
+fresh host processes, all passing with 85,502 argument lists. This control
+uses a Release-published Syntax DLL, not the Debug DLL loaded by the
+failing testhost, and success cannot clear the full release gate.
+
+## Fixed-binary runtime and VM comparisons on 2026-10-02
+
+The self-contained Release Syntax-only package was copied into the dedicated
+Windows 11/Excel test VM through the existing enhanced session and extracted
+without changing VM security settings. One guest execution under its bundled
+.NET 10.0.12 completed. Its locally returned JSONL has 195 records: 97 input
+files, 96 source modules, 96 parse starts and completions, and 85,502
+argument lists with `passed: true`. After excluding machine-specific paths
+and process ID, every ordered record, source byte/UTF-16 hash, module count,
+and running total matches the host sanity run. This verifies the parsed
+inputs and result; the guest log alone does not independently attest the
+executable or DLL hashes or the process exit code. The returned log is under
+ignored `.tmp/diagnostic-verification/syntax-only-probe/guest-results-20261002`.
+One successful guest execution is not a stability comparison.
+
+An independent self-contained Syntax-only package retained the **exact**
+Debug `VbaTools.Syntax.dll` used by the failing testhost (SHA-256
+`7C91051EB95A24AACB6EE701C97C94F558B3DD68262E29BFD7D0E825A48A772B`).
+Ten fresh host processes with process-local `DOTNET_TieredCompilation=0`
+each parsed the same 96 modules and passed. Thus sequential Syntax parsing
+with that Debug DLL and setting alone did not reproduce the targeted test's
+failure; this does not exclude concurrency or other testhost paths.
+
+For a closer comparison, ten interleaved pairs ran the same prebuilt
+large-project xUnit test with `--no-build --no-restore`, changing only the
+testhost setting `DOTNET_TieredCompilation` between explicit `1` and `0`.
+The test DLL SHA-256 was
+`496EEC4A994C0B06ED9DFFDB3BD4E386FE33B0A27CFF11422819398435414152`;
+the Syntax DLL was the exact Debug binary above. The `1` arm passed 10/10.
+The `0` arm passed 5/10 and failed 5/10: two fatal native access violations
+in `VbaLexer.LexerState.Position`, and three managed null-reference failures
+in lexer cursor/slice paths. No failure was merely the test timeout. The
+failure-only receipt identified `Caller032.bas` in one `0`-arm failure with
+UTF-16 SHA-256
+`BED6430FD5F383CF7765393A82ECB5DA134943A1667EC75CD3EA8FB6EE30B2FA`,
+matching that module's successful guest input exactly. Logs and per-run TRX
+files remain under ignored
+`.tmp/diagnostic-verification/tiering-ab-20261002T134609Z-adf0f08d`.
+This is a useful high-frequency feedback loop, not proof that tiered
+compilation causes the defect: disabling it changes JIT code versions and
+timing, and the ordinary release gate had already crashed with the default
+setting. Neither disabling tiering nor a successful VM probe is a release
+fix or an acceptance result.
+
+## Isolated Syntax and runtime-setting controls on 2026-10-02
+
+A two-worker, self-contained Syntax probe ran the exact Debug Syntax DLL and
+the same frozen 96-module input in one fresh process per trial. Each worker
+created its own `ParseModule` calls; the input strings were immutable. With
+`DOTNET_TieredCompilation=0`, the first 10 trials passed 9/10. The failure was
+a managed `NullReferenceException` in `VbaLexer.CreateToken` while one worker
+parsed `Caller045.bas`; the other worker completed that same module. The input
+UTF-16 SHA-256 was
+`F2FB2349FB7F97C5B5182A9C98026D66F856849AE6705659C106E61ABF287527`.
+Thirty further fresh trials of the unmodified probe passed 29/30. The failure
+was a process fast-fail (`0xC0000409`), with Windows Error Reporting naming
+`coreclr.dll` version `10.0.1226.42308`. The archived WER report has no stack
+or retained dump, so the faulting thread and input are unknown. The probe
+source, per-run JSONL, summaries, and local WER details remain ignored under
+`.tmp/diagnostic-verification/syntax-only-probe/concurrent-probe`. This
+establishes that the failure can occur without VS Code, Excel, or the language
+server. It does not establish a Syntax-owned race or a CLR root cause. A
+read-only audit found fresh, private lexer cursor state per tokenization and
+no credible shared mutable state on the failing path.
+
+A disposable diagnostic build changed only the `Cp2Ranges` getter from an
+embedded `ReadOnlySpan<int>` blob to an equivalent static array. Ten
+interleaved TieredCompilation-off xUnit pairs passed 7/10 for both the original
+and the variant. The variant still had a native access violation. Ten more
+interleaved pairs held the original Debug DLL fixed and changed only
+`DOTNET_ReadyToRun`: both explicit `1` and `0` passed 9/10, with a managed
+null-reference failure in the former and a range failure in the latter.
+Neither code-shape change nor runtime setting is a demonstrated prevention.
+All 40 per-run TRX files and binary-hash receipts remain ignored under
+`.tmp/diagnostic-verification/cp2-array-variant-20261002T140204Z`.
+
+A failure-only `CreateToken` observer was built only in an ignored clone. Its
+initial package parsed 30/30 two-worker trials, but those successes do not
+show a fix: both chance and changed JIT/timing are plausible. The first clone
+also omitted the original friend-assembly attributes and was incompatible
+with the xUnit test output; its failed xUnit comparison is invalid. After
+restoring all three original `InternalsVisibleTo` attributes and checking the
+assembly identity and API, the corrected clone passed a smoke test. Ten
+interleaved xUnit pairs then passed 9/10 for both original and observer DLLs;
+each had one managed lexer null-reference failure. The test result XML did
+not expose the observer's `Exception.Data`, so the failing operands remain
+unknown. The clone outputs, hashes, and per-run TRX files remain ignored under
+`.tmp/diagnostic-verification/create-token-ivt-repair-20261002T144825Z`.
+No clone change has been adopted in the product. The release gate remains
+failed, and no issue closure or release conclusion follows from these trials.
+
+## Single-input lexer reproduction on 2026-10-03
+
+A failure-only, local JSONL observer in an ignored Syntax clone captured a
+managed `NullReferenceException` in `LexerState.Slice` on the second fresh
+TieredCompilation-off xUnit host. At the operation reported on the
+`currentSource.Length` line, the captured local `currentSource` and
+`sourceAtCall` were null and the length had not been assigned. In the same
+catch path, `SourceText` and its `Text`
+were nonnull, with a 26-character UTF-16 source and valid slice offsets
+22–25. The outer `CreateToken` observer independently read the same source
+object and valid start/end positions. Its source hash matches the trimmed
+line `result = ResolveValue(174)` in the frozen `Caller068.bas` input. This
+shows an inconsistent value at the failure point; it does not distinguish a
+transient null source getter, an inlining/JIT fault before local assignment,
+or earlier corruption. Both JSONL events and the TRX are retained under
+ignored `.tmp/diagnostic-verification/create-token-slice-jsonl-20261003`.
+
+A self-contained microprobe then repeatedly called only the public
+`VbaTokenStream.FromText` API with that exact 26-character input, checking
+all eight token kinds, texts, and ranges. It pinned the original Debug
+Syntax DLL (SHA-256
+`7C91051EB95A24AACB6EE701C97C94F558B3DD68262E29BFD7D0E825A48A772B`)
+and .NET 10.0.12. With TieredCompilation off, two workers passed four fresh
+processes and failed one with a lexer-position `NullReferenceException` at
+iteration 671,108 of one worker. A separate one-worker build failed its
+first fresh process at iteration 1,171,447, with a `NullReferenceException`
+in `CreateToken`. Thus the full 96-module input, language server, VS Code,
+Excel, and a race between two parsing workers are not necessary to reproduce
+the symptom. A single process result is not an independent trial per token.
+
+An ignored staged-locals diagnostic DLL retained the same assembly identity,
+friend attributes, and public API. Its isolated xUnit smoke passed; ten
+fresh TieredCompilation-off xUnit hosts passed eight times, failed once with
+a managed position-getter null reference, and once with a native access
+violation at the same getter. No staged `Slice` event occurred, so the source
+getter stage remains unidentified. In the single-worker microprobe with this
+diagnostic DLL, four of five fresh processes passed. The other failed at
+iteration 948,559 with a range exception: `Slice` received start offset 9
+and end offset `1,606,418,432` (`0x5FC00000`), while pre/post raw cursor
+offsets were 21 and a catch-time position reread was 21, the same source
+object had length 26, and its complete UTF-16 hash matched the fixed input.
+The passed argument and later cursor observation disagree; the evidence does
+not establish where the argument changed or whether the observer perturbed
+the failure. Microprobe code and per-process JSONL remain ignored under
+`.tmp/diagnostic-verification/syntax-only-probe/lexer-microprobe`; binary
+hashes are in run logs and the comparison package README.
+No workaround or product fix has been accepted from these observations.
+
+## Syntax-independent managed control on 2026-10-03
+
+A separate self-contained .NET 10.0.12 program contains no Syntax DLL and
+never loads the Syntax assembly. It replays the same eight fixed token
+boundaries using independent snapshot, cursor, string-slice, and record
+objects, then checks every token. Its bundled `coreclr.dll`, `clrjit.dll`,
+and CoreLib hashes match the lexer microprobe. It does not copy the lexer
+algorithm, and its allocation profile is not matched to the Syntax probe.
+
+With one worker, the first two-million-iteration fresh process failed at
+iteration 1,647,036 in `ControlReader.AdvanceTo` with an end-offset range
+exception. The post-catch source was nonnull, length 26, and the cursor was
+at offset 21; that initial build did not record the actual argument. A
+failure-only instrumented build then ran in three fresh processes: one
+passed, one reported a token-validation mismatch, and one failed the range
+guard at iteration 1,259,606. The guard's catch path recorded an actual
+`endOffset` argument of 7 against raw cursor offset 25 and source length
+26. The loop's catch-time expected index was 7, but its local expected
+token was the earlier whitespace token (6–7); a post-failure reread of
+static `Expected[7]` was the final punctuation token (25–26), and all eight
+static boundaries were intact. The input's complete UTF-16 hash matched
+`result = ResolveValue(174)`. An independent read-only review found no
+deterministic fixture boundary error or code path that ordinarily selects
+token 1 at index 7. The recorded argument origin string is derived from the
+catch-time index, not a separate observation of the earlier array read.
+Likewise the guard operands and static array were read again after the
+condition fired. These facts show an inconsistent local/argument state,
+but do not distinguish JIT/runtime behavior, host memory corruption, or an
+unseen control-probe defect. The instrumented token mismatch lacks actual
+token fields and cannot be further localized. Source, binary hashes, and
+per-process JSONL remain ignored under
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control`. This
+independent failure weakens a Syntax-only explanation but does not establish
+a root cause or authorize a product-code workaround.
+
+An immediately following interleaved 10-pair comparison held the instrumented
+control binary, input, worker count, and bundled runtime fixed while changing
+only process-local `DOTNET_TieredCompilation` between `1` and `0`. All ten
+fresh processes in each arm passed. The prior three-process control cohort
+had failed twice with `0`, so this later 20-process success is not evidence
+of resolution or of a reliable setting-based workaround. Per-run receipts
+and the summary are under the same ignored control directory.
+
+## VM and runtime follow-up on 2026-10-03
+
+The dedicated Windows 11/Excel VM ran the same one-worker, two-million-iteration
+single-input lexer probe with the pinned Debug Syntax DLL and bundled .NET
+10.0.12 runtime. Its first fresh process recorded a `NullReferenceException`
+in `VbaLexer.CreateToken` at iteration 10,955. The fixed 26-code-unit source
+hash and Syntax DLL hash match the host package. Its returned JSONL (SHA-256
+`44C4C8483B2DE99AE279F3B95E173B327205A3108C76C828338EC161D98F81B7`)
+is retained locally under ignored `.tmp/diagnostic-verification/vm-return-20261003`.
+The log records `passed: false`; the guest process exit code was not
+independently captured.
+
+The separate Syntax-free managed control in that VM used the exact pinned
+control DLL, source hash, and .NET 10.0.12 runtime files. One fresh process
+passed all two million iterations. The next failed at iteration 58,249 with
+`ArgumentOutOfRangeException` in `ControlReader.AdvanceTo`: its guard recorded
+an end offset of 7 against cursor offset 8, while the catch-time loop index
+was 3 and `Expected[3].End` remained 9. The catch-time expected token was
+instead the earlier whitespace token spanning 6–7; the complete static token
+boundaries were intact. `VbaTools.Syntax.dll` was neither present nor loaded.
+The returned pass/failure JSONL SHA-256 values are respectively
+`B08B1022A69961C9C4637835D54DD2697D5D0776703404668A8A2C8904BE0CA3`
+and `EB05C3BCA4B71EC2330CD781C15AC65D0558CC7E46BF62D16A3CBFE6CB2AEF0A`.
+Both are in the same ignored local return directory. This reproduces the
+inconsistent fixed-input control state in the VM, but the VM shares the host's
+physical CPU and memory; it is not an independent-hardware test.
+
+A follow-up in that VM held the managed control DLL, executable, fixed input,
+one-worker setting, and two-million-iteration limit constant while replacing
+the complete bundled runtime with .NET 10.0.8. Five fresh processes (PIDs
+6404, 10372, 2244, 564, and 1868) each completed all two million iterations
+with `passed: true`, no `worker-failure`, and no Syntax assembly present or
+loaded. Every `run-start` recorded the same managed DLL SHA-256
+`62C57B806E81634C52AC36A6D2CAD9F1E61A23319E2D5387E2C1B460888E4068`,
+input UTF-16 SHA-256
+`7226C5FC048DEE46F743D4106CF4977D9B511F9DDA09EE50F27E32B70DEA01A3`,
+and pinned .NET 10.0.8 runtime-file hashes. The five returned JSONL SHA-256
+values, in run order, are
+`16A3F44F57338C905DFA402A936289031888F45FF2A6CA1186C18C0F5E1875F5`,
+`E0552C53D5A6B757ADDC1E16B811AE390EAB75DB9E972EEBE88B8D493D62EE79`,
+`A3B30490D79B72EB4E33712E06575288BD1FB4B4A76516B7ED845326D1594B3C`,
+`6D417CBD8FAC8E2D7BA26C6753800EC491036FCB87F210EA011B2DF05952695D`,
+and `383CEF978A4BD6AF718C286EA6038A8EE53B809EA756466323F25B5DB7680FB9`.
+They remain in the ignored local VM return directory. This bounded success
+does not establish a .NET 10.0.8 fix: the same control already failed on the
+host with 10.0.8, and the VM comparison with 10.0.12 has only one pass and one
+failure. The guest JSONL records application completion, not an independently
+captured process exit code; its tiering environment field is unset, whereas
+the earlier host 10.0.8 failure explicitly set `DOTNET_TieredCompilation=0`.
+The VM still shares the host's physical CPU and memory.
+
+During this follow-up, the host's `VmConnect.exe` separately terminated twice
+while the guest logs were being handled. Windows Application events at 10:37
+and 10:41 JST record respectively a .NET Framework 4.8 FailFast and an
+`AccessViolationException` in Windows Forms accessibility-related stacks,
+with corresponding Application Error records. The guest's fourth control log
+was already complete and was recovered after reconnecting. These host UI
+process failures are distinct from `ManagedControl.exe` results; they may be
+related to accessibility/UI interaction and do not establish a hardware or
+product-code cause.
+
+On the host, a further 10-pair interleaved control comparison kept the .NET
+10.0.12 binaries, one worker, input, and tiering-off setting fixed, changing
+only `DOTNET_JITMinOpts` between `0` and `1`. Smoke-process JIT disassembly
+confirmed optimized `Replay` code in the baseline and MinOpts code in the
+treatment. The baseline passed 10/10; MinOpts passed 8/10. One MinOpts process
+exited with `0xC0000005` after starting its 1,970,001st iteration batch; its
+last managed stack was in the control's `Source` getter. The other failed at
+iteration 282,485 with `NullReferenceException` in the same getter, while
+failure-time observations found a nonnull snapshot, reader, source, and intact
+fixed input. Windows Application events correlate the access violation with
+that exact process, but WER records its faulting module as unknown and retains
+no dump. The 10/10 baseline success does not establish a rate difference;
+MinOpts is not a prevention. The harness, process logs, JIT preflight, and
+summary remain under ignored
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/jit-minopts-ab-20261002T213946787Z-cea7ee55`.
+
+A separate self-contained .NET 10.0.8 control package retained the exact
+managed DLL, executable, and fixed input, while replacing the complete
+bundled runtime and its version sidecars. Its first full host process failed
+at iteration 452,662 with an end offset of 7 against cursor offset 25. The
+catch-time index was 7, but `Expected[7].End` remained 26; the catch-time
+token again resembled the earlier 6–7 whitespace token. This rules out a
+failure limited to the .NET 10.0.12 patch on this host, not a shared runtime
+or physical-host cause. The pinned hashes, JSONL, and receipt remain under
+ignored `.tmp/diagnostic-verification/syntax-only-probe/managed-control/runtime-1008-host-full-20261002T215142597Z-c1b110a3`.
+No product-code change, stable workaround, or release-gate pass follows from
+these diagnostic trials.
+
+A read-only host event review found four earlier WHEA-Logger ID 19 corrected
+processor-core/internal-parity machine checks between August 28 and September
+22, along with earlier Kernel-Power 41 restarts and bugchecks. Windows Memory
+Diagnostics on September 28 was cancelled, not passed. There was no WHEA or
+Kernel-Power event in the October 3 06:20–07:00 JST comparison window, but
+Desktop Window Manager crashed at 06:31 JST, before the Syntax-free control's
+06:39 access violation. These are independent signs of host-level instability,
+not proof that the same fault caused a specific managed exception. Because the
+VM shares that physical host, its recurrence cannot distinguish a shared
+runtime defect from CPU, memory, firmware, power, or other host-level causes.
+An identical payload on a genuinely separate physical machine, or a completed
+hardware diagnostic, would provide a stronger discriminator; neither is
+currently available as a passing comparison.
+
+## Fixed-cohort .NET 10.0.12 incidence on the host on 2026-10-03
+
+An instrumented Syntax-free managed-control package pinned the executable,
+control DLL, bundled .NET 10.0.12 CoreCLR/JIT/CoreLib, 26-code-unit input,
+one worker, two million iterations per child, and
+`DOTNET_TieredCompilation=0`. The existing harness attempted 100 sequential
+fresh child processes regardless of ordinary test failures. Package hashes
+passed its preflight. Each completed child JSONL verified the input and
+binary hashes, and no Syntax DLL was present or loaded. This measures the
+isolated control on this host, not the product or the release gate.
+
+Of 100 attempts, 79 passed, 16 recorded `ArgumentOutOfRangeException` in
+`ControlReader.AdvanceTo` for an `endOffset` behind the raw cursor, and four
+recorded `InvalidDataException` for a token mismatch. The 20 managed control
+symptoms yield an observed per-process rate of 20/100 (20%; descriptive 95%
+Wilson interval 13.3%–28.9%). The narrower range-exception rate was 16/100
+(16%; 10.1%–24.4%). One additional child, run 71, exited before a `run-start`
+record with code `-2147450743`: stderr and Windows .NET Runtime event 1023
+reported `System.Private.CoreLib.dll` load failure, missing type
+`System.SByte`, and HRESULT `0x80131522`. Its CoreLib file's subsequent
+SHA-256 still matched the pinned package. Counting this distinct startup
+failure gives 21/100 nonpasses (21%; 14.2%–30.0%). The other 99 JSONL files
+parse completely; two numerical PIDs were reused, so process identity is
+based on each launch/receipt rather than PID uniqueness. There were no WHEA
+events in the 10:59–11:05 JST execution window, which does not exclude a
+physical-host cause.
+
+Per-run JSONL, stderr, and exit receipts plus `run-summary.json` remain local
+and ignored under
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/instrumented-w1-runs-20261003T020013071Z-302911f7`.
+The intervals describe this short sequential cohort under one environment;
+temporal clustering and shared host conditions mean they are not independent
+hardware evidence or a portable product failure probability. No stable
+workaround or release clearance follows from this result.
+
+## Fixed-cohort original Syntax incidence on the host on 2026-10-03
+
+The original self-contained lexer microprobe, rather than a rebuild from its
+later-edited source, pinned `VbaTools.Syntax.dll` SHA-256
+`7C91051EB95A24AACB6EE701C97C94F558B3DD68262E29BFD7D0E825A48A772B`
+and the bundled .NET 10.0.12 runtime. It used the same 26-code-unit input,
+one worker, two million lexer iterations per fresh process, and disabled
+tiered compilation. All 100 sequential processes started with matching
+source, Syntax, runtime, and package hashes. The 100 receipts and JSONL files
+were independently reconciled with the cohort summary; there were no
+timeouts, launch errors, or unconfirmed child processes.
+
+Of 100 processes, 76 passed. Thirteen logged a managed
+`NullReferenceException` (13%; descriptive 95% Wilson interval 7.8%–21.0%),
+six exited with `0xC0000005` access violation (6%; 2.8%–12.5%), four logged
+a lexer `ArgumentOutOfRangeException`, and one failed a token-count check
+with `InvalidDataException`. Five of the six access-violation processes had
+an explicit `AccessViolationException` stderr trace in Syntax; the sixth had
+the exit code but empty stderr. All failures combined were 24/100 (24%;
+16.7%–33.2%). The first 50 processes had 16 failures, versus eight in the
+last 50; this small cohort does not establish a temporal cause.
+
+The package and per-run receipts remain local and ignored under
+`.tmp/diagnostic-verification/syntax-only-probe/lexer-microprobe/incidence-original-w1-20261003T021958413Z-8c85b4a6`.
+The current probe source pins a different, staged Syntax variant, so rebuilding
+it would not reproduce this cohort. These per-process rates are for the fixed
+microprobe on this host, not the full product, its release tests, or an
+independent physical machine. Together with the Syntax-free cohort, they
+show recurrence on .NET 10.0.12 but do not identify whether Syntax, the
+runtime, or shared host conditions cause any particular failure.
+
+## Fixed-cohort Syntax-free control incidence in the VM on 2026-10-03
+
+The dedicated `VBA-TOOLS-TEST` Hyper-V VM ran one approved, sequential
+100-process cohort from its local disk. The transferred package passed the
+launcher's complete 192-file manifest and pinned-hash preflight. Every child
+reported the same instrumented control DLL, CoreCLR, JIT, CoreLib, 26-code-unit
+input hash, .NET 10.0.12 x64 runtime, one worker, two million iterations, and
+disabled tiered compilation as the host control cohort. No Syntax DLL was
+present or loaded. The 100 child directories, 100 raw JSONL files, 100
+per-child receipt entries, and cohort events reconcile; all raw JSONL files
+parse. One numerical PID was reused only after its earlier child ended.
+
+Ninety-nine processes passed. Child 2 failed at iteration 1,447,860 with
+`ArgumentOutOfRangeException` for `endOffset` in
+`ControlReader.AdvanceTo`. At the failing guard, the requested offset was 7
+behind raw cursor offset 25 in the 26-code-unit source. The catch-time
+`Expected[7].End` was 7 while a separate array-boundary observation retained
+26, matching the host control's class of anomaly. There were no token
+mismatches, access-violation exits, startup/no-log failures, timeouts, malformed
+logs, or unconfirmed child processes. The observed VM failure rate was 1/100
+(1%; descriptive 95% Wilson interval 0.18%–5.45%). The host's same-binary
+Syntax-free cohort had 20 managed symptoms and one separate startup failure
+among 100 attempts.
+
+The complete copied evidence remains local and ignored under
+`.tmp/diagnostic-verification/vm-return-20261003/cohort-20261003T031258719Z-5525aec0485e4fd7a07348aec74cd5c9`.
+The VM shares the host's physical CPU and memory and ran later, so the lower
+observed rate cannot identify a hardware, host software, hypervisor, runtime,
+or timing cause. The VM recurrence shows that the fault is not confined to
+the host Windows installation, but this isolated control is neither a product
+failure-rate estimate nor a release-gate result.
+
+## Fixed-cohort .NET 10.0.8 Syntax-free control incidence in the VM on 2026-10-03
+
+The same dedicated `VBA-TOOLS-TEST` VM ran a later, sequential 100-process
+cohort from its local disk with a self-contained .NET 10.0.8 child payload.
+The launcher verified the 191-file child manifest, pinned binary hashes, input
+hash, and absence of `VbaTools.Syntax.dll` before starting. The managed-control
+DLL SHA-256 (`62C57B806E81634C52AC36A6D2CAD9F1E61A23319E2D5387E2C1B460888E4068`)
+and 26-code-unit input SHA-256
+(`7226C5FC048DEE46F743D4106CF4977D9B511F9DDA09EE50F27E32B70DEA01A3`)
+matched the earlier .NET 10.0.12 VM cohort. Each child reported one worker,
+two million iterations, and `DOTNET_TieredCompilation=0`. The bundled
+CoreCLR, JIT, and CoreLib hashes differed as expected with the runtime version.
+
+All 100 launches produced a child directory, raw JSONL, and receipt; all 100
+raw JSONL files parse, and their start/completion events match the 100 receipt
+entries. The cohort completed without a timeout, unsafe child, malformed log,
+or startup failure. Ninety-nine children passed. Child 8 exited with code 1
+after a managed `InvalidDataException`: token 6 differed from its expected kind,
+text, or half-open range at iteration 1,658,177. Its `run-start` reported
+.NET 10.0.8 x64 and confirmed that no Syntax assembly was loaded. There was
+no `ArgumentOutOfRangeException` or access-violation exit in this cohort.
+The observed any-failure rate was 1/100 (1%; descriptive 95% Wilson interval
+0.18%–5.45%).
+
+The earlier .NET 10.0.12 VM cohort also had 99 passes and one failure among
+100 fresh processes, but its failure was an `ArgumentOutOfRangeException` at
+iteration 1,447,860 rather than a token mismatch. Equal aggregate counts in
+two small, non-randomized cohorts do not establish equal true failure rates,
+nor do different observed symptoms prove that the patch changed the failure
+mechanism. Both cohorts used the same VM and physical host at different times.
+The result shows that the isolated Syntax-free control can fail under .NET
+10.0.8 in this VM; it does not isolate runtime, host, hypervisor, or hardware
+as the cause and does not measure product or release-test reliability.
+
+The copied 10.0.8 receipt, summary, and per-child evidence remain local and
+ignored under
+`.tmp/diagnostic-verification/vm-return-20261003/cohort-20261003T080259381Z-49c88cfe76ed41a3bddc751a2cf9f75c`.
+
+## Candidate release verification and fixed-control follow-up on 2026-10-03
+
+The single candidate branch was clean at commit
+`5da9de17f29fa8879fa7f0e6806a7a53033a8ef4`. Its
+`npm run diagnose:release:windows-excel` profile completed 20 stages: 19
+passed, including VSIX package verification and all three real-Excel stages;
+`test:language-server` failed (2 failures, 2,935 passes). One Language Server
+child exited with `0xC0000005`/CLR internal error while handling a fixed
+`textDocument/didOpen` request; a second child exited with the same code
+while registering a project reconciliation scope. The first child has a local
+full dump and exact request SHA-256
+`883A82BF23A9187E13D387ABFF339CC83197D22E1EB2AC5D1292E7579B290862`.
+The terminal dump does not retain a first-fault exception context; neither
+stack identifies the first corrupting operation. The run root is
+`.tmp/diagnostic-verification/run-20261003T083745377Z-7183956c577da203`.
+
+The unmodified, fail-fast `npm run verify:release:windows-excel` on the same
+commit failed again in `test:language-server`: 2,936 passes and one failed
+process test out of 2,937. A different child closed stdout while the fixed
+conditional-array rename test awaited a response; its exit was `0xC0000409`.
+The fixture URI was `file:///C:/work/ConditionalArrayRename.bas`, and its
+198-byte UTF-8 text had SHA-256
+`CDE1C632FCE0AADB8503FFA21681F78E392063094F1AC945BEEE4DF163C47034`.
+No matching Windows Application/WER crash record or first-fault dump was
+found for this standard run. The standard gate stopped at this failure, so
+the separate diagnostic profile's later Excel passes do **not** make the
+standard release gate pass.
+
+The pinned, self-contained .NET 10.0.12 Syntax-free control was then run on
+this host in two sequential, randomized affinity comparisons. Each fresh
+child used one worker, two million iterations, the same 26-code-unit input,
+and the same complete 192-file package (inventory SHA-256
+`85BD5B4E09E50243F26EFE64BE8870DB5A71626475171EDF475B3F8AF2979616`).
+The launcher set and read back affinity while each child was suspended,
+before managed startup. Across 150 paired trials, high-performance logical
+processors `0–3` had six managed failures in 150 children: five range
+exceptions and one token mismatch. Efficiency logical processors `4–11`
+had zero failures in 150 children. All 300 children had valid start records,
+fixed binary/input hashes, and confirmed termination; no timeout, payload
+drift, residual child, or new WHEA event was observed during either cohort.
+The raw paired receipts are local under
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/affinity-ab-20261003T091840607Z-df16fcde`
+and
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/affinity-ab-20261003T092408191Z-9f3d7ea7`.
+This is an exploratory same-host correlation, not proof of a defective core,
+firmware, JIT, or a safe efficiency-core-only workaround.
+
+The failed control's catch-time records repeatedly showed a copied
+`ExpectedToken` with boundaries `6–7` at a later token index while a fresh
+read of `Expected[index]` retained its proper boundary (`9` or `25`). An
+interleaved three-arm cohort compared the unchanged baseline, failure-only
+token-field capture, and a pre-`AdvanceTo` invariant check for 30 children
+per arm. The baseline failed 9/30, token-field capture 8/30, and pre-call
+check 0/30. One token-field failure recorded an actual zero-length
+`NumericLiteral` at offset 25 where fresh `Expected[7]` was `Punctuation`
+`25–26`. A separate balanced 30-pair run compared the baseline with a
+minimal end-only pre-call comparison: baseline failed 12/30, end-only 0/30.
+All packages differed only in their managed control DLL; raw logs, hashes,
+receipts, and run summaries are local under
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/three-arm-20261003T093204727Z-929180dc`
+and
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/end-only-pair-20261003T094450860Z-4f0355d9`.
+The pre-call checks also change JIT code generation and timing. A local
+.NET 10.0.12 `Replay` disassembly comparison showed a specific change: the
+baseline passes its copied `expected.End` register to `AdvanceTo`, whereas
+the end-only variant passes the freshly read `Expected[index].End` after
+comparison. The variant also changes stack size and register allocation.
+Both disassemblies and the smoke receipts are under
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/jit-compare-20261003T094707993Z-b315d9af`.
+The variants' absence of failures cannot be promoted to a product fix or
+release mitigation, and the earliest instruction at which the copied value
+diverges is still unknown.
+
+The physical host is a VAIO VJS127 with BIOS `R1100VR` dated 2025-08-08.
+Historical corrected WHEA processor-core/internal-parity events involved
+APIC IDs 0, 1, and 9; none was recorded during the two affinity cohorts.
+The 2026-09-28 Windows Memory Diagnostic was cancelled, not passed. VAIO
+publishes [BIOS R1130VR](https://solutions.vaio.com/6713) for this model,
+but its published changes do not establish a fix for these CLR/control
+failures. A complete memory/CPU diagnostic and an independent physical-host
+comparison remain open discriminators. Updating firmware first would change
+the measurement baseline; no firmware or system setting was changed in these
+experiments.
+
+## Host diagnostic and CPU-affinity follow-up on 2026-10-05
+
+The user-supplied VAIO online custom diagnostic reported `Success` at 100%:
+ten CPU checks and the Write Memory and Memory Address checks all passed.
+The local `diag-result.txt` receipt has SHA-256
+`BCFD4997AC0669E75D0D42C8AB5B39FC2FED8A4289CDA7C077022A5889EB35F2`.
+It contains private device inventory and remains outside this repository.
+These short checks found no fault at the time; they do not exercise each
+logical processor with the failing .NET workload for a prolonged period.
+The host still reported BIOS `R1100VR`; no firmware or persistent affinity
+setting was changed during the following comparisons. The installed Intel
+Management Engine Interface firmware property reported `16.1.38.2676`.
+VAIO offers [version `16.1.42.2872`](https://solutions.vaio.com/6709)
+for VJS127, but does not attribute this particular failure to the older
+version.
+
+At clean candidate commit `f8525fea1b587c4836c2880f752ad2899bb1cd74`,
+the same pinned, Syntax-free .NET 10.0.12 control package ran 100 new
+randomized performance/efficiency pairs. All 200 children had valid start
+receipts, pre-resume affinity readback, matching before/after package
+inventory, and no timeout. Performance logical processors `0–3` failed
+once in 100 children with `ArgumentOutOfRangeException` at iteration
+456,729; efficiency processors `4–11` failed zero times in 100. The
+failing copied token end was `7`, while a fresh array read at the current
+index was `22`. The complete local receipts are under
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/affinity-ab-20261005T104600519Z-81b041a1`.
+
+Two further sequential, randomized comparisons kept the same pinned
+package, one worker, two million iterations per fresh process, and
+suspended-launch affinity verification. The first ran 25 children each
+on logical processors `0`, `2`, `4`, and `9`: processor `0` failed twice
+with range exceptions, while the other three had no failures. The second
+ran 25 each on the four performance-core siblings `0`, `1`, `2`, and `3`:
+processor `0` failed three times (two range exceptions and one token
+mismatch), while the other three had no failures. CPU-set metadata mapped
+`0/1` to one physical core and `2/3` to another. The two cohorts therefore
+observed five failures in 50 processor-`0` children versus zero in 150
+other single-processor children. Their local receipts are under
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/affinity-per-logical-cpu-20261005T110916414Z-f9593a43`
+and
+`.tmp/diagnostic-verification/syntax-only-probe/managed-control/affinity-sibling-threads-20261005T111540336Z-5b719201`.
+Both completed with matching package inventory and without invalid starts,
+affinity readbacks, or timeouts. No WHEA-Logger event was recorded during
+these three control cohorts. A later corrected WHEA-Logger event 19
+(record `119376`) occurred at 20:28:06 JST during the temporary-affinity
+full gate: processor-core internal parity error, APIC ID `9`. Its mapping
+to the tested logical-processor indices and any causal connection to the
+managed failures remain unestablished. These exploratory same-host counts
+associate this particular failure with logical processor `0`; they do not
+distinguish a physical defect from firmware, OS scheduling, or CPU-dependent
+JIT behavior.
+
+The unmodified `npm run verify:release:windows-excel` on that commit failed
+at `test:language-server`: 2,935 passed and two LSP children exited with
+`0xC0000005` in different process tests. The corresponding Application log
+has .NET Runtime event 1023 records `82376` and `82377` at 20:05:52 and
+20:06:07 JST, both reporting CoreCLR internal error `0x80131506`. No
+matching first-fault dump or Application Error/WER crash record was found.
+The fail-fast gate did not reach its later stages. The local console log is
+`.tmp/diagnostic-verification/release-gate-20261005T195500/console.log`
+(SHA-256 `35389899FB0EEF6077878C8CE008AA2448FAF12549F61CAE265E050869E20F2A`).
+
+As a **diagnostic contrast only**, a fresh shell excluded logical processor
+`0` with temporary process affinity `0x0FFE`; its testhost, LSP, Node, and
+Excel children were observed to inherit that mask. One standalone
+`test:language-server` run passed all 2,937 tests. A following full
+`verify:release:windows-excel` run exited `0`, including VSIX packaging
+and Windows/Excel integration (48 VbaDev, six Debug Adapter, and six
+cross-product tests passed). The temporary shell restored its prior
+affinity before exiting. Logs remain under
+`.tmp/diagnostic-verification/lsp-no-lp0-20261005` and
+`.tmp/diagnostic-verification/release-gate-no-lp0-20261005`.
+One diagnostic pass under altered CPU scheduling is **not** an unmodified
+release-gate pass or a product workaround. The ordinary release gate remains
+red, and no product fix, issue closure, main integration, or release is
+justified by these observations. A controlled firmware/host comparison or
+independent physical machine remains necessary to separate host and runtime
+causes before deciding how to handle the blocker.
+
+## Post-firmware host retest on 2026-10-05
+
+After the maintainer updated the same VJS127 host and rebooted at 21:25:43
+JST, Windows reported BIOS `R1130VR` and Intel Management Engine firmware
+`16.1.42.2872`. The installed runtime remained .NET `10.0.12`. Both firmware
+components changed before retesting, so any change in incidence cannot be
+attributed to either update separately. No WHEA-Logger event was recorded after
+that reboot during the following trials.
+
+The unchanged, pinned Syntax-free control first completed 100 randomized
+performance/efficiency pairs without a managed failure: 0/100 children in
+each arm, with matching package inventory and valid affinity-before-resume
+receipts. One subsequent four-logical-processor comparison stopped after 40
+successful children when its name-wide process guard briefly found another
+`ManagedControl` process. It did not capture that process's PID or path; no
+child 41 was started, and the partial run is not a completed cohort. A fresh
+unchanged rerun and three further completed comparisons each ran 25 children
+on logical processors `0`, `1`, `2`, and `3`. Across those four complete
+cohorts, processor `0` failed once in 100 fresh children and each other
+processor failed zero times in 100. All four cohorts completed without a
+harness error, timeout, invalid affinity receipt, or package inventory change.
+
+The processor-`0` failure was the first child of the fourth cohort, at worker
+iteration 842,932. `ControlReader.AdvanceTo` received copied end offset `7`
+behind the correct current reader offset `8`; a fresh `Expected[3]` array read
+returned end offset `9`, and the source and complete expected boundary list
+were intact. The process reported `ArgumentOutOfRangeException`, and its
+`syntaxAssemblyLoaded` value was `false`. Static review found one worker, no
+source path that writes the expected-token array after initialization, and
+matching IL for the pinned and inspected control methods. These observations
+do not identify whether the transient value discrepancy arose in JIT/CLR,
+processor execution, or another host mechanism. They show that the firmware
+update did **not** eliminate the isolated failure. The complete local summaries
+are under `.tmp/diagnostic-verification/syntax-only-probe/managed-control/`:
+`affinity-ab-20261005T123121749Z-8d28f8b4`, the partial
+`affinity-sibling-threads-20261005T123826887Z-0d5cb6d4`, and the four complete
+`affinity-sibling-threads-20261005T124304086Z-760d6db3`,
+`affinity-sibling-threads-20261005T131606476Z-37a37ad3`,
+`affinity-sibling-threads-20261005T131842931Z-f906dd9f`, and
+`affinity-sibling-threads-20261005T132131093Z-7387b30c` directories.
+
+At clean candidate commit `53c164a13753a49f2e90d3311dc3e5c543361438`,
+an unmodified `npm run verify:release:windows-excel` exited `0` without CPU
+affinity restriction. It passed all 2,937 language-server tests, VSIX packaging,
+and the Windows/Excel integration groups of 48 VbaDev, six Debug Adapter, and
+six cross-product tests. Its ignored console log is
+`.tmp/diagnostic-verification/post-firmware-normal-gate-20261005T1248JST.log`
+(SHA-256 `130196B21D0F9AA3BAF9FA6A4C4815365972EEBD095CC13F833C37DF60757941`).
+An immediate second unmodified gate passed the language-server and packaging
+stages and all 48 VbaDev Excel tests, but stopped at Debug Adapter Excel
+integration with two failures among six tests. The restart-build test expected
+a VBA namespace preflight failure but received a different, truncated
+`vba-dev snapshot build exited with code` message. A later test reported that
+the packaged adapter ended before DAP response 1 and printed its generic
+`vba-dev` capability-incompatibility message. The gate exited `1`; the
+cross-product Excel tests were not run in that attempt. Its ignored log is
+`.tmp/diagnostic-verification/post-firmware-normal-gate-repeat2-20261005.log`
+(SHA-256 `83893D74FBA7A1D3405DB7C3D1B9258E836E3D8D0E8C1E1484F00F048B6A15F0`).
+
+Application `.NET Runtime` event 1023, record `82620`, at 22:47:41.905 JST
+reported that `vba-dev.exe` terminated on CoreCLR `10.0.12` internal error
+`0x80131506`. Its timing closely matches the first Debug Adapter failure, but
+the test log did not retain the child PID, exit code, or complete build error,
+so this is not an exact process-identity join. No second matching Application
+event was found for the later capability failure. The packaged executable
+currently advertises both required features; 100 direct capability probes
+returned valid responses, and a standalone rerun of the six Debug Adapter
+Excel tests passed all six. This rules out a consistently stale or
+incompatible packaged executable but does not explain the intermittent
+second failure or establish that the CoreCLR event caused both failures.
+
+The capability startup path previously collapsed nonzero probe exits and
+response-admission rejections into the same incompatibility line. A narrow
+test-first diagnostic change on this branch now distinguishes a nonzero probe
+exit by unsigned hexadecimal code from a zero-exit response rejection by
+fixed `CapabilityRejectionKind`, without exposing raw child stdout/stderr.
+The three new targeted cases failed before the change and passed afterward;
+the complete non-Excel Debug Adapter suite passed 660 tests with six Excel
+tests skipped. This improves the next-occurrence evidence and is not a
+correction for a CoreCLR crash, the original URI failure, or the isolated
+control discrepancy. The changed candidate at
+`36a76274ce105e447e4e4080ac555cfcb05fe642` then passed one unmodified
+`npm run verify:release:windows-excel` run with exit code `0`: 2,937 language
+server tests, VSIX packaging, and the Windows/Excel groups of 48 VbaDev, six
+Debug Adapter, and six cross-product tests all passed. Its ignored console
+log is `.tmp/diagnostic-verification/post-firmware-normal-gate-commit36a7627-20261005.log`
+(SHA-256 `836142E053EA7D199A311AC9EB73DC19D18DA043A25C24548273CA910C88381E`).
+No `.NET Runtime` event 1023 or WHEA-Logger event was found during this run.
+The branch was clean and synchronized with its remote at that commit.
+This successful run does not erase the preceding intermittent gate failure or
+identify the underlying host/runtime mechanism. No issue closure, `main`
+integration, tag, or release follows from these mixed observations.
+
+## Clean-branch full-gate recurrence on 2026-10-06
+
+The next clean, synchronized candidate was
+`cdaba1d0a769246a73c4d5d54a098c171938a4be`. Relative to the preceding
+passing `36a7627` gate, only this evidence document changed; executable source
+did not. An unmodified `npm run verify:release:windows-excel` passed 2,937
+language-server tests, VSIX packaging, and all 48 VbaDev Windows/Excel tests,
+but failed one of six Debug Adapter Windows/Excel tests and exited `1`. The
+cross-product Excel group was not run. The ignored console log is
+`.tmp/diagnostic-verification/post-firmware-normal-gate-final-cdaba1d-20261005.log`
+(SHA-256 `72D711D0336D74282B32FFB32412C180FEC067B05ECCDA7607D32F7F52D2DA48`).
+
+The failing `AbruptPackagedAdapterExitKillsItsExactExcelProcessAndLeavesScopedCleanup`
+case stopped at its launch-success assertion before it could kill the adapter
+or verify exact Excel-process cleanup. The adapter remained alive and returned
+`DebugSetupError: vba-dev snapshot build exited with code -1073741819`.
+The child stderr began `Fatal error. 0x80131506` with a stack led by
+`System.String.Concat`, `VbaCallableSignaturePresentation.Assemble`, and
+`VbaProjectReferenceCatalogSet.CreateSourceSignature`. The signed process exit
+corresponds to `0xC0000005`. Application `.NET Runtime` event 1023, record
+`82633`, at 00:05:05 JST reports a `vba-dev.exe` CoreCLR `10.0.12` internal
+error `0x80131506` in the same interval. The event does not include a child
+PID, so its identity is not an exact join to the test's process; the matching
+executable, time, and fatal code are strong but bounded evidence. No WHEA
+event was recorded from the post-firmware reboot through this run, and no
+Excel, testhost, or vba-dev process remained afterward.
+No dump for this event was found in the local diagnostic, CrashDumps, temporary,
+or archived WER locations. The existing opt-in integration dump hook targets
+the native Test build, not this Debug Adapter snapshot-build child.
+
+This is a failure in a packaged product subprocess reached by the integration
+test, not a demonstrated bug in the test's abrupt-termination assertion. It
+does not show that the string-concatenation source expression is defective:
+the fatal CLR error has appeared at unrelated managed locations in earlier
+trials, and the Syntax-free control still failed after the firmware update.
+No specific first corrupting operation, historical failing URI, shared root
+cause, or corrective mitigation is established. The normal full release gate
+therefore remains unstable, and #415 and the release cannot be closed on this
+evidence.

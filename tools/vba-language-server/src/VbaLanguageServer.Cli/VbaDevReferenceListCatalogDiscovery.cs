@@ -10,6 +10,7 @@ internal sealed class VbaDevReferenceListCatalogDiscoveryFactory
       IVbaProjectReferenceCatalogCancellationCleanup
 {
     private readonly IVbaProjectReferenceCatalogDiscovery registryDiscovery;
+    private readonly string executablePath;
     private readonly ProcessInvocationRunner processRunner;
 
     TimeSpan IVbaProjectReferenceCatalogCancellationCleanup.CancellationCleanupTimeout =>
@@ -41,6 +42,7 @@ internal sealed class VbaDevReferenceListCatalogDiscoveryFactory
         }
 
         this.registryDiscovery = registryDiscovery;
+        this.executablePath = executablePath;
         this.processRunner = processRunner;
     }
 
@@ -59,6 +61,7 @@ internal sealed class VbaDevReferenceListCatalogDiscoveryFactory
         => new VbaDevReferenceListCatalogDiscovery(
             CreateRegistryBatchDiscovery(),
             context,
+            executablePath,
             processRunner);
 
     private IVbaProjectReferenceCatalogDiscovery CreateRegistryBatchDiscovery()
@@ -72,6 +75,7 @@ internal sealed class VbaDevReferenceListCatalogDiscovery
 {
     private readonly IVbaProjectReferenceCatalogDiscovery registryDiscovery;
     private readonly VbaProjectReferenceCatalogRefreshContext context;
+    private readonly string executablePath;
     private readonly ProcessInvocationRunner processRunner;
     private readonly object invocationGate = new();
     private Task<VbaDevReferenceListInvocationResult>? invocation;
@@ -79,10 +83,12 @@ internal sealed class VbaDevReferenceListCatalogDiscovery
     public VbaDevReferenceListCatalogDiscovery(
         IVbaProjectReferenceCatalogDiscovery registryDiscovery,
         VbaProjectReferenceCatalogRefreshContext context,
+        string executablePath,
         ProcessInvocationRunner processRunner)
     {
         this.registryDiscovery = registryDiscovery;
         this.context = context;
+        this.executablePath = executablePath;
         this.processRunner = processRunner;
     }
 
@@ -172,6 +178,17 @@ internal sealed class VbaDevReferenceListCatalogDiscovery
                     arguments,
                     cancellationToken)
                 .ConfigureAwait(false);
+            if (processResult.ExitCode < 0)
+            {
+                return VbaDevReferenceListInvocationResult.Untrusted(
+                    "Companion process terminated abnormally: " +
+                    "role=vba-dev stage=reference-list " +
+                    $"executable={JsonSerializer.Serialize(executablePath)} " +
+                    "attempt=1/1 " +
+                    $"exitCodeSigned={processResult.ExitCode} " +
+                    $"exitCodeHex=0x{unchecked((uint)processResult.ExitCode):X8} " +
+                    "outcome=not-retried. CLI-backed reference catalog resolution was not trusted.");
+            }
             return VbaDevReferenceListContract.Parse(
                 processResult,
                 projectPath,
