@@ -592,6 +592,10 @@ internal sealed class VbaLanguageServerRuntime
                     .TryPrepare(
                         new VbaCompanionExecutableUpdate(executablePath))?
                     .Apply();
+                await PublishStartupWarningAsync(
+                        state.WarningMessage,
+                        cancellationToken)
+                    .ConfigureAwait(false);
                 return;
             }
 

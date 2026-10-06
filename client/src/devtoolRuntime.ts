@@ -40,6 +40,7 @@ export interface VbaDevInvocationRuntimeOptions {
   forceKillAfterCancellationMilliseconds?: number | undefined;
   reportCancellationProgress?: ((message: string) => void) | undefined;
   requiredContract?: RequiredVbaDevContract | undefined;
+  isWorkspaceTrusted?: (() => boolean) | undefined;
 }
 
 export interface VbaDevCommandRuntimeOptions extends VbaDevInvocationRuntimeOptions {
@@ -84,6 +85,7 @@ export interface VbaDevProjectCommandRunResult {
   cancellationRequested: boolean;
   cancellationRequestDelivered: boolean | undefined;
   cancellationRequestError: string | undefined;
+  failureMessage?: string | undefined;
 }
 
 export interface VbaDevCommandRunResult {
@@ -95,6 +97,7 @@ export interface VbaDevCommandRunResult {
   cancellationRequested: boolean;
   cancellationRequestDelivered: boolean | undefined;
   cancellationRequestError: string | undefined;
+  failureMessage?: string | undefined;
 }
 
 export async function resolveVbaDevProjectCommandContext(
@@ -219,7 +222,8 @@ export async function runResolvedVbaDevCommandInvocation(
     cancelled: result.cancelled,
     cancellationRequested: result.cancellationRequested,
     cancellationRequestDelivered: result.cancellationRequestDelivered,
-    cancellationRequestError: result.cancellationRequestError
+    cancellationRequestError: result.cancellationRequestError,
+    ...(result.failureMessage === undefined ? {} : { failureMessage: result.failureMessage })
   };
 }
 
@@ -282,7 +286,8 @@ export async function runResolvedVbaDevProjectCommandInvocation(
     cancelled: result.cancelled,
     cancellationRequested: result.cancellationRequested,
     cancellationRequestDelivered: result.cancellationRequestDelivered,
-    cancellationRequestError: result.cancellationRequestError
+    cancellationRequestError: result.cancellationRequestError,
+    ...(result.failureMessage === undefined ? {} : { failureMessage: result.failureMessage })
   };
 }
 
@@ -390,7 +395,8 @@ async function resolveInvocationVbaDev(
       extensionRoot: options.extensionRoot,
       configuredPath: options.configuredDevToolPath,
       runProcess: options.capabilitiesProcess,
-      requiredContract: options.requiredContract
+      requiredContract: options.requiredContract,
+      isWorkspaceTrusted: options.isWorkspaceTrusted
     });
     return devtool;
   } catch (error) {

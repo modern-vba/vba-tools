@@ -181,7 +181,8 @@ export async function discoverReferenceQuickPickItems(
     throw new ReferenceDiscoveryCancelledError();
   }
   if (result.exitCode !== 0) {
-    throw new Error(`Reference ${mode} inventory exited with code ${result.exitCode}.`);
+    throw new Error(result.failureMessage
+      ?? `Reference ${mode} inventory exited with code ${result.exitCode}.`);
   }
 
   if (operation === 'add') {
@@ -259,7 +260,8 @@ export async function runReferenceMutationCommand(
     await offerShowOutput(
       options,
       'error',
-      `Reference ${operation} failed for ${context.document.name}. See VBA Tools Output for details.`
+      result.failureMessage
+        ?? `Reference ${operation} failed for ${context.document.name}. See VBA Tools Output for details.`
     );
     return;
   }
@@ -381,7 +383,8 @@ async function runReferenceListForProject(
       await options.showErrorMessage(`${String(error)} See the VBA Tools output for details.`);
     }
   } else if (!result.cancelled) {
-    await options.showErrorMessage('Reference list failed. See the VBA Tools output for details.');
+    await options.showErrorMessage(result.failureMessage
+      ?? 'Reference list failed. See the VBA Tools output for details.');
   }
 
   return {

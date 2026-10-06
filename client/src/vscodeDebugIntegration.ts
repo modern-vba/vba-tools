@@ -180,6 +180,8 @@ export interface VscodeDebugIntegrationOptions {
   reportDebugAdapterCleanupWarning?: ((message: string) => unknown) | undefined;
   reportSnapshotBuild?: ((report: DebugSnapshotBuildReport) => void) | undefined;
   reportSnapshotBuildWarning?: ((message: string) => void) | undefined;
+  reportCapabilityDiagnostic?: ((message: string) => void) | undefined;
+  isWorkspaceTrusted?: (() => boolean) | undefined;
   requireTrustedWorkspace?: (() => Promise<boolean>) | undefined;
 }
 
@@ -363,6 +365,8 @@ export class VscodeDebugIntegration {
 
     const providers = await resolveSnapshotProviders({
       ...this.options,
+      reportCapabilityDiagnostic: this.options.reportCapabilityDiagnostic,
+      isWorkspaceTrusted: this.options.isWorkspaceTrusted,
       cancellationToken,
       configuredDevToolPath: this.options.getConfiguredDevToolPath(),
       configuredDebugAdapterPath: this.options.getConfiguredDebugAdapterPath?.()
@@ -454,6 +458,8 @@ export class VscodeDebugIntegration {
 
     return resolveSnapshotProviders({
       ...this.options,
+      reportCapabilityDiagnostic: this.options.reportCapabilityDiagnostic,
+      isWorkspaceTrusted: this.options.isWorkspaceTrusted,
       cancellationToken,
       configuredDevToolPath: this.options.getConfiguredDevToolPath(),
       configuredDebugAdapterPath: this.options.getConfiguredDebugAdapterPath?.()
@@ -574,6 +580,8 @@ export class VscodeDebugIntegration {
         ? undefined : this.restartPreparations.get(preparationId)?.providers)
         ?? await resolveSnapshotProviders({
           ...this.options,
+          reportCapabilityDiagnostic: this.options.reportCapabilityDiagnostic,
+          isWorkspaceTrusted: this.options.isWorkspaceTrusted,
           cancellationToken,
           configuredDevToolPath: this.options.getConfiguredDevToolPath(),
           configuredDebugAdapterPath: this.options.getConfiguredDebugAdapterPath?.()

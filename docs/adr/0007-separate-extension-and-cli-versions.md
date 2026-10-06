@@ -56,6 +56,17 @@ feature keys remain compatible.
 
 When a configured CLI fails resolution but the bundled CLI satisfies the complete required contract, the extension proceeds with that session-pinned bundled executable and shows at most once per window activation: `The configured vba-dev executable is unavailable or incompatible. VBA Tools is using its bundled vba-dev for this window.` The ordered actions are Open Settings and Show Output. Output records the configured candidate and its failure, the selected bundled path, and the required contract; changing the setting does not replace the already pinned executable during that activation. If neither candidate resolves compatibly, guided creation stops before Doctor preflight or user input and shows exactly one error, `VBA Tools could not find a compatible vba-dev executable.`, with Open Settings and Show Output. Output records both candidate paths and their independent failures. There is no Run Anyway, PATH search, download, third executable, or automatic retry. The single-flight operation ends, no preflight result is cached or retained, and the user may invoke the command again after correcting the installation or setting.
 
+The only exception to the no-automatic-retry rule above is one fresh attempt
+for the same candidate after its independent `capabilities --format json` probe
+terminates abnormally at the operating-system level. The previous process and
+streams must have reached a proved terminal state, and the delay is bounded.
+Missing executables, ordinary nonzero exits, cancellation, invalid or
+incompatible responses, and unproved cleanup are not retried. A recovered
+probe leaves an Output record; an unrecovered crash is reported as a crash,
+not merely as contract incompatibility. This is a bounded attempt within the
+original resolution, not a later automatic resolution lifecycle or permission
+to replay a managed command, workbook operation, or debug session.
+
 The project-creation validation feature independently versions the input
 contract shared by guided creation and `new excel`: exact project-name
 preservation and rejection, Excel bracket handling, the 218-UTF-16-code-unit

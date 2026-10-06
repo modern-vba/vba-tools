@@ -267,6 +267,8 @@ export async function activate(
     extensionRoot: context.extensionPath,
     configuredPathProvider: getConfiguredDevToolPath,
     reportLog: (log) => appendVbaDevResolutionLog(outputChannel, log),
+    reportDiagnostic: message => outputChannel?.appendLine(message),
+    isWorkspaceTrusted,
     reportNotice: (notice) => reportVbaDevResolutionNotice(outputChannel, notice),
     runProcess: hostEventCatalogTestProbe?.controlsCompanionResolution !== true
       ? undefined
@@ -406,6 +408,8 @@ export async function activate(
         message => outputChannel?.appendLine(`[vba-debug-adapter] ${message}`));
     },
     reportSnapshotBuildWarning: message => outputChannel?.appendLine(`[vba-debug-adapter] ${message}`),
+    reportCapabilityDiagnostic: message => outputChannel?.appendLine(message),
+    isWorkspaceTrusted,
     debugConfigurationHost: {
       get workspaceRoots() {
         return workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [];
@@ -574,7 +578,8 @@ export async function activate(
         exitCode: result.exitCode,
         stdout: result.stdout,
         stderr: result.stderr,
-        cancelled: result.cancelled
+        cancelled: result.cancelled,
+        failureMessage: result.failureMessage
       };
     },
     sendNotification: async (method, parameters) => {
@@ -1156,6 +1161,7 @@ async function runDoctorWithProgress(
         resolveCommandPaletteTarget: resolveTarget,
         projectManifestMutationCoordinator,
         outputChannel: channel,
+        isWorkspaceTrusted: () => workspace.isTrusted,
         diagnosticReporter: toolDiagnosticReporter,
         showErrorMessage: (message) => window.showErrorMessage(message),
         reportCancellationProgress: (message) => progress.report({ message }),

@@ -1306,6 +1306,38 @@ test('Doctor resolves and runs the configured adapter without an injected resolv
   assert.deepEqual(fixture.notifications, []);
 });
 
+test('Doctor records a recovered adapter capability crash in VBA Tools Output', async () => {
+  const fixture = createAggregateDoctorFixture();
+  const adapterCapabilities = (await fixture.options.vbaDebugAdapterResolver!.resolve()).capabilities;
+  delete fixture.options.vbaDebugAdapterResolver;
+  fixture.options.configuredDebugAdapterPath = path.join('D:', 'tools', 'vba-debug-adapter.exe');
+  fixture.options.requiredDebugAdapterContract = {
+    contractVersion: adapterCapabilities.contractVersion,
+    protocolVersion: adapterCapabilities.protocolVersion,
+    transports: adapterCapabilities.transports,
+    sessionIdFormat: adapterCapabilities.sessionIdFormat,
+    commands: adapterCapabilities.commands,
+    commandSchemaVersions: adapterCapabilities.commandSchemaVersions,
+    featureVersions: adapterCapabilities.featureVersions,
+    requiredVbaDevFeatureVersions: adapterCapabilities.requiredVbaDevFeatureVersions
+  };
+  let probes = 0;
+  fixture.options.debugAdapterCapabilitiesProcess = async () => {
+    probes += 1;
+    if (probes === 1) {
+      throw Object.assign(new Error('process exited'), { code: 0x80131506 });
+    }
+    return { stdout: JSON.stringify(adapterCapabilities), stderr: '' };
+  };
+
+  await runDoctorCommand(fixture.options);
+
+  assert.equal(probes, 2);
+  assert.match(fixture.output.join(''), /role=vba-debug-adapter.*stage=capabilities.*0x80131506.*recovered/);
+  assert.equal(fixture.invocations.filter(invocation => invocation.startsWith('adapter:doctor')).length, 1);
+  assert.deepEqual(fixture.notifications, []);
+});
+
 test('Doctor renders a unique additive adapter check with its troubleshooting details', async () => {
   const report = passingAdapterDoctorReport() as {
     status: string;

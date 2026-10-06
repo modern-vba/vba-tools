@@ -25,6 +25,7 @@ export interface IntrinsicHostEventCatalogRunResult {
   readonly stdout: string;
   readonly stderr: string;
   readonly cancelled: boolean;
+  readonly failureMessage?: string | undefined;
 }
 
 export type IntrinsicHostEventTypeReference =
@@ -309,7 +310,7 @@ export class IntrinsicHostEventCatalogLifecycle {
       return this.fail(
         trigger,
         'commandFailed',
-        result.stderr.trim() || `vba-dev exited with code ${result.exitCode}.`,
+        result.failureMessage ?? (result.stderr.trim() || `vba-dev exited with code ${result.exitCode}.`),
         result.exitCode
       );
     }

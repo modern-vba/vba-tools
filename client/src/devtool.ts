@@ -11,6 +11,10 @@ import {
   loadRequiredVbaDevContractFile
 } from './vbaDevOutputContract';
 import { admitVbaDevCapabilities, CapabilityRejection } from './capabilityAdmission';
+import {
+  classifyAbnormalProcessError,
+  formatAbnormalProcessTermination
+} from './companionProcessTermination';
 
 export type {
   RequiredVbaDevContract,
@@ -37,6 +41,8 @@ export interface CompatibleVbaDevResolutionOptions extends VbaDevPathResolutionO
   requiredContract?: RequiredVbaDevContract | undefined;
   runProcess?: ProcessRunner | undefined;
   signal?: AbortSignal | undefined;
+  reportDiagnostic?: ((message: string) => void) | undefined;
+  isWorkspaceTrusted?: (() => boolean) | undefined;
 }
 
 export interface CompatibleVbaDev {
@@ -48,6 +54,10 @@ export const configuredVbaDevFallbackMessage =
   'The configured vba-dev executable is unavailable or incompatible. VBA Tools is using its bundled vba-dev for this window.';
 export const noCompatibleVbaDevMessage =
   'VBA Tools could not find a compatible vba-dev executable.';
+export const abnormalVbaDevResolutionMessage =
+  'VBA Tools could not verify vba-dev capabilities because a companion process terminated unexpectedly. See VBA Tools Output.';
+export const abnormalConfiguredVbaDevFallbackMessage =
+  'The configured vba-dev terminated unexpectedly during capability inspection. VBA Tools is using its bundled vba-dev for this window.';
 
 export const VbaDevResolutionNoticeAction = {
   OpenSettings: 'Open Settings',
@@ -68,6 +78,7 @@ export interface VbaDevResolutionFailure {
   readonly source: 'configured' | 'bundled';
   readonly executablePath: string;
   readonly message: string;
+  readonly kind?: 'abnormal-termination' | undefined;
 }
 
 export interface VbaDevResolutionLog {
@@ -78,10 +89,12 @@ export interface VbaDevResolutionLog {
   readonly source?: 'configured' | 'bundled' | undefined;
   readonly requiredContract: RequiredVbaDevContract;
   readonly failures: readonly VbaDevResolutionFailure[];
+  readonly probeDiagnostics?: readonly string[] | undefined;
 }
 
 export function formatVbaDevResolutionLog(log: VbaDevResolutionLog): readonly string[] {
   const lines = [`vba-dev companion resolution: ${log.outcome}`];
+  lines.push(...(log.probeDiagnostics ?? []));
   if (log.configuredPath !== undefined) {
     lines.push(`  Configured candidate: ${log.configuredPath}`);
     for (const failure of log.failures.filter((candidate) => candidate.source === 'configured')) {
@@ -129,6 +142,13 @@ export class VbaDevCompatibilityError extends VbaDevOutputContractError {
   ) {
     super(message);
     this.name = 'VbaDevCompatibilityError';
+  }
+}
+
+class VbaDevAbnormalCapabilityProbeError extends VbaDevCompatibilityError {
+  public constructor(message: string) {
+    super(message);
+    this.name = 'VbaDevAbnormalCapabilityProbeError';
   }
 }
 
@@ -210,7 +230,11 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
     const inspected = await inspectCompatibleVbaDev(
       resolution.executablePath,
       requiredContract,
-      runProcess
+      runProcess,
+      undefined,
+      undefined,
+      this.options.reportDiagnostic,
+      this.options.isWorkspaceTrusted
     );
     const codePage = inspected.capabilities.activeWindowsCodePage;
     if (codePage === undefined) {
@@ -239,14 +263,38 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
       extensionRoot: this.options.extensionRoot
     }));
     const failures: VbaDevResolutionFailure[] = [];
+    const probeDiagnostics: string[] = [];
+    const reportedProbeDiagnosticIndexes = new Set<number>();
+    const reportCurrentProbeDiagnostic = (message: string): void => {
+      if (generation === this.resolutionGeneration
+          && safelyReportDiagnostic(this.options.reportDiagnostic, message)) {
+        reportedProbeDiagnosticIndexes.add(probeDiagnostics.length - 1);
+      }
+    };
+    const unreportedProbeDiagnostics = (): string[] => probeDiagnostics.filter(
+      (_diagnostic, index) => !reportedProbeDiagnosticIndexes.has(index)
+    );
+    const flushInterruptedProbeDiagnostics = (): void => {
+      if (generation !== this.resolutionGeneration) return;
+      for (let index = 0; index < probeDiagnostics.length; index += 1) {
+        if (!reportedProbeDiagnosticIndexes.has(index)
+            && safelyReportDiagnostic(this.options.reportDiagnostic, probeDiagnostics[index]!)) {
+          reportedProbeDiagnosticIndexes.add(index);
+        }
+      }
+    };
 
     if (configuredPath !== undefined) {
+      const priorProbeDiagnostics = probeDiagnostics.length;
       try {
         const configured = await inspectCompatibleVbaDev(
           configuredPath,
           requiredContract,
           runProcess,
-          signal
+          signal,
+          probeDiagnostics,
+          reportCurrentProbeDiagnostic,
+          this.options.isWorkspaceTrusted
         );
         const resolution = Object.freeze<CompanionExecutableResolution>({
           ...configured,
@@ -261,24 +309,43 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
           effectivePath: configured.executablePath,
           source: 'configured',
           requiredContract,
-          failures
+          failures,
+          ...(unreportedProbeDiagnostics().length > 0
+            ? { probeDiagnostics: unreportedProbeDiagnostics() } : {})
         });
         return resolution;
       } catch (error) {
+        if (this.options.signal?.aborted) {
+          flushInterruptedProbeDiagnostics();
+          throw new VbaDevCompatibilityError('VbaDev capabilities command was cancelled.');
+        }
+        try {
+          ensureWorkspaceTrusted(this.options.isWorkspaceTrusted);
+        } catch (trustError) {
+          flushInterruptedProbeDiagnostics();
+          throw trustError;
+        }
         failures.push({
           source: 'configured',
           executablePath: configuredPath,
-          message: errorMessage(error)
+          message: errorMessage(error),
+          ...(error instanceof VbaDevAbnormalCapabilityProbeError
+            || probeDiagnostics.length > priorProbeDiagnostics
+            ? { kind: 'abnormal-termination' as const } : {})
         });
       }
     }
 
+    const priorBundledProbeDiagnostics = probeDiagnostics.length;
     try {
       const bundled = await inspectCompatibleVbaDev(
         bundledPath,
         requiredContract,
         runProcess,
-        signal
+        signal,
+        probeDiagnostics,
+        reportCurrentProbeDiagnostic,
+        this.options.isWorkspaceTrusted
       );
       const configuredFailure = failures.find((failure) => failure.source === 'configured')?.message;
       const resolution = Object.freeze<CompanionExecutableResolution>({
@@ -295,12 +362,16 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
         effectivePath: bundled.executablePath,
         source: 'bundled',
         requiredContract,
-        failures: [...failures]
+        failures: [...failures],
+        ...(unreportedProbeDiagnostics().length > 0
+          ? { probeDiagnostics: unreportedProbeDiagnostics() } : {})
       });
       if (configuredPath !== undefined && !this.configuredFallbackNoticeReported) {
         this.configuredFallbackNoticeReported = this.reportNoticeForGeneration(generation, {
           severity: 'warning',
-          message: configuredVbaDevFallbackMessage,
+          message: failures.some((failure) => failure.kind === 'abnormal-termination')
+            ? abnormalConfiguredVbaDevFallbackMessage
+            : configuredVbaDevFallbackMessage,
           actions: [
             VbaDevResolutionNoticeAction.OpenSettings,
             VbaDevResolutionNoticeAction.ShowOutput
@@ -309,30 +380,50 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
       }
       return resolution;
     } catch (error) {
+      if (this.options.signal?.aborted) {
+        flushInterruptedProbeDiagnostics();
+        throw new VbaDevCompatibilityError('VbaDev capabilities command was cancelled.');
+      }
+      try {
+        ensureWorkspaceTrusted(this.options.isWorkspaceTrusted);
+      } catch (trustError) {
+        flushInterruptedProbeDiagnostics();
+        throw trustError;
+      }
       failures.push({
         source: 'bundled',
         executablePath: bundledPath,
-        message: errorMessage(error)
+        message: errorMessage(error),
+        ...(error instanceof VbaDevAbnormalCapabilityProbeError
+          || probeDiagnostics.length > priorBundledProbeDiagnostics
+          ? { kind: 'abnormal-termination' as const } : {})
       });
       this.reportLogForGeneration(generation, {
         outcome: 'failed',
         configuredPath,
         bundledPath,
         requiredContract,
-        failures: [...failures]
+        failures: [...failures],
+        ...(unreportedProbeDiagnostics().length > 0
+          ? { probeDiagnostics: unreportedProbeDiagnostics() } : {})
       });
       const resolutionNoticeReported = this.reportNoticeForGeneration(generation, {
         severity: 'error',
-        message: noCompatibleVbaDevMessage,
+        message: failures.some((failure) => failure.kind === 'abnormal-termination')
+          ? abnormalVbaDevResolutionMessage
+          : noCompatibleVbaDevMessage,
         actions: [
           VbaDevResolutionNoticeAction.OpenSettings,
           VbaDevResolutionNoticeAction.ShowOutput
         ]
       });
+      const noticeMessage = failures.some((failure) => failure.kind === 'abnormal-termination')
+        ? abnormalVbaDevResolutionMessage : noCompatibleVbaDevMessage;
+      const failureDetails = failures
+        .map((failure) => `${failure.source} '${failure.executablePath}': ${failure.message}`)
+        .join(' ');
       throw new VbaDevCompatibilityError(
-        `${noCompatibleVbaDevMessage} ${failures
-          .map((failure) => `${failure.source} '${failure.executablePath}': ${failure.message}`)
-          .join(' ')}`,
+        [noticeMessage, ...probeDiagnostics, failureDetails].filter(Boolean).join(' '),
         resolutionNoticeReported
       );
     }
@@ -421,34 +512,118 @@ export async function resolveCompatibleVbaDev(
   const executablePath = resolveVbaDevPath(options);
   const requiredContract = options.requiredContract ?? loadRequiredVbaDevContract(options.extensionRoot);
   const runProcess = options.runProcess ?? runProcessWithExecFile;
-  return inspectCompatibleVbaDev(executablePath, requiredContract, runProcess, options.signal);
+  return inspectCompatibleVbaDev(
+    executablePath,
+    requiredContract,
+    runProcess,
+    options.signal,
+    undefined,
+    options.reportDiagnostic,
+    options.isWorkspaceTrusted
+  );
 }
 
 async function inspectCompatibleVbaDev(
   executablePath: string,
   requiredContract: RequiredVbaDevContract,
   runProcess: ProcessRunner,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  probeDiagnostics?: string[],
+  reportDiagnostic?: (message: string) => void,
+  isWorkspaceTrusted?: () => boolean
 ): Promise<CompatibleVbaDev> {
   if (!path.isAbsolute(executablePath)) {
     throw new VbaDevCompatibilityError(
       `The configured VbaDev path '${executablePath}' must be an absolute path.`
     );
   }
-  const result = await runProcess(
-    executablePath,
-    ['capabilities', '--format', 'json'],
-    signal
-  );
+  let result: ProcessResult;
+  let firstAbnormalExit: ReturnType<typeof classifyAbnormalProcessError>;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      if (attempt > 1) ensureWorkspaceTrusted(isWorkspaceTrusted);
+      result = await runProcess(
+        executablePath,
+        ['capabilities', '--format', 'json'],
+        signal
+      );
+      break;
+    } catch (error) {
+      const abnormalExit = classifyAbnormalProcessError(error);
+      if (signal?.aborted) {
+        if (abnormalExit?.kind === 'exit') {
+          const diagnostic = formatAbnormalProcessTermination(
+            'vba-dev', 'capabilities', executablePath, attempt, 2,
+            abnormalExit, 'not-retried'
+          );
+          probeDiagnostics?.push(diagnostic);
+          safelyReportDiagnostic(reportDiagnostic, diagnostic);
+        }
+        throw error;
+      }
+      if (abnormalExit === undefined) throw error;
+      const diagnostic = formatAbnormalProcessTermination(
+        'vba-dev', 'capabilities', executablePath, attempt, 2,
+        abnormalExit, attempt === 1 ? 'retry-pending' : 'failed'
+      );
+      probeDiagnostics?.push(diagnostic);
+      safelyReportDiagnostic(reportDiagnostic, diagnostic);
+      if (attempt === 2) throw new VbaDevAbnormalCapabilityProbeError(diagnostic);
+      firstAbnormalExit = abnormalExit;
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      if (signal?.aborted) {
+        throw new VbaDevCompatibilityError('VbaDev capabilities command was cancelled.');
+      }
+      ensureWorkspaceTrusted(isWorkspaceTrusted);
+    }
+  }
   const admitted = admitVbaDevCapabilities(result.stdout, requiredContract);
   if (!admitted.accepted) {
+    if (firstAbnormalExit !== undefined) {
+      const diagnostic = formatAbnormalProcessTermination(
+        'vba-dev', 'capabilities', executablePath, 2, 2,
+        firstAbnormalExit, 'failed'
+      );
+      probeDiagnostics?.push(diagnostic);
+      safelyReportDiagnostic(reportDiagnostic, diagnostic);
+    }
     throw new VbaDevCompatibilityError(describeCapabilityRejection(executablePath, admitted.rejection));
+  }
+  if (firstAbnormalExit !== undefined) {
+    const diagnostic = formatAbnormalProcessTermination(
+      'vba-dev', 'capabilities', executablePath, 2, 2,
+      firstAbnormalExit, 'recovered'
+    );
+    probeDiagnostics?.push(diagnostic);
+    safelyReportDiagnostic(reportDiagnostic, diagnostic);
   }
 
   return {
     executablePath,
     capabilities: admitted.facts
   };
+}
+
+function ensureWorkspaceTrusted(isWorkspaceTrusted: (() => boolean) | undefined): void {
+  if (isWorkspaceTrusted?.() === false) {
+    throw new VbaDevCompatibilityError(
+      'VbaDev capability inspection stopped because Workspace Trust was lost (Restricted Mode).'
+    );
+  }
+}
+
+function safelyReportDiagnostic(
+  reportDiagnostic: ((message: string) => void) | undefined,
+  diagnostic: string
+): boolean {
+  if (reportDiagnostic === undefined) return false;
+  try {
+    reportDiagnostic(diagnostic);
+    return true;
+  } catch {
+    // Diagnostic output must not change capability admission or process selection.
+    return false;
+  }
 }
 
 function describeCapabilityRejection(executablePath: string, rejection: CapabilityRejection): string {

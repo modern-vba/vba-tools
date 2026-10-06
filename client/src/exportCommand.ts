@@ -62,7 +62,8 @@ export async function runExportCommand(
     );
 
     if (result && !result.cancelled && result.exitCode !== 0) {
-      await options.showErrorMessage('Export failed. See the VBA Tools output for details.');
+      await options.showErrorMessage(result.failureMessage
+        ?? 'Export failed. See the VBA Tools output for details.');
     }
 
     return result;
@@ -105,7 +106,8 @@ export async function runExportCommand(
   });
 
   if (result && !result.cancelled && result.exitCode !== 0) {
-    await options.showErrorMessage('Export failed. See the VBA Tools output for details.');
+    await options.showErrorMessage(result.failureMessage
+      ?? 'Export failed. See the VBA Tools output for details.');
   }
 
   return result;
