@@ -13,9 +13,13 @@ namespace VbaDebugAdapter.Tests;
 public sealed partial class VbaDebugAdapterCliSurfaceTests
 {
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task SnapshotBuildReportUsesAVersionedDapEventWithExactOutputAndSourceOrigins(bool vscodeSessionMetadata)
+    [InlineData(false, null)]
+    [InlineData(true, null)]
+    [InlineData(true, 2)]
+    [InlineData(true, 5)]
+    [InlineData(true, 6)]
+    public async Task SnapshotBuildReportUsesAVersionedDapEventWithExactOutputAndSourceOrigins(
+        bool vscodeSessionMetadata, int? configurationTarget)
     {
         const string snapshotUri = "file:///C:/snapshot/nested/Module1.bas";
         const string sourceUri = "file:///C:/source/nested/Module1.bas";
@@ -32,6 +36,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var commandLine = CreateCommandLine(new StandaloneVbaDebugAdapterStdioRunner(service), probe);
         var arguments = CreateValidLaunchArguments();
         if (vscodeSessionMetadata) arguments["__sessionId"] = "opaque-vscode-client-session";
+        if (configurationTarget is not null) arguments["__configurationTarget"] = configurationTarget.Value;
         using var input = CreateDapInput(
             new { seq = 1, type = "request", command = "launch", arguments },
             new { seq = 2, type = "request", command = "configurationDone", arguments = new { } });
@@ -3394,6 +3399,14 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var arguments = CreateValidLaunchArguments();
         arguments["unexpected"] = true;
         return AssertLaunchArgumentsRejectedAsync(arguments, "unexpected");
+    }
+
+    [Fact]
+    public Task StandaloneLaunchRejectsMalformedVsCodeConfigurationTarget()
+    {
+        var arguments = CreateValidLaunchArguments();
+        arguments["__configurationTarget"] = "workspace-folder";
+        return AssertLaunchArgumentsRejectedAsync(arguments, "__configurationTarget property must be an integer");
     }
 
     [Fact]
