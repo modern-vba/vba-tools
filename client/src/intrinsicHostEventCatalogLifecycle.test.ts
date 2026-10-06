@@ -99,6 +99,30 @@ test('startup failure publishes one unavailable snapshot without retrying', asyn
   }]);
 });
 
+test('UserForm Event status receives a concise crash message while full evidence stays in Output', async () => {
+  const unavailableMessages: string[] = [];
+  const lifecycle = new IntrinsicHostEventCatalogLifecycle({
+    runHostEventList: async () => ({
+      exitCode: 0xC0000005,
+      stdout: '',
+      stderr: 'Companion process terminated abnormally: role=vba-dev stage=host-event executable="C:\\tools\\vba-dev.exe" exitCodeHex=0xC0000005',
+      cancelled: false,
+      failureMessage: 'VbaDev terminated abnormally (exit code 0xC0000005); the command was not retried. See VBA Tools Output.'
+    }),
+    sendNotification: async () => undefined,
+    onTransition: transition => {
+      if (transition.kind === 'unavailable') unavailableMessages.push(transition.message ?? '');
+    }
+  });
+
+  lifecycle.activate();
+  await lifecycle.flush();
+
+  assert.equal(unavailableMessages.length, 1);
+  assert.match(unavailableMessages[0], /terminated abnormally.*0xC0000005.*not retried/);
+  assert.doesNotMatch(unavailableMessages[0], /executable=/);
+});
+
 test('failed explicit refresh retains the healthy current catalog and revision', async () => {
   const notifications: unknown[] = [];
   let invocationCount = 0;

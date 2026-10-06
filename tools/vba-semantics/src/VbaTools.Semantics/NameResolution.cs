@@ -1191,13 +1191,28 @@ internal sealed class VbaNameCandidateInventory
             tokenIndexes.TryAdd(document, new VbaLogicalTokenIndexOwner(document));
         }
         // Only admitted input spellings are retained. Unknown query spellings never grow this map.
+        // [DEBUG-415-uri-v1] Preserve the existing order and identify only the failing inventory item.
+        var admittedIndex = 0;
         admittedIdentitiesByUri = documents.Select(document => document.Uri)
             .Concat(documents.SelectMany(document => document.Definitions).Select(definition => definition.Uri))
             .Concat(activeReferenceDefinitions.Select(definition => definition.Uri))
             .Distinct(StringComparer.Ordinal)
             .ToDictionary(uri => uri,
-                uri => VbaDocumentIdentityPolicy.TryIdentifyDocument(uri, out var identity)
-                    ? (VbaDocumentIdentity?)identity : null,
+                uri =>
+                {
+                    var index = admittedIndex++;
+                    try
+                    {
+                        return VbaDocumentIdentityPolicy.TryIdentifyDocument(uri, out var identity)
+                            ? (VbaDocumentIdentity?)identity : null;
+                    }
+                    catch (Exception error)
+                    {
+                        VbaDocumentIdentificationEvidence.CaptureInventoryOrigin(
+                            error, uri, index, documents, activeReferenceDefinitions);
+                        throw;
+                    }
+                },
                 StringComparer.Ordinal);
         ReferenceSelection = referenceSelection;
         this.referenceCatalogs = referenceCatalogs;
@@ -1273,9 +1288,31 @@ internal sealed class VbaNameCandidateInventory
     }
 
     internal bool SameDocument(string leftUri, string rightUri)
-        => TryIdentifyDocument(leftUri, out var left)
-            && TryIdentifyDocument(rightUri, out var right)
-            && left == right;
+    {
+        VbaDocumentIdentity left;
+        try
+        {
+            if (!TryIdentifyDocument(leftUri, out left)) return false;
+        }
+        catch (Exception error)
+        {
+            VbaDocumentIdentificationEvidence.CaptureComparison(error, "left", rightUri);
+            throw;
+        }
+
+        VbaDocumentIdentity right;
+        try
+        {
+            if (!TryIdentifyDocument(rightUri, out right)) return false;
+        }
+        catch (Exception error)
+        {
+            VbaDocumentIdentificationEvidence.CaptureComparison(error, "right", leftUri);
+            throw;
+        }
+
+        return left == right;
+    }
 
     // Charge table capacity, entries, and both original and canonical spellings.
     // Shared URI strings are deliberately overcounted per retained inventory.

@@ -41,6 +41,9 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Install pinned npm
+        shell: pwsh
+        run: npm install --global (node -p "require('./package.json').packageManager")
       - name: Restore locked validation dependencies
         run: npm ci --ignore-scripts
       - name: Verify release protections remain active
@@ -85,6 +88,9 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Install pinned npm
+        shell: pwsh
+        run: npm install --global (node -p "require('./package.json').packageManager")
       - name: Set up .NET
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
       - name: Restore locked JavaScript dependencies
@@ -125,6 +131,9 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Install pinned npm
+        shell: pwsh
+        run: npm install --global (node -p "require('./package.json').packageManager")
       - name: Restore locked validation dependencies
         run: npm ci --ignore-scripts
       - name: Download the exact build artifact
@@ -190,6 +199,9 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Install pinned npm
+        shell: pwsh
+        run: npm install --global (node -p "require('./package.json').packageManager")
       - name: Restore locked validation dependencies
         run: npm ci --ignore-scripts
       - name: Download the build-once release set
@@ -342,6 +354,9 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Install pinned npm
+        shell: pwsh
+        run: npm install --global (node -p "require('./package.json').packageManager")
       - name: Restore locked validation dependencies
         run: npm ci --ignore-scripts
       - name: Download and validate the existing draft snapshot
@@ -417,6 +432,9 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Install pinned npm
+        shell: pwsh
+        run: npm install --global (node -p "require('./package.json').packageManager")
       - name: Restore locked publishing dependencies
         run: npm ci --ignore-scripts
       - name: Download the immutable current-run release set
@@ -500,7 +518,7 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Verify identity scope and Marketplace read access
+      - name: Verify identity scope and Marketplace Contributor access
         shell: pwsh
         env:
           AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
@@ -520,12 +538,32 @@ jobs:
             $assignments[0].scope -ne $resourceGroupScope) {
             throw 'Managed identity must have only one Azure role: Reader at the release identity resource group.'
           }
-          az rest `
+          $profile = az rest `
             --method get `
             --url https://app.vssps.visualstudio.com/_apis/profile/profiles/me `
             --resource 499b84ac-1321-427f-aa17-267ca6975798 `
             --output json
           if ($LASTEXITCODE -ne 0) { throw 'Marketplace identity profile probe failed.' }
+          $publisherAssignments = az rest `
+            --method get `
+            --url 'https://marketplace.visualstudio.com/_apis/securityroles/scopes/gallery.publisher/roleassignments/resources/modern-vba?api-version=3.2-preview.1' `
+            --resource 499b84ac-1321-427f-aa17-267ca6975798 `
+            --output json
+          if ($LASTEXITCODE -ne 0) { throw 'Marketplace publisher role probe failed.' }
+          [System.IO.File]::WriteAllText(
+            (Join-Path $PWD 'marketplace-profile.json'),
+            ($profile -join "`n"),
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          [System.IO.File]::WriteAllText(
+            (Join-Path $PWD 'marketplace-role-assignments.json'),
+            ($publisherAssignments -join "`n"),
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          node scripts/releaseWorkflow.mjs verify-publisher-contributor `
+            --profile-json marketplace-profile.json `
+            --role-assignments-json marketplace-role-assignments.json
+          if ($LASTEXITCODE -ne 0) { throw 'Marketplace Contributor role is not directly assigned to the publishing identity.' }
           npx --no-install vsce verify-pat modern-vba --azure-credential
           if ($LASTEXITCODE -ne 0) { throw 'Marketplace Contributor probe failed.' }
       - name: Check whether the exact Marketplace package is already visible
@@ -613,6 +651,9 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Install pinned npm
+        shell: pwsh
+        run: npm install --global (node -p "require('./package.json').packageManager")
       - name: Restore locked validation dependencies
         run: npm ci --ignore-scripts
       - name: Recheck remote draft bytes metadata provenance and Marketplace visibility

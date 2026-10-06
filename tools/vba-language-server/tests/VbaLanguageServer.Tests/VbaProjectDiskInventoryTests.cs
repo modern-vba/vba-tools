@@ -650,6 +650,55 @@ public sealed class VbaProjectDiskInventoryTests
     }
 
     [Fact]
+    public async Task Reconciliation_read_failure_drops_cached_text_until_a_readable_capture()
+    {
+        var fileSystem = new MutableSourceFileSystem(InitialText);
+        var inventory = new VbaFileSystemProjectDiskInventory(fileSystem);
+        var first = CaptureSingleColdSource(inventory, fileSystem.Path);
+        fileSystem.SourceReadFailure = new IOException("Source is exclusively locked.");
+
+        var scan = await inventory.ObserveReconciliationAsync(
+            CreateObservationRequest(first),
+            CancellationToken.None);
+
+        Assert.Empty(scan.Sources);
+        var failure = Assert.Single(scan.Failures);
+        Assert.Equal("disk-source-unavailable", failure.DiagnosticCode);
+        Assert.Equal(first.Metadata, failure.Metadata);
+        Assert.Equal(0, inventory.Count);
+        Assert.Equal(2, fileSystem.SourceReadCount);
+
+        fileSystem.SourceReadFailure = null;
+        fileSystem.ReplaceSource(ChangedSameLengthText, advanceMetadata: false);
+        var recovered = CaptureSingleColdSource(inventory, fileSystem.Path);
+
+        Assert.Equal(first.Metadata, recovered.Metadata);
+        Assert.Equal(ChangedSameLengthText, recovered.Text);
+        Assert.NotEqual(first.ContentIdentity, recovered.ContentIdentity);
+        Assert.Equal(3, fileSystem.SourceReadCount);
+    }
+
+    [Fact]
+    public void Cold_capture_reports_access_denied_without_retrying_the_read()
+    {
+        var fileSystem = new MutableSourceFileSystem(InitialText)
+        {
+            SourceReadFailure = new UnauthorizedAccessException("Source access is denied.")
+        };
+        var inventory = new VbaFileSystemProjectDiskInventory(fileSystem);
+
+        var capture = CaptureColdSources(inventory, fileSystem.Path);
+
+        Assert.Empty(capture.Sources);
+        var failure = Assert.Single(capture.Failures);
+        Assert.Equal("disk-source-unavailable", failure.DiagnosticCode);
+        Assert.Equal(new Uri(fileSystem.Path).AbsoluteUri, failure.Uri);
+        Assert.Contains(fileSystem.Path, failure.DiagnosticMessage);
+        Assert.Contains("Source access is denied.", failure.DiagnosticMessage);
+        Assert.Equal(1, fileSystem.SourceReadCount);
+    }
+
+    [Fact]
     public async Task Reconciliation_does_not_read_or_decode_an_open_source()
     {
         var fileSystem = new MutableSourceFileSystem([0xC3, 0x28]);
@@ -842,6 +891,45 @@ public sealed class VbaProjectDiskInventoryTests
     }
 
     [Fact]
+    public async Task Older_read_failure_cannot_remove_newer_cached_source()
+    {
+        var fileSystem = new BlockingSourceFileSystem(InitialText)
+        {
+            FirstReadFailure = new IOException("Older source read was blocked by a writer.")
+        };
+        var inventory = new VbaFileSystemProjectDiskInventory(fileSystem);
+        var olderLoad = Task.Factory.StartNew(
+            () => CaptureColdSources(inventory, fileSystem.Path),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+        try
+        {
+            await fileSystem.FirstReadStarted.Task.WaitAsync(
+                TimeSpan.FromSeconds(10));
+            fileSystem.ReplaceSource(ChangedSameLengthText, advanceMetadata: false);
+            var newer = CaptureSingleColdSource(inventory, fileSystem.Path);
+
+            fileSystem.ReleaseFirstRead();
+            var older = await olderLoad.WaitAsync(TimeSpan.FromSeconds(10));
+            var retained = CaptureSingleColdSource(inventory, fileSystem.Path);
+
+            Assert.Empty(older.Sources);
+            Assert.Equal(
+                "disk-source-unavailable",
+                Assert.Single(older.Failures).DiagnosticCode);
+            Assert.Equal(newer.ContentIdentity, retained.ContentIdentity);
+            Assert.Equal(ChangedSameLengthText, retained.Text);
+            Assert.Equal(2, fileSystem.SourceReadCount);
+            Assert.Equal(1, inventory.Count);
+        }
+        finally
+        {
+            fileSystem.ReleaseFirstRead();
+        }
+    }
+
+    [Fact]
     public void Cold_capture_ignores_source_deleted_between_metadata_and_read()
     {
         var fileSystem = new DeletedDuringReadFileSystem(InitialText);
@@ -985,6 +1073,8 @@ public sealed class VbaProjectDiskInventoryTests
 
         public int SourceReadCount { get; protected set; }
 
+        public Exception? SourceReadFailure { get; set; }
+
         public int EnumerationCount { get; private set; }
 
         public bool FileExists(string path) => false;
@@ -1022,6 +1112,11 @@ public sealed class VbaProjectDiskInventoryTests
             lock (gate)
             {
                 SourceReadCount++;
+                if (SourceReadFailure is { } failure)
+                {
+                    throw failure;
+                }
+
                 return sourceBytes.ToArray();
             }
         }
@@ -1078,6 +1173,8 @@ public sealed class VbaProjectDiskInventoryTests
         public TaskCompletionSource FirstReadStarted { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public Exception? FirstReadFailure { get; init; }
+
         public override byte[] ReadSourceBytes(string path)
         {
             var captured = CaptureSourceBytes();
@@ -1085,6 +1182,10 @@ public sealed class VbaProjectDiskInventoryTests
             {
                 FirstReadStarted.TrySetResult();
                 releaseFirstRead.Wait();
+                if (FirstReadFailure is { } failure)
+                {
+                    throw failure;
+                }
             }
 
             return captured;

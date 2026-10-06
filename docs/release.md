@@ -63,7 +63,7 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
   billable workflow services without explicit maintainer approval.
 - Run release jobs on the explicit `windows-2025` standard runner label rather
   than `windows-latest` so runner-image migrations are reviewed changes.
-- Declare Node.js 26 (Current) and npm 11 as the repository JavaScript toolchain.
+- Declare Node.js 26 (Current) and npm 12 as the repository JavaScript toolchain.
   Pin the npm release through `packageManager`, restore dependencies with `npm ci`, and
   update the pin only through a reviewed dependency change.
 - Pin the .NET 10 SDK through `global.json` to the selected feature band and
@@ -166,13 +166,16 @@ listing metadata changes:
 The initial release automation uses:
 
 - the `windows-2025` standard GitHub-hosted runner;
-- Node.js `26.9.0` from `.node-version` with npm `11.19.1` pinned by
+- Node.js `26.9.0` from `.node-version` with npm `12.1.0` pinned by
   `packageManager` in `package.json`;
 - `npm ci` with the committed `package-lock.json`;
-- .NET SDK `10.0.300`, selected by `global.json` with patch-only roll-forward;
+- .NET SDK `10.0.401`, selected by `global.json` with patch-only roll-forward;
 - locked NuGet restore with a committed `packages.lock.json` beside every .NET
   project;
 - full commit SHAs for every referenced GitHub Action.
+
+Each Node.js workflow job installs the npm version declared in `packageManager`
+before restoring dependencies, independently of the npm bundled with Node.js.
 
 Configure Dependabot for the `npm` and `github-actions` ecosystems. Toolchain
 and action update pull requests must pass the same verification as product-code
@@ -215,6 +218,12 @@ that identity, requires its only Azure role assignment to be `Reader` at the
 `modern-vba-release-identities` resource-group scope, performs the Marketplace
 profile probe, and runs `vsce verify-pat modern-vba --azure-credential` before
 it is allowed to publish.
+Because `vsce verify-pat` also accepts read-only access, the publishing job
+additionally checks the Marketplace publisher role-assignment API. It requires
+exactly one directly assigned `Contributor` role for the same OIDC profile ID;
+`Reader`, `Owner`, inherited, missing, and duplicate assignments fail closed.
+The profile and assignment responses remain in the ephemeral job workspace and
+are not uploaded as release assets.
 
 Before authorizing a release tag, an administrator must also confirm that
 `gh api repos/modern-vba/vba-tools/immutable-releases` returns `enabled: true`
@@ -298,7 +307,7 @@ all three bundled executables and
 verifies the planned VSIX. It intentionally does not opt in to real Excel
 automation; the real-Excel cross-product case is skipped.
 
-Extension Host tests use the reviewed stable VS Code 1.138.0 release by default.
+Extension Host tests use the reviewed stable VS Code 1.139.1 release by default.
 The extension's minimum supported version remains 1.137.0; the test runtime pin
 is independent of that compatibility floor. Leave `VSCODE_EXECUTABLE_PATH` unset
 for release verification; an explicit executable override is intended for
@@ -355,6 +364,42 @@ When a ruleset bypass was used, record the explicit authorization and whether
 it was the Repository Admin pull-request-only or Organization Admin
 always-bypass path.
 If the tagged content changes, rerun the gate before creating the tag.
+
+### Failure-collection profile
+
+When an intermittent failure needs investigation, use the opt-in diagnostic
+profile on the same candidate checkout:
+
+```powershell
+npm run diagnose:release:windows-excel
+```
+
+Use `npm run diagnose:release` when visible Excel/VBE testing is not permitted.
+The profile assigns one local run ID, records the checkout commit, a bounded
+fingerprint of dirty content, and available toolchain versions and hashes. It
+saves a manifest and bounded head/tail stdout and stderr for every stage under
+`.tmp/diagnostic-verification/run-*`. It passes that run root to cooperating
+failure reporters. Independent stages continue after an earlier failure, while
+the overall command returns failure if any stage fails. The Windows Excel stage
+is explicitly absent from the non-Excel profile, not counted as passed. In the
+Windows Excel profile, the CLI, debug-adapter, and cross-product cases run as
+separate stages. A failed prerequisite build marks only its dependent stages
+`skipped-prerequisite` rather than using a stale executable or suppressing
+unrelated stages.
+
+The manifest's `launcherPid` identifies the npm process, not a nested .NET or
+VSIX child. A cooperating child reporter must record its own executable and
+process identity; a missing reporter or dump remains a visible evidence gap.
+The profile does not currently impose a per-stage timeout or collect a native
+dump on its own. Stop a hung run deliberately and preserve its local run
+directory for inspection.
+
+This is an evidence-gathering profile, not a release gate. It neither creates a
+tag nor publishes an artifact, and it never substitutes for the ordinary
+fail-fast `verify:release:windows-excel` on the exact release commit. A stage
+that was not reached or a dump that was not captured is not evidence of success.
+Logs and local failure reports can contain paths or sensitive environment
+details; inspect them before sharing and do not upload them automatically.
 
 Run package verification:
 

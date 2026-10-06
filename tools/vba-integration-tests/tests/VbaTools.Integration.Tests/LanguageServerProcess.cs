@@ -10,6 +10,7 @@ namespace VbaTools.Integration.Tests;
 internal sealed class LanguageServerProcess : IAsyncDisposable
 {
     private readonly Process process;
+    private readonly LspChildCrashDump.Plan? crashDumpPlan;
     private readonly TempDirectory cache = TempDirectory.Create();
     private readonly CancellationTokenSource lifetime = new();
     private readonly Channel<JsonElement> messages = Channel.CreateUnbounded<JsonElement>();
@@ -27,18 +28,22 @@ internal sealed class LanguageServerProcess : IAsyncDisposable
             RedirectStandardError = true
         };
         startInfo.Environment["VBA_TOOLS_REFERENCE_CATALOG_CACHE_DIR"] = cache.Path;
+        var dumpPlan = LspChildCrashDump.TryConfigure(startInfo);
         try
         {
             process = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("Could not launch the already-built language server.");
+            dumpPlan?.Started(process, "windows-excel-integration");
         }
         catch
         {
+            dumpPlan?.Dispose();
             cache.Dispose();
             lifetime.Dispose();
             throw;
         }
 
+        crashDumpPlan = dumpPlan;
         stderr = process.StandardError.ReadToEndAsync();
         stdout = ReadMessagesAsync();
     }
@@ -109,6 +114,19 @@ internal sealed class LanguageServerProcess : IAsyncDisposable
     {
         try
         {
+            if (crashDumpPlan?.IsArmed == true && !process.HasExited)
+            {
+                // Do not terminate a fatal child while it is still writing a full dump.
+                using var dumpGrace = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                try
+                {
+                    await process.WaitForExitAsync(dumpGrace.Token);
+                }
+                catch (OperationCanceledException) when (dumpGrace.IsCancellationRequested)
+                {
+                }
+            }
+
             if (!process.HasExited)
             {
                 process.Kill(entireProcessTree: true);
@@ -120,6 +138,11 @@ internal sealed class LanguageServerProcess : IAsyncDisposable
         }
         finally
         {
+            crashDumpPlan?.Finished(process);
+            if (process.HasExited)
+            {
+                crashDumpPlan?.Dispose();
+            }
             process.Dispose();
             lifetime.Dispose();
             cache.Dispose();

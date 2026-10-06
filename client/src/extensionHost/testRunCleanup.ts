@@ -5,13 +5,20 @@ const retryableRemovalCodes = new Set(['EBUSY', 'EMFILE', 'ENFILE', 'ENOTEMPTY',
 
 export async function runWithExtensionHostCleanup(
   directories: readonly string[],
-  run: () => Promise<void>
+  run: () => Promise<void>,
+  onRunFailure?: () => Promise<void>
 ): Promise<void> {
   let runFailure: { error: unknown } | undefined;
+  let evidenceFailure: { error: unknown } | undefined;
   try {
     await run();
   } catch (error) {
     runFailure = { error };
+    try {
+      await onRunFailure?.();
+    } catch (error) {
+      evidenceFailure = { error };
+    }
   }
   const cleanupFailures: Error[] = [];
   for (const directory of directories) {
@@ -23,13 +30,17 @@ export async function runWithExtensionHostCleanup(
       ));
     }
   }
-  if (cleanupFailures.length > 0) {
+  const secondaryFailures = [
+    ...(evidenceFailure ? [evidenceFailure.error] : []),
+    ...cleanupFailures
+  ];
+  if (secondaryFailures.length > 0) {
     if (!runFailure && cleanupFailures.length === 1) {
       throw cleanupFailures[0].cause;
     }
     throw new AggregateError(
-      runFailure ? [runFailure.error, ...cleanupFailures] : cleanupFailures,
-      runFailure ? 'Extension Host tests and cleanup failed.' : 'Extension Host cleanup failed.',
+      runFailure ? [runFailure.error, ...secondaryFailures] : secondaryFailures,
+      runFailure ? 'Extension Host tests and finalization failed.' : 'Extension Host cleanup failed.',
       runFailure ? { cause: runFailure.error } : undefined
     );
   }

@@ -46,14 +46,15 @@ internal sealed record VbaProjectDiskSource(
     string RawContentDigest);
 
 /// <summary>
-/// Represents one closed source that could not be decoded without substitution.
+/// Represents one closed source that could not be read or decoded without substitution.
 /// </summary>
 internal sealed record VbaProjectDiskSourceFailure(
     VbaDocumentIdentity DocumentIdentity,
     string Uri,
     string FullPath,
     VbaProjectSourceFileMetadata Metadata,
-    string DiagnosticMessage);
+    string DiagnosticMessage,
+    string DiagnosticCode = "invalid-disk-source-encoding");
 
 /// <summary>
 /// Represents one disk source from the immutable project snapshot used as a scan baseline.
@@ -718,6 +719,30 @@ internal sealed class VbaFileSystemProjectDiskInventory
                 {
                     source = null!;
                     failure = null;
+                    return false;
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+                {
+                    lock (gate)
+                    {
+                        publicationGenerations.TryGetValue(
+                            documentIdentity,
+                            out var currentPublicationGeneration);
+                        if (currentPublicationGeneration
+                            == capturedPublicationGeneration)
+                        {
+                            sourceCache.Remove(documentIdentity);
+                        }
+                    }
+
+                    source = null!;
+                    failure = new VbaProjectDiskSourceFailure(
+                        documentIdentity,
+                        new Uri(fullPath).AbsoluteUri,
+                        fullPath,
+                        metadata,
+                        $"Source file is unavailable: {fullPath}. {error.Message}",
+                        "disk-source-unavailable");
                     return false;
                 }
 

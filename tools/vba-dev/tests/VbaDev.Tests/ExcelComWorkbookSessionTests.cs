@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
@@ -35,17 +36,19 @@ public sealed class ExcelComWorkbookSessionTests
         using var controller = new OwnedExcelTerminationController();
         using var cancellationRegistration = cancellation.Token.Register(
             () => controller.RequestForcedTermination(TimeSpan.Zero));
+        var cancellationReached = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSetupFailure = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var excel = new CancelingExcelSetupApplication(() =>
         {
             cancellation.Cancel();
-            controller.RequestCleanupAsync(TimeSpan.Zero)
-                .WaitAsync(TimeSpan.FromSeconds(1))
-                .GetAwaiter()
-                .GetResult();
+            cancellationReached.TrySetResult();
+            releaseSetupFailure.Task.GetAwaiter().GetResult();
             throw setupFailure;
         });
 
-        // Fake COM setup waits synchronously for cleanup; leave the test pool available.
+        // Fake COM setup waits for the test to verify cleanup; leave the test pool available.
         var startup = Task.Factory.StartNew(
             () => ExcelComWorkbookSession.StartExplicitlyOwnedHiddenExcel(
                 enableAutomationSecurityLow: false,
@@ -65,7 +68,19 @@ public sealed class ExcelComWorkbookSessionTests
             CancellationToken.None,
             TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
-        var error = await Assert.ThrowsAsync<OwnedExcelSessionStartCanceledException>(() => startup);
+        try
+        {
+            await cancellationReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await controller.RequestCleanupAsync(TimeSpan.Zero)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            releaseSetupFailure.TrySetResult();
+        }
+
+        var error = await Assert.ThrowsAsync<OwnedExcelSessionStartCanceledException>(
+            () => startup.WaitAsync(TimeSpan.FromSeconds(5)));
 
         Assert.True(error.CleanupVerified);
         Assert.Null(error.CleanupException);
@@ -97,11 +112,37 @@ public sealed class ExcelComWorkbookSessionTests
             () => controller.RequestForcedTermination(TimeSpan.Zero));
         var excel = new CancelingExcelSetupApplication(() =>
         {
+            var started = Stopwatch.GetTimestamp();
+            var initialGcPause = GC.GetTotalPauseDuration();
             cancellation.Cancel();
-            controller.RequestCleanupAsync(TimeSpan.Zero)
-                .WaitAsync(TimeSpan.FromSeconds(1))
-                .GetAwaiter()
-                .GetResult();
+            var cancellationCompleted = Stopwatch.GetTimestamp();
+            var cleanup = controller.RequestCleanupAsync(TimeSpan.Zero);
+            try
+            {
+                cleanup.WaitAsync(TimeSpan.FromSeconds(1))
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (TimeoutException timeout)
+            {
+                ThreadPool.GetAvailableThreads(out var availableWorkers, out _);
+                ThreadPool.GetMaxThreads(out var maxWorkers, out _);
+                throw new TimeoutException(
+                    $"[DEBUG-vba-dev-fixture-wait-20260925] cleanup wait: " +
+                    $"utc={DateTimeOffset.UtcNow:O}, cleanup={cleanup.Status}, " +
+                    $"cancelRequested={cancellation.IsCancellationRequested}, " +
+                    $"cancelMs={Stopwatch.GetElapsedTime(started, cancellationCompleted).TotalMilliseconds:F1}, " +
+                    $"elapsedMs={Stopwatch.GetElapsedTime(started).TotalMilliseconds:F1}, " +
+                    $"gcPauseMs={(GC.GetTotalPauseDuration() - initialGcPause).TotalMilliseconds:F1}, " +
+                    $"attached={controller.HasAttachedProcess}, " +
+                    $"launchSettlement={controller.WaitForLaunchSettlementAsync().Status}, " +
+                    $"processExited={process.HasExited}, processDisposed={process.Disposed}, " +
+                    $"killCalls={process.KillCalls}, terminateCalls={job.TerminateCalls}, " +
+                    $"poolThread={Thread.CurrentThread.IsThreadPoolThread}, " +
+                    $"poolThreads={ThreadPool.ThreadCount}, pendingPoolWork={ThreadPool.PendingWorkItemCount}, " +
+                    $"availableWorkers={availableWorkers}/{maxWorkers}.",
+                    timeout);
+            }
             throw setupFailure;
         });
 

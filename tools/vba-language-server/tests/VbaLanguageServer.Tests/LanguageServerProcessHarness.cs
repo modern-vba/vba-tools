@@ -7,6 +7,13 @@ namespace VbaLanguageServer.Tests;
 
 internal sealed class LanguageServerProcessHarness : IAsyncDisposable
 {
+    private const int MaximumStderrEvidenceBytes = 2 * 1024 * 1024;
+    private const int MaximumStderrEvidenceFilesPerRun = 16;
+    private const int MaximumStderrTailLineChars = 2048;
+    private const int MaximumStderrTailLines = 20;
+    private const string StderrTailTruncationMarker = " [line truncated]";
+    private static readonly byte[] StderrTruncationMarker =
+        Encoding.UTF8.GetBytes("\n[stderr capture truncated at 2 MiB]\n");
     private const string ReferenceCatalogCacheRootEnvironmentVariable =
         "VBA_TOOLS_REFERENCE_CATALOG_CACHE_DIR";
     private const string ProjectDiagnosticsPublicationDirectoryEnvironmentVariable =
@@ -26,6 +33,7 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
 
     private readonly object _gate = new();
     private readonly Process _process;
+    private readonly LspChildCrashDump.Plan? _crashDumpPlan;
     private readonly Stream _stdin;
     private readonly Stream _stdout;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -34,7 +42,9 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
     private readonly Dictionary<int, TaskCompletionSource<JsonElement>> _pendingResponses = [];
     private readonly List<JsonElement> _transcript = [];
     private readonly Dictionary<string, int> _readCursors = new(StringComparer.Ordinal);
-    private readonly List<string> _stderr = [];
+    private readonly MemoryStream? _stderrEvidence;
+    private readonly Queue<string> _stderrTail = new();
+    private readonly StringBuilder _stderrCurrentLine = new();
     private readonly bool _ownsCacheRoot;
     private readonly string _cacheRoot;
     private readonly string? _projectDiagnosticsPublicationDirectory;
@@ -47,20 +57,25 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
     private bool _initialized;
     private bool _shutdownRequested;
     private bool _inputCompleted;
+    private bool _stderrTruncated;
+    private bool _stderrTailLineTruncated;
     private int _cleanupRequestId = 1_000_000;
     private int _outputFenceRequestId = 2_000_000;
 
     private LanguageServerProcessHarness(
         Process process,
+        LspChildCrashDump.Plan? crashDumpPlan,
         string cacheRoot,
         bool ownsCacheRoot,
         string? projectDiagnosticsPublicationDirectory)
     {
         _process = process;
+        _crashDumpPlan = crashDumpPlan;
         _stdin = process.StandardInput.BaseStream;
         _stdout = process.StandardOutput.BaseStream;
         _cacheRoot = cacheRoot;
         _ownsCacheRoot = ownsCacheRoot;
+        _stderrEvidence = crashDumpPlan is null ? null : new MemoryStream();
         _projectDiagnosticsPublicationDirectory =
             projectDiagnosticsPublicationDirectory;
         _stdoutPump = PumpStdoutAsync(_lifetime.Token);
@@ -110,12 +125,14 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
             enableProjectDiagnosticsSynchronization);
     }
 
-    private static Task<LanguageServerProcessHarness> StartFromExecutableAsync(
+    internal static Task<LanguageServerProcessHarness> StartFromExecutableAsync(
         string serverExecutablePath,
         string? referenceCatalogCacheRoot = null,
         IReadOnlyDictionary<string, string>? environment = null,
         IReadOnlyList<string>? serverArguments = null,
-        bool enableProjectDiagnosticsSynchronization = false)
+        bool enableProjectDiagnosticsSynchronization = false,
+        string? diagnosticRunRoot = null,
+        string? diagnosticRunId = null)
     {
         var ownsCacheRoot = referenceCatalogCacheRoot is null;
         var cacheRoot = referenceCatalogCacheRoot
@@ -130,19 +147,25 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
             environment,
             serverArguments,
             publicationDirectory);
+        var crashDumpPlan = diagnosticRunRoot is null && diagnosticRunId is null
+            ? LspChildCrashDump.TryConfigure(startInfo)
+            : LspChildCrashDump.TryConfigure(startInfo, diagnosticRunRoot, diagnosticRunId);
 
         try
         {
             var process = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("Failed to start the language server process.");
+            crashDumpPlan?.Started(process, "language-server-tests");
             return Task.FromResult(new LanguageServerProcessHarness(
                 process,
+                crashDumpPlan,
                 cacheRoot,
                 ownsCacheRoot,
                 publicationDirectory));
         }
         catch
         {
+            crashDumpPlan?.Dispose();
             if (ownsCacheRoot)
             {
                 TryDeleteDirectory(cacheRoot);
@@ -729,11 +752,30 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         }
         finally
         {
+            if (TryHasProcessExited())
+            {
+                try
+                {
+                    await _stderrPump.WaitAsync(TimeSpan.FromSeconds(2));
+                }
+                catch (Exception exception) when (exception is not StackOverflowException)
+                {
+                    // A descendant can retain the pipe; cleanup remains bounded.
+                }
+            }
+
             _lifetime.Cancel();
             await IgnoreFailureAsync(_stdoutPump);
             await IgnoreFailureAsync(_stderrPump);
+            TryPersistStderrEvidence();
+            _stderrEvidence?.Dispose();
             _stdin.Dispose();
             _stdout.Dispose();
+            _crashDumpPlan?.Finished(_process);
+            if (TryHasProcessExited())
+            {
+                _crashDumpPlan?.Dispose();
+            }
             _process.Dispose();
             _writeLock.Dispose();
             _operations.Dispose();
@@ -759,6 +801,24 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         if (_process.HasExited)
         {
             return;
+        }
+
+        if (_crashDumpPlan?.IsArmed == true)
+        {
+            // A fatal child can still be writing its full dump after LSP times out.
+            using var dumpGrace = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try
+            {
+                await _process.WaitForExitAsync(dumpGrace.Token);
+            }
+            catch (OperationCanceledException) when (dumpGrace.IsCancellationRequested)
+            {
+            }
+
+            if (_process.HasExited)
+            {
+                return;
+            }
         }
 
         if (_initialized && !_shutdownRequested)
@@ -860,20 +920,40 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
     {
         try
         {
+            var buffer = new byte[8192];
+            var decoder = _stderrEvidence is null ? Encoding.UTF8.GetDecoder() : null;
+            var characters = decoder is null ? null : new char[8192 + 4];
             while (!cancellationToken.IsCancellationRequested)
             {
-                var line = await _process.StandardError.ReadLineAsync(cancellationToken);
-                if (line is null)
+                var read = await _process.StandardError.BaseStream.ReadAsync(buffer, cancellationToken);
+                if (read == 0)
                 {
+                    if (decoder is not null)
+                    {
+                        CaptureStderrTail(characters!.AsSpan(0,
+                            decoder.GetChars([], characters, flush: true)));
+                        if (_stderrCurrentLine.Length > 0 || _stderrTailLineTruncated)
+                        {
+                            CompleteStderrTailLine();
+                        }
+                    }
+
                     return;
                 }
 
-                lock (_gate)
+                if (_stderrEvidence is not null)
                 {
-                    _stderr.Add(line);
+                    var remaining = MaximumStderrEvidenceBytes
+                        - StderrTruncationMarker.Length - (int)_stderrEvidence.Length;
+                    var captured = Math.Min(read, Math.Max(remaining, 0));
+                    _stderrEvidence.Write(buffer, 0, captured);
+                    _stderrTruncated |= captured < read;
                 }
-
-                Debug.WriteLine(line);
+                else
+                {
+                    CaptureStderrTail(characters!.AsSpan(0,
+                        decoder!.GetChars(buffer, 0, read, characters!, 0, flush: false)));
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -882,6 +962,130 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         catch (Exception exception)
         {
             FaultSession(exception);
+        }
+    }
+
+    private void CaptureStderrTail(ReadOnlySpan<char> characters)
+    {
+        foreach (var character in characters)
+        {
+            if (character == '\n')
+            {
+                CompleteStderrTailLine();
+            }
+            else if (_stderrCurrentLine.Length < MaximumStderrTailLineChars)
+            {
+                _stderrCurrentLine.Append(character);
+            }
+            else
+            {
+                _stderrTailLineTruncated = true;
+            }
+        }
+    }
+
+    private void CompleteStderrTailLine()
+    {
+        var line = _stderrCurrentLine.ToString().TrimEnd('\r');
+        if (_stderrTailLineTruncated)
+        {
+            line += StderrTailTruncationMarker;
+        }
+
+        lock (_gate)
+        {
+            _stderrTail.Enqueue(line);
+            if (_stderrTail.Count > MaximumStderrTailLines)
+            {
+                _stderrTail.Dequeue();
+            }
+        }
+
+        _stderrCurrentLine.Clear();
+        _stderrTailLineTruncated = false;
+    }
+
+    private void TryPersistStderrEvidence()
+    {
+        if (_crashDumpPlan is null || _stderrEvidence is null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!_process.HasExited || _process.ExitCode == 0)
+            {
+                return;
+            }
+
+            var directory = _crashDumpPlan.DiagnosticDirectory;
+            if (!IsOrdinaryExistingDirectoryChain(directory))
+            {
+                return;
+            }
+
+            for (var slot = 0; slot < MaximumStderrEvidenceFilesPerRun; slot++)
+            {
+                var claimPath = Path.Combine(directory, $"lsp-stderr-{slot:D2}.claim");
+                try
+                {
+                    using var claim = new FileStream(
+                        claimPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                }
+                catch (IOException)
+                {
+                    continue;
+                }
+
+                var basename = $"lsp-stderr-{slot:D2}-pid-{_process.Id}-{Guid.NewGuid():N}";
+                var partialPath = Path.Combine(directory, basename + ".partial");
+                using (var output = new FileStream(
+                           partialPath, FileMode.CreateNew, FileAccess.Write,
+                           FileShare.None, 8192, FileOptions.WriteThrough))
+                {
+                    _stderrEvidence.WriteTo(output);
+                    if (_stderrTruncated)
+                    {
+                        output.Write(StderrTruncationMarker);
+                    }
+
+                    output.Flush(flushToDisk: true);
+                }
+
+                File.Move(partialPath, Path.Combine(directory, basename + ".log"));
+                return;
+            }
+        }
+        catch (Exception exception) when (exception is not StackOverflowException)
+        {
+            // Diagnostic evidence must never replace the test or cleanup failure.
+        }
+    }
+
+    private static bool IsOrdinaryExistingDirectoryChain(string directory)
+    {
+        for (var current = new DirectoryInfo(directory); current is not null; current = current.Parent)
+        {
+            if (!current.Exists
+                || (current.Attributes & (FileAttributes.ReparsePoint | FileAttributes.Device)) != 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private bool TryHasProcessExited()
+    {
+        try
+        {
+            return _process.HasExited;
+        }
+        catch (Exception exception) when (exception is not StackOverflowException)
+        {
+            return false;
         }
     }
 
@@ -1053,7 +1257,9 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         string transcript;
         lock (_gate)
         {
-            stderr = string.Join(Environment.NewLine, _stderr.TakeLast(20));
+            stderr = _crashDumpPlan is null
+                ? string.Join(Environment.NewLine, _stderrTail)
+                : string.Empty;
             transcript = string.Join(
                 Environment.NewLine,
                 _transcript.TakeLast(10).Select(item => item.GetRawText()));

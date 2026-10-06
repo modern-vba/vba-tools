@@ -13,6 +13,7 @@ using VbaDev.Infrastructure.Projects;
 using VbaDev.Infrastructure.References;
 using VbaDev.Infrastructure.Workbooks;
 using VbaTools.Semantics;
+using VbaTools.SourceIdentities;
 using VbaTools.Syntax;
 using VbaTools.TypeLibRegistry;
 using Xunit;
@@ -51,7 +52,19 @@ public sealed class SourceAnalysisUriResolutionWindowsProbeTests(ITestOutputHelp
             var (_, analysis, projectFatal) = new VbaSourceAdmission(() => 932)
                 .ReadSnapshotAnalysis(context.DocumentSourceSetPath, CancellationToken.None);
             var admissionReport = analysis.ToReport();
-            Assert.False(projectFatal);
+            if (projectFatal || !admissionReport.Complete)
+            {
+                foreach (var failure in admissionReport.Failures)
+                {
+                    output.WriteLine(
+                        $"admissionFailure scope={failure.Scope}, phase={failure.Phase}, activeSourcePath={failure.ActiveSourcePath}, exceptionDetails={failure.ExceptionDetails}");
+                }
+                var original = admissionReport.Failures.FirstOrDefault(failure => failure.Exception is not null)?.Exception;
+                if (original is not null) ExceptionDispatchInfo.Capture(original).Throw();
+            }
+            Assert.False(projectFatal, string.Join(
+                Environment.NewLine,
+                admissionReport.Failures.Select(failure => failure.Message)));
             Assert.True(admissionReport.Complete, string.Join(
                 Environment.NewLine,
                 admissionReport.Failures.Select(failure => failure.Message)));
@@ -77,7 +90,9 @@ public sealed class SourceAnalysisUriResolutionWindowsProbeTests(ITestOutputHelp
                 Assert.IsType<VbaReferenceSelection>(inputs.ReferenceSelection)));
 
             WriteEnvironment(context, syntaxTrees.Length, trials, beforeFiles);
+            WriteAssembly("probe", typeof(SourceAnalysisUriResolutionWindowsProbeTests).Assembly);
             WriteAssembly("syntax", typeof(VbaSyntaxTree).Assembly);
+            WriteAssembly("source-identity", typeof(SourceIdentity).Assembly);
             WriteAssembly("semantics", typeof(VbaProjectSourceAnalysis).Assembly);
             WriteAssembly("typelib-reader", typeof(ComTypeLibCatalogMetadataReader).Assembly);
             foreach (var identity in inputs.ReferenceCatalogIdentities.Values
@@ -117,7 +132,26 @@ public sealed class SourceAnalysisUriResolutionWindowsProbeTests(ITestOutputHelp
         catch (Exception error)
         {
             probeFailure = ExceptionDispatchInfo.Capture(error);
-            output.WriteLine($"probeException={error}");
+            try
+            {
+                output.WriteLine($"probeException={error}");
+                var uriEvidence = SourceAnalysisUriProbeEvidenceFormatter.Format(error);
+                if (uriEvidence is not null)
+                {
+                    output.WriteLine($"probeUriIdentification={uriEvidence}");
+                }
+                var syntaxEvidence = SourceAnalysisSyntaxProbeEvidenceFormatter.Format(error);
+                if (syntaxEvidence is not null)
+                {
+                    output.WriteLine($"probeSyntaxPosition={syntaxEvidence}");
+                }
+                var lexerEvidence = SourceAnalysisLexerProbeEvidenceFormatter.Format(error);
+                if (lexerEvidence is not null)
+                {
+                    output.WriteLine($"probeLexer={lexerEvidence}");
+                }
+            }
+            catch (Exception) { /* Test-output failure must not replace the probe failure. */ }
         }
         finally
         {
@@ -213,8 +247,9 @@ public sealed class SourceAnalysisUriResolutionWindowsProbeTests(ITestOutputHelp
         output.WriteLine($"os={RuntimeInformation.OSDescription}, osArchitecture={RuntimeInformation.OSArchitecture}");
         output.WriteLine(
             $"framework={RuntimeInformation.FrameworkDescription}, runtime={Environment.Version}, processArchitecture={RuntimeInformation.ProcessArchitecture}, target={AppContext.TargetFrameworkName}");
+        var probeAssembly = typeof(SourceAnalysisUriResolutionWindowsProbeTests).Assembly;
         output.WriteLine(
-            $"invocation=dotnet test VbaDev.Tests.csproj -c Release --filter FullyQualifiedName~{nameof(SourceAnalysisUriResolutionWindowsProbeTests)}, trials={trials}");
+            $"probe={nameof(SourceAnalysisUriResolutionWindowsProbeTests)}, testAssemblyConfiguration={probeAssembly.GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration ?? "unknown"}, trials={trials}");
     }
 
     private void WriteAssembly(string role, Assembly assembly)

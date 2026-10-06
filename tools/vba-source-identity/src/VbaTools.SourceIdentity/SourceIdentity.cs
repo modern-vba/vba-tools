@@ -130,8 +130,17 @@ public readonly struct SourceIdentity : IEquatable<SourceIdentity>
     private static string NormalizeSegments(string root, string remainder)
     {
         var segments = new List<string>();
-        foreach (var segment in remainder.Split('/', StringSplitOptions.RemoveEmptyEntries))
+        // Scan directly to avoid the observed String.SplitInternal failure for valid URIs (#415).
+        for (var index = 0; index < remainder.Length;)
         {
+            if (remainder[index] == '/')
+            {
+                index++;
+                continue;
+            }
+            var start = index;
+            while (index < remainder.Length && remainder[index] != '/') index++;
+            var segment = remainder.Substring(start, index - start);
             if (segment == ".") continue;
             if (segment == "..")
             {

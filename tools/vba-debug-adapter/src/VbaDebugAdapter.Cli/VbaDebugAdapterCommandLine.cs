@@ -262,15 +262,62 @@ public sealed class VbaDebugAdapterCommandLine
         {
             var vbaDevPath = Path.GetFullPath(args[2]);
             var sessionId = DebugSessionId.Parse(args[4]);
-            var capabilities = await vbaDevCapabilitiesProbe
-                .ProbeAsync(vbaDevPath, cancellationToken)
-                .ConfigureAwait(false);
-            if (!AdvertisesRequiredSnapshotBuildFeature(capabilities))
+            var inspection = "The supplied vba-dev capability inspection " +
+                $"(stage: capabilities, executable: '{vbaDevPath}')";
+            VbaDevCapabilitiesProbeResult capabilities;
+            try
+            {
+                capabilities = await vbaDevCapabilitiesProbe
+                    .ProbeAsync(vbaDevPath, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (VbaDevCapabilityRetryFailureException failure)
+            {
+                await WriteLineAsync(
+                    standardError,
+                    $"{inspection} terminated abnormally with exit code " +
+                    $"{failure.FirstAbnormalExitCode} " +
+                    $"(0x{unchecked((uint)failure.FirstAbnormalExitCode):X8}) " +
+                    "on attempt 1 of 2; retry attempt 2 failed before compatibility could be verified.")
+                    .ConfigureAwait(false);
+                throw;
+            }
+            if (capabilities.FirstAbnormalExitCode is { } firstAbnormalExitCode)
+            {
+                await WriteLineAsync(
+                    standardError,
+                    $"{inspection} terminated abnormally with exit code " +
+                    $"{firstAbnormalExitCode} (0x{unchecked((uint)firstAbnormalExitCode):X8}) " +
+                    $"on attempt 1 of {capabilities.AttemptCount}; one retry was attempted.")
+                    .ConfigureAwait(false);
+            }
+            if (capabilities.ExitCode != 0)
+            {
+                var failureKind = capabilities.ExitCode < 0
+                    ? "terminated abnormally"
+                    : "failed";
+                var attemptSuffix = capabilities.AttemptCount == 1
+                    ? " after 1 attempt"
+                    : $" after {capabilities.AttemptCount} attempts";
+                await WriteLineAsync(
+                    standardError,
+                    $"{inspection} {failureKind} with exit code " +
+                    $"{capabilities.ExitCode} (0x{unchecked((uint)capabilities.ExitCode):X8})" +
+                    $"{attemptSuffix}; " +
+                    "compatibility could not be verified.")
+                    .ConfigureAwait(false);
+                return 1;
+            }
+
+            var admission = VbaDevCapabilityAdmission.Admit(
+                capabilities.StandardOutput, RequiredVbaDevCapabilities);
+            if (!admission.IsAccepted)
             {
                 await WriteLineAsync(
                     standardError,
                     "The supplied vba-dev executable is incompatible; " +
-                    "it must advertise build.sourceSnapshot 2.0 and build.sourceSnapshotAnalysis 1.0.").ConfigureAwait(false);
+                    "it must advertise build.sourceSnapshot 2.0 and build.sourceSnapshotAnalysis 1.0. " +
+                    $"Capability response rejected: {admission.Rejection!.Kind}.").ConfigureAwait(false);
                 return 1;
             }
 
@@ -473,11 +520,6 @@ public sealed class VbaDebugAdapterCommandLine
         }
         return completion.Complete();
     }
-
-    private static bool AdvertisesRequiredSnapshotBuildFeature(
-        VbaDevCapabilitiesProbeResult capabilities)
-        => capabilities.ExitCode == 0 &&
-           VbaDevCapabilityAdmission.Admit(capabilities.StandardOutput, RequiredVbaDevCapabilities).IsAccepted;
 
     private static string ToolVersion
         => typeof(VbaDebugAdapterCommandLine).Assembly

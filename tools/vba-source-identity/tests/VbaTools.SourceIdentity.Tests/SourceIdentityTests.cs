@@ -1,3 +1,4 @@
+using System.Text.Json;
 using VbaTools.SourceIdentities;
 using Xunit;
 
@@ -5,6 +6,24 @@ namespace VbaTools.SourceIdentities.Tests;
 
 public sealed class SourceIdentityTests
 {
+    [Fact]
+    public void Sanitized_failure_pair_retains_distinct_document_identities()
+    {
+        var path = System.IO.Path.Combine(AppContext.BaseDirectory, "fixtures", "source-identity", "issue-415-uri-pair.json");
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        var firstUri = document.RootElement.GetProperty("firstUri").GetString()!;
+        var secondUri = document.RootElement.GetProperty("secondUri").GetString()!;
+        Assert.Equal(269, firstUri.Length);
+        Assert.Equal(276, secondUri.Length);
+
+        Assert.True(SourceIdentity.TryFromUri(firstUri, out var first));
+        Assert.True(SourceIdentity.TryFromUri(secondUri, out var second));
+        Assert.NotEqual(first, second);
+        Assert.EndsWith("\\ObjectSet.cls", first.Path, StringComparison.Ordinal);
+        Assert.EndsWith("\\DebugInformation.cls", second.Path, StringComparison.Ordinal);
+        Assert.Equal(first.Path[..^"ObjectSet.cls".Length], second.Path[..^"DebugInformation.cls".Length]);
+    }
+
     [Theory]
     [InlineData("C:\\Sources\\Module.bas\\", "file:///C:/Sources/Module.bas")]
     [InlineData("\\\\server\\share", "file://server/share/")]

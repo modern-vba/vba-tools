@@ -7,6 +7,148 @@ options for its single maintainer.
 The rationale is recorded in
 [ADR 0034](docs/adr/0034-use-github-flow-with-maintainer-authorized-direct-integration.md).
 
+## Extension Host failure logs
+
+When the standard Extension Host runner fails, it saves a snapshot of the
+three isolated test profiles' `logs` directories under
+`.tmp/extension-host-failures/run-*` before removing its temporary profiles and
+fixtures. The console prints the snapshot location, including when a partial
+copy fails. Profiles whose hosts never started may have no logs to save.
+
+Capture runs only after a test failure; it does not enable protocol tracing,
+alter test deadlines, or add work to successful tests. User settings, workspace
+fixtures, Crashpad data, and non-test profiles are not copied, and filesystem
+links inside the log trees are excluded. Treat captured logs as local diagnostic
+data and inspect them before sharing. A snapshot is not a guarantee that every
+process flushed its final log entries. Save or remove these ignored artifacts
+as needed; they are not packaged or uploaded automatically.
+
+Evidence-copy and cleanup failures remain secondary to the original test
+failure. A cleanup-only failure after successful tests does not produce a log
+snapshot.
+
+## Opt-in language-server child crash dumps
+
+The language-server process tests and the Windows Excel cross-product tests
+can arm their **exact** `vba-language-server.exe` child for a .NET crash dump.
+This is diagnostic-only and does not change the LSP stdio protocol or ordinary
+test launches. Set `VBA_TOOLS_DIAGNOSTIC_RUN_ROOT` to an existing, ordinary,
+absolute directory on a local fixed drive whose final directory name has the
+`run-YYYYMMDDTHHMMSSfffZ-<16 lowercase hex>` form, and set
+`VBA_TOOLS_DIAGNOSTIC_RUN_ID` to that same final name. The
+`diagnose:release:windows-excel` profile supplies these values for its own
+run; the strict release gate does not.
+
+Only when at least 10 GiB is free, the test owner sets `DOTNET_DbgEnableMiniDump`,
+`DOTNET_DbgMiniDumpType=4`, and `DOTNET_DbgMiniDumpName` on that LSP child's
+`ProcessStartInfo`, never on the machine or all test children. One atomic slot
+under `<run-root>/lsp-crash-dumps/` permits at most one armed LSP child at a
+time across test hosts. Once a `.dmp` exists there, further children in the
+same run are not armed. Dump filenames contain the actual child PID via `%p`.
+An invalid, linked, non-local, or low-space root simply disables this capture;
+it does not alter the test result. A crash before .NET dump initialization may
+still leave no dump. If a test host exits before releasing its slot, the stale
+`.armed` file intentionally prevents further captures in that run; use a new
+run directory rather than removing it while a child might still be alive.
+An armed harness allows its child up to 30 seconds to finish a dump when
+disposing after a test failure, then resumes its normal bounded cleanup.
+`children.ndjson` is capped at 2 MiB and records child PID, fixed test phase,
+executable path and observed SHA-256 when readable, argument count and SHA-256
+without argument values, arm/skip status, exit code, and matching dump presence.
+It distinguishes a crash without a dump from a child that was never armed;
+an invalid root cannot safely receive a receipt. A final partial line after
+test-host termination is incomplete evidence, not a finished child record.
+
+Full dumps can contain source text, paths, environment variables, and secrets.
+They remain local and ignored; do not upload or commit them without separate
+review and authorization. Dump-enabled timing is diagnostic evidence, not a
+successful release-gate result.
+
+## Opt-in native Test build crash dumps
+
+For a local-only full-dump trial of the Extension Host native Test build
+fixture, set `VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET=invalid` or `corrected`
+before running `test:extension-host` or `verify:release:windows-excel`. Only
+the selected fixture phase's first `vba-dev.exe test --source-snapshot` child
+receives `DOTNET_DbgEnableMiniDump=1`, `DOTNET_DbgMiniDumpType=4`, and a unique
+dump name. This switch does not change the environment of other children or
+ordinary product commands. Use the opposite target in a later run to observe
+both phases; one run arms at most one child. No machine-wide crash handler is
+installed.
+
+The opt-in requires an existing, valid, local `VBA_TOOLS_DIAGNOSTIC_RUN_ROOT`
+and a matching `VBA_TOOLS_DIAGNOSTIC_RUN_ID` as described above; missing or
+invalid values fail closed. The dump and adjacent `.jsonl` invocation record
+stay under `<run-root>/extension-host/native-test-build-dumps/`. The record
+includes the exact executable, arguments, source-snapshot path, PID, dump
+name, exit status, and a bounded relative-path/byte-length/SHA-256 inventory
+of the snapshot as read immediately before child launch. More than 64 files,
+16 MiB total, a linked entry, or a read failure produces an explicit
+`unavailable` receipt; it is never marked as complete. A full dump appears
+only if the runtime produces one on failure. Linked roots and roots with less
+than 8 GiB free are rejected before the test; this preflight is not a hard
+dump-size limit. Monitor available disk space.
+As with the VSIX verifier, Node cannot independently attest that a mapped drive
+is physically local; use an ordinary local fixed drive, not a mapped share.
+Full dumps can contain source, environment variables, and other secrets. They
+are ignored by Git, never packaged or uploaded automatically, and must remain
+local unless the maintainer separately reviews and authorizes sharing. Treat
+instrumented runs as diagnostic trials, not substitutes for a clean release
+gate on the exact release commit.
+
+## VSIX packaging failure evidence
+
+When `VBA_TOOLS_DIAGNOSTIC_RUN_ROOT` names an existing absolute local diagnostic
+run directory, a failed `verify:vsix` packaging child saves a bundle under
+`<run-root>/vsix-packaging/failure-*/`. `failure.json` records the shared run ID,
+exact Node/vsce invocation, child PID/exit/signal, platform, package and
+package-lock hashes, Node and vsce file hashes and versions, the reported npm
+version when npm supplies one, and bounded
+stdout/stderr tails (at most 65,536 UTF-16 code units each). If the failed
+temporary VSIX is an ordinary file no larger than 64 MiB, it is retained as
+`failed-output.partial`, never as a verified `.vsix`. The normal temporary
+directory is still removed, and the packaging failure remains a failure even
+if evidence collection itself fails. Without the opt-in, ordinary verification
+behavior and cleanup are unchanged.
+
+File hashes are observed after the child exits; they do not prove that no file
+changed during execution. The bundle may contain private paths and tool output,
+stays local, and is not packaged or uploaded. It contains no native dump and
+cannot by itself establish the cause of an access violation. The verifier
+rejects UNC and linked diagnostic roots; use an existing fixed local,
+non-reparse run root. Node does not independently attest a network-mapped drive.
+
+For an opt-in dump attempt inside the standard `verify:vsix` packaging step,
+independently verify the local `procdump64.exe` Authenticode signature and
+SHA-256, then set `VBA_TOOLS_VSIX_PROCDUMP_PATH` and
+`VBA_TOOLS_VSIX_PROCDUMP_SHA256` along with the existing absolute local
+`VBA_TOOLS_DIAGNOSTIC_RUN_ROOT`. The verifier checks the executable path and
+hash, starts the normal Node/vsce child unchanged, and attaches ProcDump only
+to that child's PID with `-ma -e -n 1 -at 30`. It records attach readiness,
+monitor exit/cleanup, dump metadata, and any attach or dump absence in a local
+`monitor-*/monitor.json`; a failed child's `failure.json` shares its invocation
+ID. A separate bounded wait after child close attempts to stop only the owned
+monitor if necessary, and records any unconfirmed stop; `-at 30` alone is not a
+monitor-lifetime limit. No machine-wide
+crash handler is registered. PID attachment can miss a short-lived child or,
+in principle, encounter PID reuse, so a missing dump does not prove the crash
+had no catchable exception. Full dumps may contain secrets: keep them local,
+never upload them, and distinguish ProcDump-monitored trials from the ordinary
+release gate because monitoring changes timing.
+
+For a separate native-dump trial, use a diagnostic-only, exact-child ProcDump
+launch (`-ma -e -n 1 -x`) after accepting the ProcDump license yourself. Target
+the Node executable and vsce entry point identified in `failure.json`, with the
+same `package --target win32-x64` arguments and a fresh, isolated `--out` path.
+Limit the trial to one full dump under an existing fixed local run root and a
+finite timeout. This direct-launch alternative does not attach by process name
+or PID. Do not register a machine-wide crash handler or reuse the trial VSIX
+for release. Compare the standard gate and direct entry points with only one
+launcher variable changed. A diagnostic
+trial's ProcDump exit is not the standard gate's verdict: run
+`npm run verify:vsix` separately and keep both results distinct. Full dumps can
+contain secrets; keep them local and do not upload them.
+
 ## Private-desktop Excel feasibility proof
 
 Run the isolated Windows/Excel feasibility proof explicitly:

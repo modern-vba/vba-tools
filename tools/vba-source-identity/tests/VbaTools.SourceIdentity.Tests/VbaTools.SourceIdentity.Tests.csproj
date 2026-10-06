@@ -14,5 +14,6 @@
     </PackageReference>
     <ProjectReference Include="../../src/VbaTools.SourceIdentity/VbaTools.SourceIdentity.csproj" />
     <Content Include="../../../../fixtures/source-identity/cases.json" Link="fixtures/source-identity/cases.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../../../fixtures/source-identity/issue-415-uri-pair.json" Link="fixtures/source-identity/issue-415-uri-pair.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

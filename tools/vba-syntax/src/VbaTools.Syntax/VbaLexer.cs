@@ -1,3 +1,6 @@
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+
 namespace VbaTools.Syntax;
 
 /// <summary>
@@ -287,12 +290,62 @@ internal static class VbaLexer
     private static VbaToken ReadIdentifierOrKeyword(LexerState state, int identifierLength)
     {
         var start = state.Position;
-        for (var index = 0; index < identifierLength; index++)
+        var index = 0;
+        var phase = "ReadIdentifierOrKeyword.Advance";
+        string text;
+        try
         {
-            state.Advance();
+            for (; index < identifierLength; index++)
+            {
+                state.Advance();
+            }
+
+            phase = "ReadIdentifierOrKeyword.StartOffset";
+            var startOffset = start.Offset;
+            phase = "ReadIdentifierOrKeyword.PositionBeforeSlice";
+            var endOffset = state.Position.Offset;
+            phase = "ReadIdentifierOrKeyword.Slice";
+            text = state.Slice(startOffset, endOffset);
+        }
+        catch (NullReferenceException error)
+        {
+            // [DEBUG-415-lexer-v1] Observe failed identifier cursor/slice work; retain the original exception.
+            try
+            {
+                var sourceText = state?.DiagnosticSourceText;
+                var cachedPosition = state?.DiagnosticCachedPosition;
+                string? source = null;
+                var textReadFailed = false;
+                try { source = sourceText?.Text; }
+                catch (Exception) { textReadFailed = true; }
+                VbaSyntaxPosition? position = null;
+                var positionReadFailed = false;
+                try { position = state?.Position; }
+                catch (Exception) { positionReadFailed = true; }
+                VbaLexerAdvanceFailureEvidence.Capture(
+                    error,
+                    phase,
+                    state is null,
+                    sourceText is null,
+                    source,
+                    textReadFailed,
+                    position,
+                    positionReadFailed,
+                    cachedPosition is null,
+                    state?.DiagnosticLine ?? -1,
+                    state?.DiagnosticCharacter ?? -1,
+                    state?.DiagnosticOffset ?? -1,
+                    start,
+                    identifierLength,
+                    index);
+            }
+            catch (Exception)
+            {
+                // Diagnostics must not replace the original lexer failure.
+            }
+            throw;
         }
 
-        var text = state.Slice(start.Offset, state.Position.Offset);
         var kind = VbaLanguageVocabulary.IsKeyword(text)
             ? VbaTokenKind.Keyword
             : VbaTokenKind.Identifier;
@@ -398,6 +451,13 @@ internal static class VbaLexer
         private int offset;
         private VbaSyntaxPosition? cachedPosition;
 
+        // [DEBUG-415-lexer-v1] Raw cursor state is read only after failed identifier cursor/slice work.
+        internal VbaSourceText? DiagnosticSourceText => SourceText;
+        internal VbaSyntaxPosition? DiagnosticCachedPosition => cachedPosition;
+        internal int DiagnosticLine => line;
+        internal int DiagnosticCharacter => character;
+        internal int DiagnosticOffset => offset;
+
         /// <summary>
         /// Gets the source text being tokenized.
         /// </summary>
@@ -439,7 +499,53 @@ internal static class VbaLexer
         /// <param name="endOffset">The exclusive zero-based end offset.</param>
         /// <returns>The requested source slice.</returns>
         public string Slice(int startOffset, int endOffset)
-            => Source[startOffset..endOffset];
+        {
+            var preLine = line;
+            var preCharacter = character;
+            var preOffset = offset;
+            string? sourceAtCall = null;
+            var preSourceLength = -1;
+            try
+            {
+                var currentSource = Source;
+                sourceAtCall = currentSource;
+                preSourceLength = currentSource.Length;
+                return currentSource[startOffset..endOffset];
+            }
+            catch (ArgumentOutOfRangeException error)
+            {
+                // [DEBUG-415-lexer-v1] Capture only a failed slice; never retain source contents.
+                try
+                {
+                    var postLine = line;
+                    var postCharacter = character;
+                    var postOffset = offset;
+                    var sourceText = SourceText;
+                    string? source = null;
+                    var textReadFailed = false;
+                    try { source = sourceText?.Text; }
+                    catch (Exception) { textReadFailed = true; }
+                    var cachedPositionIsNull = cachedPosition is null;
+                    VbaSyntaxPosition? position = null;
+                    var positionReadFailed = false;
+                    try { position = Position; }
+                    catch (Exception) { positionReadFailed = true; }
+                    VbaLexerAdvanceFailureEvidence.CaptureSlice(
+                        error, source, preSourceLength,
+                        sourceAtCall is not null && ReferenceEquals(sourceAtCall, source),
+                        sourceText is null, textReadFailed,
+                        position, positionReadFailed, cachedPositionIsNull,
+                        preLine, preCharacter, preOffset,
+                        postLine, postCharacter, postOffset,
+                        startOffset, endOffset);
+                }
+                catch (Exception)
+                {
+                    // Diagnostics must not replace the original range exception.
+                }
+                throw;
+            }
+        }
 
         public string SliceWhitespace(
             int startOffset,
@@ -513,6 +619,120 @@ internal static class VbaLexer
             character = position.Character;
             offset = position.Offset;
             cachedPosition = position;
+        }
+    }
+}
+
+// [DEBUG-415-lexer-v1] Temporary, failure-only evidence; never retain source contents.
+internal static class VbaLexerAdvanceFailureEvidence
+{
+    internal const string Key = "DEBUG-415-lexer-v1";
+
+    internal static void Capture(
+        Exception error,
+        string phase,
+        bool stateIsNull,
+        bool sourceTextIsNull,
+        string? source,
+        bool textReadFailed,
+        VbaSyntaxPosition? position,
+        bool positionReadFailed,
+        bool cachedPositionIsNull,
+        int rawLine,
+        int rawCharacter,
+        int rawOffset,
+        VbaSyntaxPosition? start,
+        int identifierLength,
+        int loopIndex)
+    {
+        try
+        {
+            var evidence = new Dictionary<string, object>(StringComparer.Ordinal)
+            {
+                ["phase"] = phase,
+                ["stateIsNull"] = stateIsNull,
+                ["sourceTextIsNull"] = sourceTextIsNull,
+                ["textIsNull"] = source is null,
+                ["textReadFailed"] = textReadFailed,
+                ["positionIsNull"] = position is null,
+                ["positionReadFailed"] = positionReadFailed,
+                ["cachedPositionIsNull"] = cachedPositionIsNull,
+                ["rawLine"] = rawLine,
+                ["rawCharacter"] = rawCharacter,
+                ["rawOffset"] = rawOffset,
+                ["positionLine"] = position?.Line ?? -1,
+                ["positionCharacter"] = position?.Character ?? -1,
+                ["positionOffset"] = position?.Offset ?? -1,
+                ["startLine"] = start?.Line ?? -1,
+                ["startCharacter"] = start?.Character ?? -1,
+                ["startOffset"] = start?.Offset ?? -1,
+                ["identifierLength"] = identifierLength,
+                ["loopIndex"] = loopIndex,
+                ["sourceLength"] = source?.Length ?? -1,
+                ["sourceHashDomain"] = "utf16-platform-endian-code-units",
+                ["sourceSha256"] = string.Empty,
+                ["sourceHashComplete"] = false
+            };
+            if (source is not null)
+            {
+                try
+                {
+                    evidence["sourceSha256"] = Convert.ToHexString(
+                        SHA256.HashData(MemoryMarshal.AsBytes(source.AsSpan())));
+                    evidence["sourceHashComplete"] = true;
+                }
+                catch (Exception)
+                {
+                    // Keep the cursor facts even if hashing itself fails.
+                }
+            }
+            error.Data[Key] = evidence;
+        }
+        catch (Exception)
+        {
+            // Observation must never replace the original lexer exception.
+        }
+    }
+
+    internal static void CaptureSlice(
+        ArgumentOutOfRangeException error,
+        string? source,
+        int preSourceLength,
+        bool prePostSourceSameReference,
+        bool sourceTextIsNull,
+        bool textReadFailed,
+        VbaSyntaxPosition? position,
+        bool positionReadFailed,
+        bool cachedPositionIsNull,
+        int preLine,
+        int preCharacter,
+        int preOffset,
+        int postLine,
+        int postCharacter,
+        int postOffset,
+        int startOffset,
+        int endOffset)
+    {
+        Capture(error, "LexerState.Slice", false, sourceTextIsNull, source,
+            textReadFailed, position, positionReadFailed, cachedPositionIsNull,
+            postLine, postCharacter, postOffset, null, -1, -1);
+        try
+        {
+            if (error.Data[Key] is not Dictionary<string, object> evidence) return;
+            evidence["sliceStartOffset"] = startOffset;
+            evidence["sliceEndOffset"] = endOffset;
+            evidence["slicePreLine"] = preLine;
+            evidence["slicePreCharacter"] = preCharacter;
+            evidence["slicePreOffset"] = preOffset;
+            evidence["slicePostLine"] = postLine;
+            evidence["slicePostCharacter"] = postCharacter;
+            evidence["slicePostOffset"] = postOffset;
+            evidence["slicePreSourceLength"] = preSourceLength;
+            evidence["slicePrePostSourceSameReference"] = prePostSourceSameReference;
+        }
+        catch (Exception)
+        {
+            // Observation must never replace the original slice exception.
         }
     }
 }

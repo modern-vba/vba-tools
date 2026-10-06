@@ -443,6 +443,7 @@ internal sealed class VbaPositionSyntaxIndex
         };
 
     private readonly VbaModuleKind moduleKind;
+    private readonly string documentUri;
     private readonly VbaSourceText sourceText;
     private readonly IReadOnlyList<VbaToken> tokens;
     private readonly IReadOnlyList<IReadOnlyList<VbaToken>> nonWhitespaceTokensByLine;
@@ -456,6 +457,7 @@ internal sealed class VbaPositionSyntaxIndex
     public VbaPositionSyntaxIndex(VbaSyntaxTree tree)
     {
         moduleKind = tree.Module.Kind;
+        documentUri = tree.Uri;
         sourceText = tree.SourceText;
         tokens = tree.TokenStream.Tokens;
         nonWhitespaceTokensByLine = BuildNonWhitespaceTokensByLine(sourceText.Lines.Count, tokens);
@@ -674,19 +676,45 @@ internal sealed class VbaPositionSyntaxIndex
         StatementSpan statement,
         VbaSyntaxPosition position)
     {
-        var match = statement.SignificantTokens
-            .Select((token, index) => new { token, index })
-            .Where(item => IsNameToken(item.token))
-            .Where(item => item.token.Range.Start.Line == position.Line)
-            .Where(item => item.token.Range.Start.Character <= position.Character)
-            .Where(item => position.Character <= item.token.Range.End.Character)
-            .OrderByDescending(item => item.token.Range.Start.Offset)
-            .FirstOrDefault();
-        return match is null
-            ? null
-            : ToIdentifier(
-                match.token,
-                IsContextualGrammarKeyword(statement.SignificantTokens, match.index));
+        var queryCompleted = false;
+        try
+        {
+            var match = statement.SignificantTokens
+                .Select((token, index) => new { token, index })
+                .Where(item => IsNameToken(item.token))
+                .Where(item => item.token.Range.Start.Line == position.Line)
+                .Where(item => item.token.Range.Start.Character <= position.Character)
+                .Where(item => position.Character <= item.token.Range.End.Character)
+                .OrderByDescending(item => item.token.Range.Start.Offset)
+                .FirstOrDefault();
+            queryCompleted = true;
+            return match is null
+                ? null
+                : ToIdentifier(
+                    match.token,
+                    IsContextualGrammarKeyword(statement.SignificantTokens, match.index));
+        }
+        catch (NullReferenceException error) when (!queryCompleted)
+        {
+            // [DEBUG-415-syntax-v1] Observe only failed identifier-query enumeration.
+            try
+            {
+                VbaPositionSyntaxPrefixFailureEvidence.Capture(
+                    error,
+                    "FindIdentifier.query",
+                    documentUri,
+                    position,
+                    statement?.StartOffset ?? -1,
+                    statement?.EndOffset ?? -1,
+                    statement?.NextOffset ?? -1,
+                    statement?.SignificantTokens);
+            }
+            catch (Exception)
+            {
+                // Observation must not replace the original query failure.
+            }
+            throw;
+        }
     }
 
     private VbaMemberAccessSyntax? TryGetMemberAccess(
@@ -1537,9 +1565,34 @@ internal sealed class VbaPositionSyntaxIndex
         IReadOnlyList<VbaEnclosingBlockSyntax> enclosingBlocks,
         VbaCallSiteSyntax? callSite)
     {
-        var prefix = statement.SignificantTokens
-            .Where(token => token.Range.Start.Offset < position.Offset)
-            .ToArray();
+        VbaToken[] prefix;
+        try
+        {
+            prefix = statement.SignificantTokens
+                .Where(token => token.Range.Start.Offset < position.Offset)
+                .ToArray();
+        }
+        catch (NullReferenceException error)
+        {
+            // [DEBUG-415-syntax-v1] Observe only a failed procedure-prefix token graph.
+            try
+            {
+                VbaPositionSyntaxPrefixFailureEvidence.Capture(
+                    error,
+                    "GetProcedureSyntaxWords.prefix",
+                    documentUri,
+                    position,
+                    statement?.StartOffset ?? -1,
+                    statement?.EndOffset ?? -1,
+                    statement?.NextOffset ?? -1,
+                    statement?.SignificantTokens);
+            }
+            catch (Exception)
+            {
+                // Observation must not replace the original prefix failure.
+            }
+            throw;
+        }
         if (prefix.Length == 0)
         {
             return [];
@@ -2522,9 +2575,27 @@ internal sealed class VbaPositionSyntaxIndex
             return null;
         }
 
-        var prefix = statement.SignificantTokens
-            .Where(token => token.Range.Start.Offset < position.Offset)
-            .ToArray();
+        VbaToken[] prefix;
+        try
+        {
+            prefix = statement.SignificantTokens
+                .Where(token => token.Range.Start.Offset < position.Offset)
+                .ToArray();
+        }
+        catch (NullReferenceException error)
+        {
+            // [DEBUG-415-syntax-v1] Inspect only the failed token graph, without changing the predicate.
+            VbaPositionSyntaxPrefixFailureEvidence.Capture(
+                error,
+                "TryGetLabelReference.prefix",
+                documentUri,
+                position,
+                statement?.StartOffset ?? -1,
+                statement?.EndOffset ?? -1,
+                statement?.NextOffset ?? -1,
+                statement?.SignificantTokens);
+            throw;
+        }
         if (!TryFindLabelMarker(
                 prefix,
                 out var markerIndex,
@@ -3550,4 +3621,133 @@ internal sealed class VbaPositionSyntaxIndex
         int EndOffset,
         int Depth,
         VbaMemberAccessSyntax? Receiver);
+}
+
+// [DEBUG-415-syntax-v1] Temporary, failure-only evidence for position token-graph NREs.
+internal static class VbaPositionSyntaxPrefixFailureEvidence
+{
+    internal const string Key = "DEBUG-415-syntax-v1";
+    private const int MaximumUriCharacters = 2048;
+    private const int MaximumInspectedTokens = 4096;
+
+    internal static void Capture(
+        NullReferenceException error,
+        string phase,
+        string? uri,
+        VbaSyntaxPosition? position,
+        int statementStartOffset,
+        int statementEndOffset,
+        int statementNextOffset,
+        IReadOnlyList<VbaToken>? significantTokens)
+    {
+        try
+        {
+            var uriLength = uri?.Length ?? -1;
+            var evidence = new Dictionary<string, object>(StringComparer.Ordinal)
+            {
+                ["phase"] = phase,
+                ["uri"] = uri is null ? string.Empty : uri[..Math.Min(uri.Length, MaximumUriCharacters)],
+                ["uriLength"] = uriLength,
+                ["uriCaptureComplete"] = uriLength >= 0 && uriLength <= MaximumUriCharacters,
+                ["positionIsNull"] = position is null,
+                ["positionLine"] = position?.Line ?? -1,
+                ["positionCharacter"] = position?.Character ?? -1,
+                ["positionOffset"] = position?.Offset ?? -1,
+                ["statementStartOffset"] = statementStartOffset,
+                ["statementEndOffset"] = statementEndOffset,
+                ["statementNextOffset"] = statementNextOffset,
+                ["significantTokenCount"] = -1,
+                ["inspectedTokenCount"] = 0,
+                ["inspectionComplete"] = false,
+                ["firstBadIndex"] = -1,
+                ["firstBadReferenceKind"] = "none",
+                ["postFaultGraphStatus"] = "unverified"
+            };
+
+            if (significantTokens is null)
+            {
+                evidence["firstBadReferenceKind"] = "significantTokens";
+                evidence["postFaultGraphStatus"] = "broken";
+            }
+            else
+            {
+                InspectTokens(significantTokens, evidence);
+            }
+
+            error.Data[Key] = evidence;
+        }
+        catch (Exception)
+        {
+            // Observation must never replace the original NullReferenceException.
+        }
+    }
+
+    private static void InspectTokens(
+        IReadOnlyList<VbaToken> significantTokens,
+        Dictionary<string, object> evidence)
+    {
+        int count;
+        try
+        {
+            count = significantTokens.Count;
+        }
+        catch (Exception)
+        {
+            evidence["firstBadReferenceKind"] = "count";
+            return;
+        }
+
+        evidence["significantTokenCount"] = count;
+        var inspectionLimit = Math.Min(count, MaximumInspectedTokens);
+        for (var index = 0; index < inspectionLimit; index++)
+        {
+            VbaToken? token;
+            try
+            {
+                token = significantTokens[index];
+            }
+            catch (Exception)
+            {
+                SetBadReference(evidence, index, "indexer", "unverified");
+                return;
+            }
+
+            evidence["inspectedTokenCount"] = index + 1;
+            if (token is null)
+            {
+                SetBadReference(evidence, index, "token", "broken");
+                return;
+            }
+
+            VbaSyntaxRange? range = token.Range;
+            if (range is null)
+            {
+                SetBadReference(evidence, index, "range", "broken");
+                return;
+            }
+
+            VbaSyntaxPosition? start = range.Start;
+            if (start is null)
+            {
+                SetBadReference(evidence, index, "start", "broken");
+                return;
+            }
+        }
+
+        evidence["inspectionComplete"] = count <= MaximumInspectedTokens;
+        evidence["postFaultGraphStatus"] = count <= MaximumInspectedTokens
+            ? "intact"
+            : "unverified";
+    }
+
+    private static void SetBadReference(
+        Dictionary<string, object> evidence,
+        int index,
+        string referenceKind,
+        string graphStatus)
+    {
+        evidence["firstBadIndex"] = index;
+        evidence["firstBadReferenceKind"] = referenceKind;
+        evidence["postFaultGraphStatus"] = graphStatus;
+    }
 }

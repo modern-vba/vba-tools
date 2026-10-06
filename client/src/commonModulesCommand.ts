@@ -128,7 +128,8 @@ async function runCommonModulesListForProject(
       await options.showErrorMessage(`${String(error)} See the VBA Tools output for details.`);
     }
   } else if (!result.cancelled) {
-    await options.showErrorMessage('CommonModules list failed. See the VBA Tools output for details.');
+    await options.showErrorMessage(result.failureMessage
+      ?? 'CommonModules list failed. See the VBA Tools output for details.');
   }
 
   return {
@@ -198,7 +199,8 @@ async function runCommonModulesMutation(
   }
 
   if (result.exitCode !== 0) {
-    await options.showErrorMessage('CommonModules command failed. See the VBA Tools output for details.');
+    await options.showErrorMessage(result.failureMessage
+      ?? 'CommonModules command failed. See the VBA Tools output for details.');
     return {
       projectRoot: result.projectRoot,
       exitCode: result.exitCode,

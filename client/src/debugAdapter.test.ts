@@ -57,6 +57,178 @@ test('a configured debug adapter accepts reordered and additional offered capabi
   assert.equal(resolved.capabilities.featureVersions.extra, '99.0');
 });
 
+test('a crashed debug adapter capability probe recovers once and records the exit', async () => {
+  const extensionRoot = path.resolve('extension-root');
+  const configuredPath = path.resolve('configured-vba-debug-adapter.exe');
+  const diagnostics: string[] = [];
+  let attempts = 0;
+
+  const resolved = await resolveCompatibleVbaDebugAdapter({
+    extensionRoot, configuredPath, requiredContract,
+    runProcess: async (file, args) => {
+      assert.equal(file, configuredPath);
+      assert.deepEqual(args, ['capabilities', '--format', 'json']);
+      attempts += 1;
+      if (attempts === 1) {
+        throw Object.assign(new Error('process exited'), { code: 0x80131506 });
+      }
+      return { stdout: JSON.stringify({ toolVersion: '0.1.0', ...requiredContract }), stderr: '' };
+    },
+    reportDiagnostic: diagnostic => diagnostics.push(diagnostic)
+  });
+
+  assert.equal(resolved.executablePath, configuredPath);
+  assert.equal(attempts, 2);
+  assert.match(diagnostics.join('\n'), /role=vba-debug-adapter.*stage=capabilities.*attempt=1\/2.*0x80131506/);
+  assert.match(diagnostics.join('\n'), /recovered/);
+});
+
+test('repeated debug adapter capability crashes fail distinctly without launching a session', async () => {
+  const diagnostics: string[] = [];
+  let attempts = 0;
+  await assert.rejects(() => resolveCompatibleVbaDebugAdapter({
+    extensionRoot: path.resolve('extension-root'),
+    configuredPath: path.resolve('configured-vba-debug-adapter.exe'),
+    requiredContract,
+    runProcess: async () => {
+      attempts += 1;
+      throw Object.assign(new Error('process exited'), { code: 0xC0000005 });
+    },
+    reportDiagnostic: diagnostic => diagnostics.push(diagnostic)
+  }), (error) => error instanceof VbaDebugAdapterCompatibilityError
+    && /terminated abnormally.*attempt=2\/2.*0xC0000005/.test(error.message)
+    && !/incompatible/i.test(error.message));
+
+  assert.equal(attempts, 2);
+  assert.match(diagnostics.join('\n'), /attempt=1\/2.*retry-pending/);
+  assert.match(diagnostics.join('\n'), /attempt=2\/2.*failed/);
+});
+
+test('cancelling a debug adapter capability probe after its crash prevents retry', async () => {
+  let cancelled = false;
+  let attempts = 0;
+  const diagnostics: string[] = [];
+  await assert.rejects(() => resolveCompatibleVbaDebugAdapter({
+    extensionRoot: path.resolve('extension-root'),
+    configuredPath: path.resolve('configured-vba-debug-adapter.exe'),
+    requiredContract,
+    cancellationToken: {
+      get isCancellationRequested() { return cancelled; },
+      onCancellationRequested: () => ({ dispose: () => undefined })
+    },
+    runProcess: async () => {
+      attempts += 1;
+      cancelled = true;
+      throw Object.assign(new Error('process exited'), { code: 0xC0000005 });
+    },
+    reportDiagnostic: diagnostic => diagnostics.push(diagnostic)
+  }), (error) => error instanceof VbaDebugAdapterCompatibilityError
+    && /cancelled/i.test(error.message)
+    && !/incompatible/i.test(error.message));
+
+  assert.equal(attempts, 1);
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0], /attempt=1\/2.*0xC0000005.*not-retried/);
+});
+
+test('cancellation-induced adapter SIGTERM is not classified as an environmental crash', async () => {
+  let cancelled = false;
+  const diagnostics: string[] = [];
+  let attempts = 0;
+  await assert.rejects(() => resolveCompatibleVbaDebugAdapter({
+    extensionRoot: path.resolve('extension-root'),
+    configuredPath: path.resolve('configured-vba-debug-adapter.exe'),
+    requiredContract,
+    cancellationToken: {
+      get isCancellationRequested() { return cancelled; },
+      onCancellationRequested: () => ({ dispose: () => undefined })
+    },
+    runProcess: async () => {
+      attempts += 1;
+      cancelled = true;
+      throw Object.assign(new Error('process terminated'), { signal: 'SIGTERM' });
+    },
+    reportDiagnostic: diagnostic => diagnostics.push(diagnostic)
+  }), /cancelled/i);
+  assert.equal(attempts, 1);
+  assert.deepEqual(diagnostics, []);
+});
+
+test('cancelling during the adapter capability retry delay prevents a second launch', async () => {
+  let cancelled = false;
+  let attempts = 0;
+  await assert.rejects(() => resolveCompatibleVbaDebugAdapter({
+    extensionRoot: path.resolve('extension-root'),
+    configuredPath: path.resolve('configured-vba-debug-adapter.exe'),
+    requiredContract,
+    cancellationToken: {
+      get isCancellationRequested() { return cancelled; },
+      onCancellationRequested: () => ({ dispose: () => undefined })
+    },
+    runProcess: async () => {
+      attempts += 1;
+      throw Object.assign(new Error('process exited'), { code: 0xC0000005 });
+    },
+    reportDiagnostic: () => { cancelled = true; }
+  }), (error) => error instanceof VbaDebugAdapterCompatibilityError
+    && /cancelled/i.test(error.message)
+    && !/incompatible/i.test(error.message));
+  assert.equal(attempts, 1);
+});
+
+test('an ordinary debug adapter capability command failure is not retried', async () => {
+  let attempts = 0;
+  await assert.rejects(() => resolveCompatibleVbaDebugAdapter({
+    extensionRoot: path.resolve('extension-root'),
+    configuredPath: path.resolve('configured-vba-debug-adapter.exe'),
+    requiredContract,
+    runProcess: async () => {
+      attempts += 1;
+      throw Object.assign(new Error('ordinary command failure'), { code: 1 });
+    }
+  }), /ordinary command failure/);
+  assert.equal(attempts, 1);
+});
+
+test('a debug adapter probe retry that rejects JSON still identifies its earlier crash', async () => {
+  let attempts = 0;
+  const diagnostics: string[] = [];
+  await assert.rejects(() => resolveCompatibleVbaDebugAdapter({
+    extensionRoot: path.resolve('extension-root'),
+    configuredPath: path.resolve('configured-vba-debug-adapter.exe'),
+    requiredContract,
+    runProcess: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw Object.assign(new Error('process exited'), { code: 0xC0000005 });
+      }
+      return { stdout: '{invalid json', stderr: '' };
+    },
+    reportDiagnostic: diagnostic => diagnostics.push(diagnostic)
+  }), (error) => error instanceof VbaDebugAdapterCompatibilityError
+    && /0xC0000005.*invalid JSON/i.test(error.message));
+  assert.equal(attempts, 2);
+  assert.match(diagnostics.join('\n'), /attempt=2\/2.*failed/);
+  assert.doesNotMatch(diagnostics.join('\n'), /recovered/);
+});
+
+test('losing Workspace Trust during the adapter probe retry delay prevents a second launch', async () => {
+  let trusted = true;
+  let attempts = 0;
+  await assert.rejects(() => resolveCompatibleVbaDebugAdapter({
+    extensionRoot: path.resolve('extension-root'),
+    configuredPath: path.resolve('configured-vba-debug-adapter.exe'),
+    requiredContract,
+    isWorkspaceTrusted: () => trusted,
+    runProcess: async () => {
+      attempts += 1;
+      throw Object.assign(new Error('process exited'), { code: 0xC0000005 });
+    },
+    reportDiagnostic: () => { trusted = false; }
+  }), /Workspace Trust|Restricted Mode/i);
+  assert.equal(attempts, 1);
+});
+
 test('a missing configured debug adapter fails without bundled fallback', async () => {
   const extensionRoot = path.resolve('extension-root');
   const configuredPath = path.resolve('missing-vba-debug-adapter.exe');

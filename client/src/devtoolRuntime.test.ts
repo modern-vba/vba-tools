@@ -88,6 +88,36 @@ test('resolved Command Palette invocation appends exact document target and repo
   assert.equal(events[4], 'process:start');
 });
 
+test('a crashed Command Palette build retains the abnormal status for its caller', async () => {
+  const output: string[] = [];
+  let launches = 0;
+  const result = await runResolvedVbaDevProjectCommandInvocation({
+    extensionRoot: 'C:\\extensions\\vba-tools',
+    outputChannel: {
+      append: value => output.push(value),
+      appendLine: value => output.push(`${value}\n`),
+      show: () => undefined
+    },
+    startProcess: () => {
+      launches += 1;
+      return {
+        onStdout: () => undefined,
+        onStderr: () => undefined,
+        onExit: listener => listener(0xC0000005, null),
+        kill: () => undefined
+      };
+    }
+  }, 'C:\\tools\\vba-dev.exe', {
+    projectRoot: 'C:\\work\\Project',
+    argsBeforeProject: ['build']
+  }, createResolution().capabilities);
+
+  assert.equal(launches, 1);
+  assert.equal(result.exitCode, 0xC0000005);
+  assert.match(result.stderr, /role=vba-dev.*stage=build.*0xC0000005/);
+  assert.match(output.join(''), /role=vba-dev.*stage=build.*0xC0000005/);
+});
+
 test('project-scoped Command Palette invocation never invents a document target', async () => {
   let processArgs: readonly string[] = [];
   await runResolvedVbaDevProjectCommandInvocation({

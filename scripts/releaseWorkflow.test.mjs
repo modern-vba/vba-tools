@@ -7,6 +7,7 @@ import yaml from 'js-yaml';
 import yazl from 'yazl';
 
 import {
+  assertMarketplaceContributorRole,
   assertMarketplaceVisibility,
   validateAnnotatedReleaseTag,
   validateDraftReleaseMetadata,
@@ -246,6 +247,72 @@ test('Marketplace visibility requires the exact publisher extension version targ
     targetPlatform: 'win32-x64',
     channel: 'pre-release'
   }), /version.*target.*channel/i);
+});
+
+test('Marketplace publishing identity must have its own directly assigned Contributor role', () => {
+  const profile = { id: 'c07db561-2d2b-6dba-b271-7865576129e6' };
+  const contributor = {
+    access: 'assigned',
+    identity: { id: profile.id },
+    role: { name: 'Contributor' }
+  };
+  const unrelated = {
+    access: 'assigned',
+    identity: { id: '72fdd0b1-f74b-4953-8ae6-9f66f087821d' },
+    role: { name: 'Owner' }
+  };
+  const assignments = { count: 2, value: [unrelated, contributor] };
+  assert.deepEqual(assertMarketplaceContributorRole(profile, assignments), {
+    publisherRole: 'Contributor'
+  });
+  assert.deepEqual(assertMarketplaceContributorRole({ id: profile.id.toUpperCase() }, assignments), {
+    publisherRole: 'Contributor'
+  });
+
+  for (const roleName of ['Reader', 'Owner', 'Creator']) {
+    assert.throws(
+      () => assertMarketplaceContributorRole(profile, {
+        count: 1,
+        value: [{ ...contributor, role: { name: roleName } }]
+      }),
+      /Contributor/
+    );
+  }
+  assert.throws(() => assertMarketplaceContributorRole(profile, {
+    count: 1,
+    value: [unrelated]
+  }), /Contributor/);
+  assert.throws(() => assertMarketplaceContributorRole(profile, {
+    count: 2,
+    value: [contributor, { ...contributor }]
+  }), /Contributor/);
+  assert.throws(() => assertMarketplaceContributorRole(profile, {
+    count: 1,
+    value: [{ ...contributor, access: 'inherited' }]
+  }), /Contributor/);
+  assert.throws(() => assertMarketplaceContributorRole({ id: 'invalid' }, assignments), /profile/i);
+  assert.throws(() => assertMarketplaceContributorRole(profile, {
+    count: 2,
+    value: [contributor]
+  }), /assignments/i);
+});
+
+test('Marketplace Contributor probe reads profile and role receipts without publishing', async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-marketplace-role-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const profilePath = path.join(directory, 'profile.json');
+  const assignmentsPath = path.join(directory, 'assignments.json');
+  const profile = { id: 'c07db561-2d2b-6dba-b271-7865576129e6' };
+  await fs.writeFile(profilePath, JSON.stringify(profile));
+  await fs.writeFile(assignmentsPath, JSON.stringify({
+    count: 1,
+    value: [{ access: 'assigned', identity: { id: profile.id }, role: { name: 'Contributor' } }]
+  }));
+  assert.deepEqual(await runReleaseWorkflowCommand([
+    'verify-publisher-contributor',
+    '--profile-json', profilePath,
+    '--role-assignments-json', assignmentsPath
+  ]), { publisherRole: 'Contributor' });
 });
 
 test('resume accepts only the existing matching draft with the exact uploaded asset set', () => {
@@ -646,6 +713,22 @@ test('release workflow pins secretless least-privilege publish and fail-closed r
   assert.ok(checkoutSteps.every((step) => step.with?.['persist-credentials'] === false));
   assert.ok(Object.values(workflow.jobs).every((job) => job['runs-on'] === 'windows-2025'));
 
+  for (const job of Object.values(workflow.jobs)) {
+    const nodeSetupIndex = job.steps.findIndex(
+      (step) => step.uses?.startsWith('actions/setup-node@')
+    );
+    if (nodeSetupIndex === -1) {
+      continue;
+    }
+    const npmSetupStep = job.steps[nodeSetupIndex + 1];
+    assert.equal(npmSetupStep.shell, 'pwsh');
+    assert.equal(
+      npmSetupStep.run,
+      'npm install --global (node -p "require(\'./package.json\').packageManager")'
+    );
+    assert.ok(job.steps.findIndex((step) => step.run === 'npm ci --ignore-scripts') > nodeSetupIndex + 1);
+  }
+
   const validateTagStep = workflow.jobs.validate.steps.find(
     (step) => step.name === 'Resolve and validate the annotated tag'
   );
@@ -722,6 +805,16 @@ test('release workflow pins secretless least-privilege publish and fail-closed r
   assert.ok(workflow.jobs.validate.steps.some((step) => step.run === 'npm ci --ignore-scripts'));
   assert.match(source, /vsce publish --azure-credential --pre-release --packagePath/);
   assert.match(source, /vsce verify-pat modern-vba --azure-credential/);
+  assert.match(source, /scopes\/gallery\.publisher\/roleassignments\/resources\/modern-vba/);
+  assert.match(source, /releaseWorkflow\.mjs verify-publisher-contributor/);
+  const identityScopeIndex = publishSteps.findIndex(
+    (step) => step.name === 'Verify identity scope and Marketplace Contributor access'
+  );
+  const marketplacePublishIndex = publishSteps.findIndex(
+    (step) => /vsce publish --azure-credential/.test(step.run ?? '')
+  );
+  assert.ok(identityScopeIndex > authenticationIndex);
+  assert.ok(marketplacePublishIndex > identityScopeIndex);
   assert.match(source, /499b84ac-1321-427f-aa17-267ca6975798/);
   assert.match(source, /gh release verify/);
   assert.match(source, /gh attestation verify/);

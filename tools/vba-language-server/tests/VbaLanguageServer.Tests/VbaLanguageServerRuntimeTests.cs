@@ -803,8 +803,10 @@ public sealed class VbaLanguageServerRuntimeTests
 
             resolverRelease.TrySetResult(new VbaDevReferenceListStartupState(
                 Path.GetFullPath("vba-dev.exe"),
-                null));
+                "vba-dev capability inspection recovered on the second attempt after exit 0xC0000005."));
             await companionDiscovery.Called.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var recoveryLog = await WaitForLogMessageAsync(output, "recovered on the second attempt");
+            Assert.Equal(2, recoveryLog["params"]?["type"]?.GetValue<int>());
 
             Assert.Equal(1, registryDiscovery.CallCount);
             Assert.Equal(1, companionDiscovery.CallCount);
@@ -1344,6 +1346,34 @@ public sealed class VbaLanguageServerRuntimeTests
             {
                 throw new TimeoutException(
                     $"Timed out waiting for response {requestId}.");
+            }
+        }
+    }
+
+    private static async Task<JsonObject> WaitForLogMessageAsync(
+        SynchronizedCaptureStream output,
+        string fragment)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (true)
+        {
+            foreach (var message in ParseCompleteFrames(output.Snapshot()))
+            {
+                if (message["method"]?.GetValue<string>() == "window/logMessage"
+                    && message["params"]?["message"]?.GetValue<string>()?.Contains(
+                        fragment, StringComparison.Ordinal) == true)
+                {
+                    return message;
+                }
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(10), timeout.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                throw new TimeoutException($"Timed out waiting for log message '{fragment}'.");
             }
         }
     }

@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
-import { promises as fs, readFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream, promises as fs, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { pathToFileURL } from 'node:url';
 import yauzl from 'yauzl';
 import { verifyLanguageServerCapabilityRejection } from './languageServerCapabilitySmoke.mjs';
@@ -40,9 +42,23 @@ export const requiredVbaDebugAdapterContractPath =
   defaultDistributionManifest.runtimes.vbaDebugAdapter.contractPath;
 export const bundledLanguageServerVersionPrefix = defaultDistributionManifest.runtimes.vbaLanguageServer.versionOutputPrefix;
 const activeWindowsCodePageFeatureName = 'sourceSnapshot.activeWindowsCodePage';
+const maximumFailureOutputCharacters = 64 * 1024;
+const maximumFailedPackageBytes = 64 * 1024 * 1024;
+const maximumMonitorOutputBytes = 64 * 1024;
+const defaultMonitorGraceMilliseconds = 30 * 1000;
 
 export async function verifyVsixPackaging(options = {}) {
   const root = options.root ?? process.cwd();
+  const diagnosticsRoot = options.diagnosticsRoot ?? (process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT
+    ? path.join(process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ROOT, 'vsix-packaging')
+    : undefined);
+  const procDump = Object.hasOwn(options, 'procDump') ? options.procDump
+    : (process.env.VBA_TOOLS_VSIX_PROCDUMP_PATH || process.env.VBA_TOOLS_VSIX_PROCDUMP_SHA256
+      ? {
+        path: process.env.VBA_TOOLS_VSIX_PROCDUMP_PATH,
+        sha256: process.env.VBA_TOOLS_VSIX_PROCDUMP_SHA256
+      }
+      : undefined);
   const runCommand = options.runCommand ?? runCommandWithSpawn;
   const inspectPackage = options.inspectPackage ?? inspectVsixPackage;
   const verifyLanguageServerAdmission = options.verifyLanguageServerAdmission
@@ -84,14 +100,44 @@ export async function verifyVsixPackaging(options = {}) {
       temporaryDirectory,
       `vba-tools-${targetPlatform}-${extensionPackageJson.version}.vsix`
     );
-    await runCommand(process.execPath, [
+    const packageFile = process.execPath;
+    const packageArgs = [
       path.join(root, 'node_modules', '@vscode', 'vsce', 'vsce'),
       'package',
       '--target',
       targetPlatform,
       '--out',
       vsixPath
-    ], root);
+    ];
+    const invocationId = procDump ? randomUUID() : undefined;
+    let packageOptions = diagnosticsRoot
+      ? { maxOutputCharacters: maximumFailureOutputCharacters }
+      : undefined;
+    if (procDump) {
+      if (!diagnosticsRoot || runCommand !== runCommandWithSpawn) {
+        throw new Error('Exact-child ProcDump monitoring requires local diagnostics and the standard spawn runner.');
+      }
+      const onSpawn = await prepareExactChildProcDump({
+        procDump, diagnosticsRoot, root, packageFile, packageArgs, invocationId
+      });
+      packageOptions = { ...packageOptions, onSpawn };
+    }
+    try {
+      await runCommand(packageFile, packageArgs, root, packageOptions);
+    } catch (error) {
+      if (diagnosticsRoot) {
+        try {
+          const evidencePath = await savePackagingFailureEvidence({
+            diagnosticsRoot, root, packageFile, packageArgs, vsixPath,
+            packageVersion: extensionPackageJson.version, error, invocationId
+          });
+          console.error(`VSIX packaging failure evidence saved: ${evidencePath}`);
+        } catch (captureError) {
+          console.error(`Warning: VSIX packaging failure evidence could not be saved: ${captureError}`);
+        }
+      }
+      throw error;
+    }
     const packaged = await inspectPackage(vsixPath);
     assertVsixContents([...packaged.files.keys()], manifest);
     assertMarketplacePackageMetadata(packaged.packageJson);
@@ -265,6 +311,13 @@ export function assertExtensionDebugPackage(packageJson) {
   const vbaDebugger = Array.isArray(debuggers)
     ? debuggers.find((candidate) => isRecord(candidate) && candidate.type === 'vba')
     : undefined;
+  const breakpoints = packageJson.contributes?.breakpoints;
+  if (
+    !Array.isArray(breakpoints) ||
+    !breakpoints.some((candidate) => isRecord(candidate) && candidate.language === 'vba')
+  ) {
+    throw new Error('Extension package metadata must enable VBA source breakpoints.');
+  }
   const launchProperties = vbaDebugger?.configurationAttributes?.launch?.properties;
   if (
     !isRecord(launchProperties) ||
@@ -645,29 +698,369 @@ function assertProjectProperty(csprojText, propertyName, expectedValue, projectF
   }
 }
 
-function runCommandWithSpawn(file, args, cwd) {
+export function runCommandWithSpawn(file, args, cwd, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(file, args, { cwd, windowsHide: true });
     child.stdin?.end();
+    let finalizeMonitor;
+    try {
+      finalizeMonitor = options.onSpawn?.(child);
+    } catch (error) {
+      console.error(`Warning: exact-child monitor could not start: ${error}`);
+    }
     let stdout = '';
     let stderr = '';
+    let stdoutCharacters = 0;
+    let stderrCharacters = 0;
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+    const maxOutputCharacters = options.maxOutputCharacters ?? Infinity;
+
+    const append = (previous, value) => maxOutputCharacters === Infinity
+      ? previous + value
+      : (previous + value).slice(-maxOutputCharacters);
 
     child.stdout?.on('data', (chunk) => {
-      stdout += chunk.toString('utf8');
+      const value = stdoutDecoder.write(chunk);
+      stdoutCharacters += value.length;
+      stdout = append(stdout, value);
     });
     child.stderr?.on('data', (chunk) => {
-      stderr += chunk.toString('utf8');
+      const value = stderrDecoder.write(chunk);
+      stderrCharacters += value.length;
+      stderr = append(stderr, value);
     });
     child.on('error', reject);
-    child.on('exit', (exitCode) => {
+    child.on('close', async (exitCode, signal) => {
+      const finalStdout = stdoutDecoder.end();
+      const finalStderr = stderrDecoder.end();
+      stdoutCharacters += finalStdout.length;
+      stderrCharacters += finalStderr.length;
+      stdout = append(stdout, finalStdout);
+      stderr = append(stderr, finalStderr);
+      if (finalizeMonitor) {
+        try {
+          await finalizeMonitor({ pid: child.pid, exitCode, signal });
+        } catch (error) {
+          console.error(`Warning: exact-child monitor evidence could not be saved: ${error}`);
+        }
+      }
       if (exitCode !== 0) {
-        reject(new Error(`${file} ${args.join(' ')} exited with code ${exitCode}.\n${stderr}`));
+        reject(Object.assign(
+          new Error(`${file} ${args.join(' ')} exited with code ${exitCode}.\n${stderr}`),
+          {
+            file, args: [...args], cwd, pid: child.pid, exitCode, signal,
+            stdout, stderr, stdoutCharacters, stderrCharacters,
+            stdoutTruncated: stdoutCharacters > stdout.length,
+            stderrTruncated: stderrCharacters > stderr.length
+          }
+        ));
         return;
       }
 
       resolve({ stdout, stderr });
     });
   });
+}
+
+async function prepareExactChildProcDump({
+  procDump, diagnosticsRoot, root, packageFile, packageArgs, invocationId
+}) {
+  const procDumpPath = procDump.path;
+  const expectedSha256 = procDump.sha256;
+  if (typeof procDumpPath !== 'string' || !path.isAbsolute(procDumpPath)
+    || /^[\\/]{2}/.test(procDumpPath)
+    || path.basename(procDumpPath).toLowerCase() !== 'procdump64.exe') {
+    throw new Error('ProcDump must be an absolute local procdump64.exe path.');
+  }
+  if (typeof expectedSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(expectedSha256)) {
+    throw new Error('ProcDump monitoring requires the expected SHA-256 of the locally verified executable.');
+  }
+  await assertExistingUnlinkedLocalDirectory(path.dirname(procDumpPath));
+  const executable = await fs.lstat(procDumpPath);
+  if (!executable.isFile() || executable.isSymbolicLink()) {
+    throw new Error('ProcDump must be an ordinary local executable, not a link.');
+  }
+  const actualSha256 = await hashFile(procDumpPath);
+  if (actualSha256.toLowerCase() !== expectedSha256.toLowerCase()) {
+    throw new Error('ProcDump SHA-256 does not match the locally verified executable.');
+  }
+  const graceMilliseconds = procDump.monitorGraceMilliseconds ?? defaultMonitorGraceMilliseconds;
+  if (!Number.isInteger(graceMilliseconds) || graceMilliseconds < 1
+    || graceMilliseconds > defaultMonitorGraceMilliseconds) {
+    throw new Error('ProcDump monitor grace must be between 1 and 30000 milliseconds.');
+  }
+  await prepareDiagnosticsRoot(diagnosticsRoot);
+  const monitorPath = await fs.mkdtemp(path.join(diagnosticsRoot, 'monitor-'));
+  const dumpPath = path.join(monitorPath, 'dumps');
+  await fs.mkdir(dumpPath);
+  const spawnMonitor = procDump.spawnMonitor ?? spawn;
+
+  return child => {
+    const targetPid = Number.isInteger(child.pid) && child.pid > 0 ? child.pid : null;
+    const monitorArgs = targetPid === null ? []
+      : ['-ma', '-e', '-n', '1', '-at', '30', String(targetPid), dumpPath];
+    const observation = {
+      schemaVersion: '1.0',
+      kind: 'vsix-exact-child-procdump',
+      invocationId,
+      diagnosticRunId: process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ID ?? null,
+      target: {
+        file: packageFile, args: [...packageArgs], cwd: root,
+        pid: targetPid, spawnObservedUtc: new Date().toISOString(),
+        exitCode: null, signal: null, closeUtc: null
+      },
+      monitor: {
+        file: procDumpPath, sha256: actualSha256, args: monitorArgs,
+        pid: null, spawnAttemptUtc: null, attachReadyUtc: null,
+        attachReadyBeforeTargetClose: false, exitCode: null, signal: null,
+        closeUtc: null, timedOut: false, killRequestedUtc: null,
+        killReturned: null, closeUnobservedAfterKill: null,
+        error: null, stdoutTail: '', stderrTail: ''
+      },
+      dumps: [],
+      absence: null,
+      limitations: 'PID attachment can race a short-lived child or, in principle, attach to a reused PID. '
+        + 'A ready banner observed before child close does not prove monitoring preceded an earlier exception. '
+        + 'Dumps remain local and are never uploaded.'
+    };
+    let monitor;
+    let monitorClosed;
+    let notifyMonitorClosed;
+    let stdoutBytes = Buffer.alloc(0);
+    let stderrBytes = Buffer.alloc(0);
+    if (targetPid !== null) {
+      const processLine = new RegExp(
+        `(?:^|\\r?\\n)Process:\\s+${escapeRegExp(path.basename(packageFile))}\\s+\\(${targetPid}\\)(?:\\r?\\n)`,
+        'i');
+      monitorClosed = new Promise(resolve => { notifyMonitorClosed = resolve; });
+      try {
+        observation.monitor.spawnAttemptUtc = new Date().toISOString();
+        monitor = spawnMonitor(procDumpPath, monitorArgs, {
+          cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe']
+        });
+        observation.monitor.pid = monitor.pid ?? null;
+        monitor.stdout?.on('data', chunk => {
+          stdoutBytes = boundedMonitorBytes(stdoutBytes, chunk);
+          const output = decodeMonitorOutput(stdoutBytes);
+          if (!observation.monitor.attachReadyUtc
+            && processLine.test(output)
+            && output.includes('Press Ctrl-C to end monitoring')) {
+            observation.monitor.attachReadyUtc = new Date().toISOString();
+            observation.monitor.attachReadyBeforeTargetClose =
+              child.exitCode === null && child.signalCode === null;
+          }
+        });
+        monitor.stderr?.on('data', chunk => {
+          stderrBytes = boundedMonitorBytes(stderrBytes, chunk);
+        });
+        monitor.on('error', error => { observation.monitor.error = String(error); });
+        monitor.on('close', (exitCode, signal) => {
+          observation.monitor.exitCode = exitCode;
+          observation.monitor.signal = signal;
+          observation.monitor.closeUtc = new Date().toISOString();
+          notifyMonitorClosed();
+        });
+      } catch (error) {
+        observation.monitor.error = String(error);
+        notifyMonitorClosed();
+      }
+    }
+
+    return async ({ exitCode, signal }) => {
+      observation.target.exitCode = exitCode;
+      observation.target.signal = signal;
+      observation.target.closeUtc = new Date().toISOString();
+      if (monitor && observation.monitor.closeUtc === null) {
+        const completed = await waitForMonitor(monitorClosed, graceMilliseconds);
+        if (!completed) {
+          observation.monitor.timedOut = true;
+          observation.monitor.killRequestedUtc = new Date().toISOString();
+          try { observation.monitor.killReturned = monitor.kill() === true; }
+          catch (error) { observation.monitor.error ??= String(error); }
+          const closedAfterKill = await waitForMonitor(monitorClosed,
+            Math.min(graceMilliseconds, 2000));
+          observation.monitor.closeUnobservedAfterKill = !closedAfterKill;
+        }
+      }
+      observation.monitor.stdoutTail = decodeMonitorOutput(stdoutBytes);
+      observation.monitor.stderrTail = decodeMonitorOutput(stderrBytes);
+      observation.dumps = await collectMonitorDumps(dumpPath,
+        observation.monitor.closeUtc !== null && !observation.monitor.timedOut
+          && observation.monitor.exitCode === 0);
+      observation.absence = observation.dumps.length > 0 ? null
+        : targetPid === null ? 'target-pid-unavailable'
+          : !observation.monitor.attachReadyBeforeTargetClose ? 'attach-not-confirmed'
+            : observation.monitor.timedOut || observation.monitor.exitCode !== 0
+              ? 'monitor-incomplete' : 'no-exception-dump';
+      await fs.writeFile(path.join(monitorPath, 'monitor.json'),
+        JSON.stringify(observation, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });
+    };
+  };
+}
+
+function boundedMonitorBytes(previous, chunk) {
+  return Buffer.concat([previous, chunk]).subarray(-maximumMonitorOutputBytes);
+}
+
+function decodeMonitorOutput(bytes) {
+  if (bytes.length === 0) return '';
+  const sample = bytes.subarray(0, Math.min(bytes.length, 128));
+  const zeroCount = sample.reduce((count, byte) => count + (byte === 0 ? 1 : 0), 0);
+  return bytes.toString(zeroCount > sample.length / 8 ? 'utf16le' : 'utf8');
+}
+
+async function waitForMonitor(completion, milliseconds) {
+  let timer;
+  try {
+    return await Promise.race([
+      completion.then(() => true),
+      new Promise(resolve => { timer = setTimeout(() => resolve(false), milliseconds); })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function collectMonitorDumps(dumpPath, monitorClosed) {
+  const dumps = [];
+  for (const name of await fs.readdir(dumpPath)) {
+    if (!name.toLowerCase().endsWith('.dmp')) continue;
+    const dumpFile = path.join(dumpPath, name);
+    const entry = await fs.lstat(dumpFile);
+    if (!entry.isFile() || entry.isSymbolicLink()) continue;
+    dumps.push({ file: path.join('dumps', name), bytes: entry.size,
+      modifiedUtc: entry.mtime.toISOString(), sha256: await hashFile(dumpFile),
+      complete: monitorClosed });
+  }
+  return dumps;
+}
+
+async function savePackagingFailureEvidence({
+  diagnosticsRoot, root, packageFile, packageArgs, vsixPath, packageVersion, error, invocationId
+}) {
+  await prepareDiagnosticsRoot(diagnosticsRoot);
+  const evidencePath = await fs.mkdtemp(path.join(diagnosticsRoot, 'failure-'));
+  const vscePath = packageArgs[0];
+  const packageLockPath = path.join(root, 'package-lock.json');
+  const packageJsonPath = path.join(root, 'package.json');
+  const vscePackagePath = path.join(path.dirname(vscePath), 'package.json');
+  const vscePackage = JSON.parse(await fs.readFile(vscePackagePath, 'utf8'));
+  const failedOutput = await retainFailedOutput(vsixPath, evidencePath);
+  const stdout = boundedFailureText(error?.stdout);
+  const stderr = boundedFailureText(error?.stderr);
+  const report = {
+    schemaVersion: '1.0',
+    kind: 'vsix-packaging-child-failure',
+    timestampUtc: new Date().toISOString(),
+    invocationId: invocationId ?? randomUUID(),
+    diagnosticRunId: process.env.VBA_TOOLS_DIAGNOSTIC_RUN_ID ?? null,
+    environment: {
+      platform: process.platform,
+      architecture: process.arch,
+      osRelease: os.release()
+    },
+    inputs: {
+      packageJson: { path: packageJsonPath, sha256: await hashFile(packageJsonPath), version: packageVersion },
+      packageLock: { path: packageLockPath, sha256: await hashFile(packageLockPath) }
+    },
+    tools: {
+      node: { path: packageFile, version: process.version, sha256: await hashFile(packageFile) },
+      npm: { reportedVersion: /^npm\/([^\s]+)/.exec(process.env.npm_config_user_agent ?? '')?.[1] ?? null },
+      vsce: { path: vscePath, version: vscePackage.version, sha256: await hashFile(vscePath) }
+    },
+    invocation: {
+      file: packageFile,
+      args: [...packageArgs],
+      cwd: root,
+      outputPath: vsixPath,
+      pid: error?.pid ?? null,
+      exitCode: error?.exitCode ?? null,
+      signal: error?.signal ?? null
+    },
+    output: {
+      lengthUnit: 'UTF-16 code units',
+      stdout: stdout.text,
+      stderr: stderr.text,
+      stdoutCharacters: error?.stdoutCharacters ?? stdout.characters,
+      stderrCharacters: error?.stderrCharacters ?? stderr.characters,
+      stdoutTruncated: error?.stdoutTruncated === true || stdout.truncated,
+      stderrTruncated: error?.stderrTruncated === true || stderr.truncated
+    },
+    failedOutput,
+    limitations: 'This is a failed, unverified package attempt. Retained output is never eligible for publication. '
+      + 'File hashes are observed after child exit, not proven at launch. '
+      + 'Only allowlisted process metadata is captured; environment variable values, source contents, and dumps are excluded.'
+  };
+  await fs.writeFile(path.join(evidencePath, 'failure.json'), JSON.stringify(report, null, 2) + '\n',
+    { encoding: 'utf8', flag: 'wx' });
+  return evidencePath;
+}
+
+async function prepareDiagnosticsRoot(diagnosticsRoot) {
+  if (!path.isAbsolute(diagnosticsRoot) || /^[\\/]{2}/.test(diagnosticsRoot)) {
+    throw new Error('The diagnostic run root must be an absolute local path, not UNC or device-backed.');
+  }
+  await assertExistingUnlinkedLocalDirectory(path.dirname(diagnosticsRoot));
+  try { await fs.mkdir(diagnosticsRoot); }
+  catch (error) { if (error.code !== 'EEXIST') throw error; }
+  await assertExistingUnlinkedLocalDirectory(diagnosticsRoot);
+}
+
+async function assertExistingUnlinkedLocalDirectory(directory) {
+  const absolute = path.resolve(directory);
+  if (!path.isAbsolute(directory) || /^[\\/]{2}/.test(absolute)) {
+    throw new Error('Diagnostic evidence must remain under an absolute local directory.');
+  }
+  const root = path.parse(absolute).root;
+  const segments = absolute.slice(root.length).split(path.sep).filter(Boolean);
+  let current = root;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    const entry = await fs.lstat(current);
+    if (entry.isSymbolicLink() || !entry.isDirectory()) {
+      throw new Error(`Diagnostic evidence path crosses a link or non-directory: ${current}`);
+    }
+  }
+  const resolved = await fs.realpath(absolute);
+  if (path.normalize(resolved).toLowerCase() !== path.normalize(absolute).toLowerCase()
+    || /^[\\/]{2}/.test(resolved)) {
+    throw new Error('Diagnostic evidence path resolves outside the requested local directory.');
+  }
+}
+
+async function retainFailedOutput(vsixPath, evidencePath) {
+  let entry;
+  try {
+    entry = await fs.lstat(vsixPath);
+  } catch (error) {
+    if (error.code === 'ENOENT') return { status: 'absent' };
+    throw error;
+  }
+  if (!entry.isFile() || entry.isSymbolicLink()) return { status: 'unsafe-entry' };
+  if (entry.size > maximumFailedPackageBytes) {
+    return { status: 'too-large', bytes: entry.size, maximumBytes: maximumFailedPackageBytes };
+  }
+  const copyPath = path.join(evidencePath, 'failed-output.partial');
+  await fs.copyFile(vsixPath, copyPath);
+  return {
+    status: 'retained-partial',
+    file: path.basename(copyPath),
+    bytes: entry.size,
+    sha256: await hashFile(copyPath)
+  };
+}
+
+function boundedFailureText(value) {
+  const input = typeof value === 'string' ? value : '';
+  const text = input.slice(-maximumFailureOutputCharacters);
+  return { text, characters: input.length, truncated: text.length < input.length };
+}
+
+async function hashFile(filePath) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  return hash.digest('hex');
 }
 
 function readZipEntries(vsixPath) {

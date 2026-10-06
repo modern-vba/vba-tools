@@ -180,6 +180,68 @@ test('an old adapter protocol blocks F5 before source capture', async () => {
   assert.equal(captures, 0);
 });
 
+test('F5 reports a recovered adapter capability crash through its Output callback', async () => {
+  const diagnostics: string[] = [];
+  let adapterAttempts = 0;
+  const integration = fixtureIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    vbaDevResolver: { resolve: async () => ({
+      executablePath: path.resolve('vba-dev.exe'), bundledPath: path.resolve('vba-dev.exe'),
+      source: 'bundled', capabilities: compatibleCapabilities()
+    }) },
+    capabilitiesProcess: async file => {
+      if (file.endsWith('vba-debug-adapter.exe')) {
+        adapterAttempts += 1;
+        if (adapterAttempts === 1) {
+          throw Object.assign(new Error('process exited'), { code: 0xC0000005 });
+        }
+      }
+      return { stdout: JSON.stringify(file.endsWith('vba-dev.exe')
+        ? compatibleCapabilities() : compatibleDebugAdapterCapabilities()), stderr: '' };
+    },
+    reportCapabilityDiagnostic: message => diagnostics.push(message),
+    debugConfigurationHost: snapshotDebugHost()
+  });
+
+  await integration.resolveDebugConfiguration({});
+
+  assert.equal(adapterAttempts, 2);
+  assert.match(diagnostics.join('\n'), /role=vba-debug-adapter.*stage=capabilities.*attempt=1\/2.*0xC0000005/);
+  assert.match(diagnostics.join('\n'), /recovered/);
+});
+
+test('F5 does not retry a crashed adapter probe after Workspace Trust is lost', async () => {
+  let trusted = true;
+  let adapterAttempts = 0;
+  let captures = 0;
+  const integration = fixtureIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    vbaDevResolver: { resolve: async () => ({
+      executablePath: path.resolve('vba-dev.exe'), bundledPath: path.resolve('vba-dev.exe'),
+      source: 'bundled', capabilities: compatibleCapabilities()
+    }) },
+    capabilitiesProcess: async file => {
+      if (file.endsWith('vba-debug-adapter.exe')) {
+        adapterAttempts += 1;
+        throw Object.assign(new Error('process exited'), { code: 0xC0000005 });
+      }
+      return { stdout: JSON.stringify(compatibleCapabilities()), stderr: '' };
+    },
+    isWorkspaceTrusted: () => trusted,
+    reportCapabilityDiagnostic: () => { trusted = false; },
+    debugConfigurationHost: { ...snapshotDebugHost(), captureSourceInventory: async () => {
+      captures += 1;
+      return snapshotDebugHost().captureSourceInventory();
+    } }
+  });
+
+  await assert.rejects(() => integration.resolveDebugConfiguration({}), /Workspace Trust|Restricted Mode/i);
+  assert.equal(adapterAttempts, 1);
+  assert.equal(captures, 0);
+});
+
 test('snapshot startup rejects mutually old provider and extension requirements before capture', async () => {
   let captures = 0;
   const oldFeatures = {

@@ -4,7 +4,7 @@ All notable user-facing changes to the VBA Tools extension are recorded here.
 The extension history is versioned independently from the bundled `vba-dev`
 CLI history.
 
-## [0.1.0] - 2026-09-14
+## [0.1.0] - 2026-10-06
 
 ### Added
 
@@ -38,6 +38,16 @@ CLI history.
 - Windows x64 Marketplace packaging with bundled self-contained executables, so
   a separately installed .NET runtime is not required.
 
+### Fixed
+
+- A temporarily unreadable closed source reports `disk-source-unavailable`
+  without stopping diagnostics for other open VBA documents.
+- VBA source breakpoints are available in the editor, and extension activation
+  completes before the Doctor prompt is considered ready.
+- Abnormal companion-process exits are identified in VBA Tools Output by
+  executable and exit status. Only a side-effect-free startup capability probe
+  can be retried once; workbook operations and debug execution are not replayed.
+
 ### Requirements
 
 - Windows 10 or Windows 11 on x64 hardware and VS Code 1.137.0 or later.
@@ -52,3 +62,9 @@ CLI history.
   require Excel.
 - Worksheet and `ThisWorkbook` code-behind and control-instance Event
   intelligence are not supported; exported UserForms remain supported.
+- Intermittent source-analysis and companion-process failures observed on an
+  affected Windows host remain under investigation ([#409], [#415]). The
+  capability-probe retry does not fix their underlying cause.
+
+[#409]: https://github.com/modern-vba/vba-tools/issues/409
+[#415]: https://github.com/modern-vba/vba-tools/issues/415

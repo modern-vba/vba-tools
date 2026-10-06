@@ -148,6 +148,35 @@ test('VbaDev session resolver reads the active Windows code page once for each o
   ]);
 });
 
+test('a recovered active-code-page probe crash is logged without repinning the companion', async () => {
+  const diagnostics: string[] = [];
+  let attempts = 0;
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    requiredContract,
+    runProcess: async () => {
+      attempts += 1;
+      if (attempts === 2) {
+        throw Object.assign(new Error('process exited'), { code: 0x80131506 });
+      }
+      return {
+        stdout: JSON.stringify({ ...JSON.parse(compatibleCapabilities()) as object, activeWindowsCodePage: 932 }),
+        stderr: ''
+      };
+    },
+    reportLog: () => undefined,
+    reportDiagnostic: message => diagnostics.push(message)
+  });
+
+  const pinned = await resolver.resolve();
+  const codePage = await resolver.readActiveWindowsCodePage();
+
+  assert.equal(codePage, 932);
+  assert.equal((await resolver.resolve()), pinned);
+  assert.equal(attempts, 3);
+  assert.match(diagnostics.join('\n'), /role=vba-dev.*stage=capabilities.*0x80131506.*recovered/);
+});
+
 test('VbaDev session resolution validates and pins the bundled executable when no override is configured', async () => {
   const extensionRoot = path.resolve(__dirname, '..', '..');
   const bundledPath = path.join(extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe');
@@ -171,6 +200,273 @@ test('VbaDev session resolution validates and pins the bundled executable when n
   assert.equal(first.executablePath, bundledPath);
   assert.deepEqual(calls, [bundledPath]);
   assert.deepEqual(notices, []);
+});
+
+test('a crashed VbaDev capability probe recovers once and records the abnormal exit', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const bundledPath = path.join(extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe');
+  const logs: string[][] = [];
+  let attempts = 0;
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot,
+    requiredContract,
+    runProcess: async (file, args) => {
+      assert.equal(file, bundledPath);
+      assert.deepEqual(args, ['capabilities', '--format', 'json']);
+      attempts += 1;
+      if (attempts === 1) {
+        throw Object.assign(new Error('process exited'), { code: 0xC0000005 });
+      }
+      return { stdout: compatibleCapabilities(), stderr: '' };
+    },
+    reportLog: log => logs.push([...formatVbaDevResolutionLog(log)])
+  });
+
+  const resolution = await resolver.resolve();
+
+  assert.equal(resolution.executablePath, bundledPath);
+  assert.equal(attempts, 2);
+  assert.match(logs.flat().join('\n'), /role=vba-dev.*stage=capabilities.*attempt=1\/2.*0xC0000005/);
+  assert.match(logs.flat().join('\n'), /recovered/i);
+});
+
+test('an immediately reported recovered probe is not repeated in the final resolution log', async () => {
+  const diagnostics: string[] = [];
+  const logs: string[][] = [];
+  let attempts = 0;
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    requiredContract,
+    runProcess: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw Object.assign(new Error('process exited'), { code: 0xC0000005 });
+      }
+      return { stdout: compatibleCapabilities(), stderr: '' };
+    },
+    reportDiagnostic: message => diagnostics.push(message),
+    reportLog: log => logs.push([...formatVbaDevResolutionLog(log)])
+  });
+
+  await resolver.resolve();
+
+  assert.equal(attempts, 2);
+  assert.equal(diagnostics.length, 2);
+  assert.match(diagnostics[0], /retry-pending/);
+  assert.match(diagnostics[1], /recovered/);
+  assert.doesNotMatch(logs.flat().join('\n'), /role=vba-dev.*stage=capabilities/);
+});
+
+test('two crashed VbaDev capability probes fail with a distinct user notice', async () => {
+  const notices: string[] = [];
+  const logs: string[][] = [];
+  let attempts = 0;
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    requiredContract,
+    runProcess: async () => {
+      attempts += 1;
+      throw Object.assign(new Error('process exited'), { code: -1073741819 });
+    },
+    reportNotice: notice => notices.push(notice.message),
+    reportLog: log => logs.push([...formatVbaDevResolutionLog(log)])
+  });
+
+  await assert.rejects(() => resolver.resolve(), /terminated abnormally.*0xC0000005/);
+
+  assert.equal(attempts, 2);
+  assert.equal(notices.length, 1);
+  assert.match(notices[0], /terminated unexpectedly/i);
+  assert.doesNotMatch(notices[0], /incompatible/i);
+  assert.match(logs.flat().join('\n'), /attempt=2\/2.*0xC0000005.*failed/);
+});
+
+test('a crashed configured VbaDev falls back to the bundled candidate with a crash notice', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const configuredPath = path.join('D:', 'tools', 'vba-dev.exe');
+  const bundledPath = path.join(extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe');
+  const calls: string[] = [];
+  const notices: string[] = [];
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot,
+    configuredPath,
+    requiredContract,
+    runProcess: async file => {
+      calls.push(file);
+      if (file === configuredPath) {
+        throw Object.assign(new Error('process exited'), { code: 0x80131506 });
+      }
+      return { stdout: compatibleCapabilities(), stderr: '' };
+    },
+    reportNotice: notice => notices.push(notice.message)
+  });
+
+  const resolution = await resolver.resolve();
+
+  assert.equal(resolution.executablePath, bundledPath);
+  assert.deepEqual(calls, [configuredPath, configuredPath, bundledPath]);
+  assert.equal(notices.length, 1);
+  assert.match(notices[0], /configured vba-dev terminated unexpectedly/i);
+  assert.doesNotMatch(notices[0], /incompatible/i);
+});
+
+test('cancelling a VbaDev capability probe after its crash prevents retry and fallback', async () => {
+  const cancellation = new AbortController();
+  const notices: string[] = [];
+  const diagnostics: string[] = [];
+  const logs: string[][] = [];
+  let attempts = 0;
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    configuredPath: path.join('D:', 'tools', 'vba-dev.exe'),
+    requiredContract,
+    signal: cancellation.signal,
+    runProcess: async () => {
+      attempts += 1;
+      cancellation.abort();
+      throw Object.assign(new Error('process exited'), { code: 0xC0000005 });
+    },
+    reportNotice: notice => notices.push(notice.message),
+    reportDiagnostic: message => diagnostics.push(message),
+    reportLog: log => logs.push([...formatVbaDevResolutionLog(log)])
+  });
+
+  await assert.rejects(() => resolver.resolve(), /cancelled/i);
+  assert.equal(attempts, 1);
+  assert.deepEqual(notices, []);
+  assert.equal(logs.length, 0);
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0], /attempt=1\/2.*0xC0000005.*not-retried/);
+});
+
+test('cancelling during the VbaDev capability retry delay prevents a second launch', async () => {
+  const cancellation = new AbortController();
+  let attempts = 0;
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    configuredPath: path.join('D:', 'tools', 'vba-dev.exe'),
+    requiredContract,
+    signal: cancellation.signal,
+    runProcess: async () => {
+      attempts += 1;
+      throw Object.assign(new Error('process exited'), { code: 0xC0000005 });
+    },
+    reportDiagnostic: () => cancellation.abort()
+  });
+
+  await assert.rejects(() => resolver.resolve(), /cancelled/i);
+  assert.equal(attempts, 1);
+});
+
+test('a cancelled VbaDev retry preserves its first crash in Output even with deferred resolution logging', async () => {
+  const cancellation = new AbortController();
+  const diagnostics: string[] = [];
+  const logs: string[][] = [];
+  let attempts = 0;
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    configuredPath: path.join('D:', 'tools', 'vba-dev.exe'),
+    requiredContract,
+    signal: cancellation.signal,
+    runProcess: async () => {
+      attempts += 1;
+      setTimeout(() => cancellation.abort(), 5);
+      throw Object.assign(new Error('process exited'), { code: 0xC0000005 });
+    },
+    reportDiagnostic: message => diagnostics.push(message),
+    reportLog: log => logs.push([...formatVbaDevResolutionLog(log)])
+  });
+
+  await assert.rejects(() => resolver.resolve(), /cancelled/i);
+  assert.equal(attempts, 1);
+  assert.equal(logs.length, 0);
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0], /attempt=1\/2.*0xC0000005.*retry-pending/);
+});
+
+test('an ordinary VbaDev capability command failure is not retried', async () => {
+  let attempts = 0;
+  await assert.rejects(() => resolveCompatibleVbaDev({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    configuredPath: path.join('D:', 'tools', 'vba-dev.exe'),
+    requiredContract,
+    runProcess: async () => {
+      attempts += 1;
+      throw Object.assign(new Error('ordinary command failure'), { code: 1 });
+    }
+  }), /ordinary command failure/);
+  assert.equal(attempts, 1);
+});
+
+test('a failed VbaDev probe remains crash-classified when its retry returns invalid JSON', async () => {
+  const notices: string[] = [];
+  const diagnostics: string[] = [];
+  let attempts = 0;
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    requiredContract,
+    runProcess: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw Object.assign(new Error('process exited'), { code: 0x80131506 });
+      }
+      return { stdout: '{invalid json', stderr: '' };
+    },
+    reportNotice: notice => notices.push(notice.message),
+    reportLog: log => diagnostics.push(...formatVbaDevResolutionLog(log))
+  });
+
+  await assert.rejects(() => resolver.resolve(), /0x80131506.*invalid capabilities JSON/i);
+  assert.equal(attempts, 2);
+  assert.match(notices[0], /terminated unexpectedly/i);
+  assert.doesNotMatch(notices[0], /incompatible/i);
+  assert.match(diagnostics.join('\n'), /attempt=2\/2.*failed/);
+  assert.doesNotMatch(diagnostics.join('\n'), /recovered/);
+});
+
+test('losing Workspace Trust during the VbaDev probe retry delay prevents retry and fallback', async () => {
+  let trusted = true;
+  let attempts = 0;
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    configuredPath: path.join('D:', 'tools', 'vba-dev.exe'),
+    requiredContract,
+    isWorkspaceTrusted: () => trusted,
+    runProcess: async () => {
+      attempts += 1;
+      throw Object.assign(new Error('process exited'), { code: 0xC0000005 });
+    },
+    reportDiagnostic: () => { trusted = false; }
+  });
+
+  await assert.rejects(() => resolver.resolve(), /Workspace Trust|Restricted Mode/i);
+  assert.equal(attempts, 1);
+});
+
+test('a trust-blocked VbaDev retry preserves its first crash in Output with deferred resolution logging', async () => {
+  let trusted = true;
+  let attempts = 0;
+  const diagnostics: string[] = [];
+  const logs: string[][] = [];
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    configuredPath: path.join('D:', 'tools', 'vba-dev.exe'),
+    requiredContract,
+    isWorkspaceTrusted: () => trusted,
+    runProcess: async () => {
+      attempts += 1;
+      setTimeout(() => { trusted = false; }, 5);
+      throw Object.assign(new Error('process exited'), { code: 0x80131506 });
+    },
+    reportDiagnostic: message => diagnostics.push(message),
+    reportLog: log => logs.push([...formatVbaDevResolutionLog(log)])
+  });
+
+  await assert.rejects(() => resolver.resolve(), /Workspace Trust|Restricted Mode/i);
+  assert.equal(attempts, 1);
+  assert.equal(logs.length, 0);
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0], /attempt=1\/2.*0x80131506.*retry-pending/);
 });
 
 test('VbaDev session resolution pins a valid override without probing the bundled executable', async () => {
