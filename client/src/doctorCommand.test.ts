@@ -153,6 +153,38 @@ test('Doctor runs VBE debugging after a failed project diagnostic', async () => 
   assert.doesNotMatch(fixture.output.join(''), /Doctor command infrastructure failure/);
 });
 
+test('Doctor reports a crashed project process and still runs the independent adapter diagnostic once', async () => {
+  const fixture = createAggregateDoctorFixture({
+    projectExitCode: -1073741819,
+    projectStdout: ''
+  });
+
+  await runDoctorCommand(fixture.options);
+
+  assert.deepEqual(fixture.invocations, [
+    `project:doctor --format json --project ${fixture.projectRoot}`,
+    'adapter:doctor --format json --cancellation-transport stdin-v1'
+  ]);
+  assert.match(fixture.output.join(''), /role=vba-dev.*stage=doctor.*attempt=1\/1.*0xC0000005/i);
+  assert.match(fixture.notifications[0]!, /Doctor.*terminated abnormally.*0xC0000005/i);
+});
+
+test('Doctor reports a crashed adapter process without replaying either diagnostic', async () => {
+  const fixture = createAggregateDoctorFixture({
+    adapterExitCode: -1073741819,
+    adapterStdout: ''
+  });
+
+  await runDoctorCommand(fixture.options);
+
+  assert.deepEqual(fixture.invocations, [
+    `project:doctor --format json --project ${fixture.projectRoot}`,
+    'adapter:doctor --format json --cancellation-transport stdin-v1'
+  ]);
+  assert.match(fixture.output.join(''), /role=vba-debug-adapter.*stage=doctor.*attempt=1\/1.*0xC0000005/i);
+  assert.match(fixture.notifications[0]!, /Doctor.*terminated abnormally.*0xC0000005/i);
+});
+
 test('Doctor keeps project and VBE diagnostics independent when manifest divergence requires a disk-basis notice', async () => {
   const fixture = createAggregateDoctorFixture({ projectExitCode: 1 });
 
@@ -268,7 +300,7 @@ test('Doctor classifies malformed adapter output as command infrastructure failu
   assert.equal(fixture.notifications.length, 1);
 });
 
-test('Doctor classifies an adapter signal exit without JSON as infrastructure failure', async () => {
+test('Doctor reports an adapter signal exit as an abnormal infrastructure failure', async () => {
   const fixture = createAggregateDoctorFixture({
     projectStdout: '[PASS] Project manifest\n',
     adapterExitCode: null,
@@ -283,9 +315,10 @@ test('Doctor classifies an adapter signal exit without JSON as infrastructure fa
   assert.equal(result.cancelled, false);
   const output = fixture.output.join('');
   assert.match(output, /Doctor command infrastructure failure/);
-  assert.match(output, /invalid JSON/);
+  assert.match(output, /role=vba-debug-adapter.*stage=doctor.*signal=SIGTERM.*outcome=not-retried/);
   assert.match(output, /adapter terminated unexpectedly/);
   assert.equal(fixture.notifications.length, 1);
+  assert.match(fixture.notifications[0]!, /Doctor.*terminated abnormally.*SIGTERM/i);
 });
 
 test('Doctor classifies an incomplete adapter diagnostic as command infrastructure failure', async () => {

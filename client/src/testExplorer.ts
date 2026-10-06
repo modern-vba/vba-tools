@@ -407,6 +407,9 @@ async function runTestItem(
 
     if (result.cancelled) {
       testRun.cancelled(item);
+    } else if (result.failureMessage !== undefined) {
+      testRun.errored(eventState.errorItem ?? item, result.failureMessage);
+      await options.showErrorMessage(result.failureMessage);
     } else if (result.exitCode === 0) {
       testRun.passed(item);
     } else if (eventState.hasAssertionFailure) {

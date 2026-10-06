@@ -202,6 +202,40 @@ test('an untrusted environment preflight blocks input and offers setup, retry, a
   assert.equal(outputReveals, 1);
 });
 
+test('a crashed environment preflight reports the crash without replaying doctor or starting creation', async () => {
+  const invocations: string[][] = [];
+  const errors: Array<{ message: string; actions: readonly string[] }> = [];
+  let namePrompts = 0;
+  let outputReveals = 0;
+  const command = new NewExcelProjectCommand(createCommandOptions({
+    runCommand: async (_resolution, args) => {
+      invocations.push([...args]);
+      return commandResult(-1073741819, '', '', {
+        failureMessage: 'Companion process terminated abnormally: role=vba-dev stage=doctor ' +
+          'attempt=1/1 exitCodeSigned=-1073741819 exitCodeHex=0xC0000005 outcome=not-retried'
+      });
+    },
+    showProjectNameInput: async () => {
+      namePrompts += 1;
+      return undefined;
+    },
+    showErrorMessage: async (message, _options, ...actions) => {
+      errors.push({ message, actions });
+      return 'Show Output';
+    },
+    showOutput: () => { outputReveals += 1; }
+  }));
+
+  await command.run();
+
+  assert.deepEqual(invocations, [['doctor', '--scope', 'environment', '--format', 'json']]);
+  assert.equal(namePrompts, 0);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0]!.message, /terminated abnormally.*0xC0000005.*not-retried/i);
+  assert.deepEqual(errors[0]!.actions, ['Show Output']);
+  assert.equal(outputReveals, 1);
+});
+
 test('a trusted complete warning preflight reports that prerequisites need attention', async () => {
   const warnings: Array<{
     readonly message: string;
@@ -460,6 +494,41 @@ test('a creation failure offers only output inspection and invalidates the prefl
     actions: ['Show Output']
   }]);
   assert.equal(outputReveals, 1);
+});
+
+test('a creation crash reports the abnormal exit without replaying the command', async () => {
+  const errors: string[] = [];
+  const information: string[] = [];
+  let creationRuns = 0;
+  const command = new NewExcelProjectCommand(createCommandOptions({
+    runCommand: async (_resolution, args) => {
+      if (args[0] === 'doctor') {
+        return commandResult(0, environmentDoctorJson());
+      }
+      creationRuns += 1;
+      return commandResult(-1073741819, '', '', {
+        failureMessage: 'vba-dev new excel terminated abnormally (exit -1073741819 / 0xC0000005); not retried.'
+      });
+    },
+    showProjectNameInput: async () => 'Sample',
+    showParentFolder: async () => ({ scheme: 'file', fsPath: String.raw`C:\work` }),
+    showErrorMessage: async (message) => {
+      errors.push(message);
+      return undefined;
+    },
+    showInformationMessage: async (message) => {
+      information.push(message);
+      return undefined;
+    }
+  }));
+
+  await command.run();
+
+  assert.equal(creationRuns, 1);
+  assert.equal(information.length, 0);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0]!, /terminated abnormally.*0xC0000005.*not retried/i);
+  assert.match(errors[0]!, /inspect.*before retrying/i);
 });
 
 test('exit 130 after creation starts is silent and preserves the passing preflight', async () => {

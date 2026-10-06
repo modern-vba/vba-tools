@@ -93,7 +93,14 @@ export async function runDoctorCommand(options: DoctorCommandOptions): Promise<D
     false
   );
   let projectBlocking = false;
-  if (!result.cancelled || result.stdout.trim().length > 0) {
+  let processFailureMessage: string | undefined;
+  if (result.failureMessage !== undefined) {
+    projectBlocking = true;
+    processFailureMessage = `Project automation: ${result.failureMessage}`;
+    options.outputChannel.appendLine(
+      `Doctor command infrastructure failure: ${processFailureMessage}`
+    );
+  } else if (!result.cancelled || result.stdout.trim().length > 0) {
     try {
       const doctorCapability = context.capabilities.commands.doctor;
       if (doctorCapability === undefined) {
@@ -166,6 +173,12 @@ export async function runDoctorCommand(options: DoctorCommandOptions): Promise<D
           startProcess: options.startDebugAdapterProcess
         });
         adapterProcessClosed = true;
+        if (adapterResult.failureMessage !== undefined) {
+          processFailureMessage = processFailureMessage === undefined
+            ? adapterResult.failureMessage
+            : `${processFailureMessage}; ${adapterResult.failureMessage}`;
+          throw new Error(adapterResult.failureMessage);
+        }
         const report = parseVbaDebugAdapterDoctorReport(
           adapterResult.stdout,
           adapter.capabilities.commandSchemaVersions.doctor,
@@ -213,7 +226,9 @@ export async function runDoctorCommand(options: DoctorCommandOptions): Promise<D
   }
 
   if (projectBlocking || adapterBlocking) {
-    await options.showErrorMessage('VBA Tools: Doctor found blocking issues. See the VBA Tools output for details.');
+    await options.showErrorMessage(processFailureMessage === undefined
+      ? 'VBA Tools: Doctor found blocking issues. See the VBA Tools output for details.'
+      : `VBA Tools: Doctor process failed. ${processFailureMessage}`);
   }
 
   return {

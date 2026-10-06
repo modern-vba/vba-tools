@@ -68,6 +68,13 @@ export class ReferenceDiscoveryCancelledError extends Error {
   }
 }
 
+class ReferenceDiscoveryProcessFailure extends Error {
+  public constructor(message: string) {
+    super(message);
+    this.name = 'ReferenceDiscoveryProcessFailure';
+  }
+}
+
 export async function runReferenceQuickPickWorkflow(
   options: ReferenceQuickPickWorkflowOptions,
   operation: 'add' | 'remove'
@@ -123,7 +130,9 @@ export async function runReferenceQuickPickWorkflow(
     await offerShowOutput(
       options,
       'error',
-      `References for ${documentName} could not be loaded. See VBA Tools Output for details.`
+      selection.error instanceof ReferenceDiscoveryProcessFailure
+        ? `References for ${documentName} could not be loaded. ${selection.error.message}`
+        : `References for ${documentName} could not be loaded. See VBA Tools Output for details.`
     );
     return;
   }
@@ -181,8 +190,10 @@ export async function discoverReferenceQuickPickItems(
     throw new ReferenceDiscoveryCancelledError();
   }
   if (result.exitCode !== 0) {
-    throw new Error(result.failureMessage
-      ?? `Reference ${mode} inventory exited with code ${result.exitCode}.`);
+    if (result.failureMessage !== undefined) {
+      throw new ReferenceDiscoveryProcessFailure(result.failureMessage);
+    }
+    throw new Error(`Reference ${mode} inventory exited with code ${result.exitCode}.`);
   }
 
   if (operation === 'add') {
@@ -239,6 +250,9 @@ export async function runReferenceMutationCommand(
     await offerShowOutput(
       options,
       'warning',
+      (coordinated.processResult?.failureMessage === undefined
+        ? ''
+        : `${coordinated.processResult.failureMessage} `) +
       `The ${operation} result is untrusted; ${context.document.name}'s manifest may already have committed. Do not retry automatically.`
     );
     return;

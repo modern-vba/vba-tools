@@ -140,8 +140,7 @@ import { NativeLineBreakRecorder } from './nativeLineBreak';
 import {
   VscodeDebugIntegration,
   createVbaDebugConfigurationProvider,
-  handleVbaDebugLifecycleRequest,
-  stopVbaDebugSessionAfterLifecycleFailure
+  createVbaDebugAdapterTracker
 } from './vscodeDebugIntegration';
 import type { VbaDebugConfiguration } from './vscodeDebugConfiguration';
 import { createLazyOutputChannel } from './lazyOutputChannel';
@@ -401,6 +400,8 @@ export async function activate(
     reportDebugAdapterCleanupWarning: (message) => {
       outputChannel?.appendLine(`[vba-debug-adapter] ${message}`);
     },
+    reportDebugAdapterCrash: message => outputChannel?.appendLine(message),
+    notifyDebugAdapterCrash: message => window.showErrorMessage(message),
     reportSnapshotBuild: report => {
       toolDiagnosticReporter?.refreshSnapshot(
         vbaDevDiagnosticScope('debug-build', report.projectRoot, report.documentName),
@@ -494,30 +495,18 @@ export async function activate(
       }
     }),
     debug.registerDebugAdapterTrackerFactory('vba', {
-      createDebugAdapterTracker: (session) => ({
-        onWillReceiveMessage: (message) => {
-          void handleVbaDebugLifecycleRequest(
-            vscodeDebugIntegration,
-            session.configuration as VbaDebugConfiguration,
-            message,
-            (command, argumentsValue) => session.customRequest(command, argumentsValue)
-          )?.catch((error: unknown) => stopVbaDebugSessionAfterLifecycleFailure(
-            error,
-            (message) => { void window.showErrorMessage(message); },
-            () => debug.stopDebugging(session),
-            () => session.customRequest('disconnect', { terminateDebuggee: true })
-          ));
+      createDebugAdapterTracker: (session) => createVbaDebugAdapterTracker(
+        vscodeDebugIntegration,
+        {
+          id: session.id,
+          configuration: session.configuration as VbaDebugConfiguration,
+          customRequest: (command, argumentsValue) => session.customRequest(command, argumentsValue)
         },
-        onDidSendMessage: (message) => {
-          vscodeDebugIntegration.observeDebugAdapterMessage(
-            session.configuration as VbaDebugConfiguration,
-            message
-          );
-        },
-        onExit: () => {
-          void vscodeDebugIntegration.handleAdapterExit(session.id);
+        {
+          reportLifecycleFailure: (message) => { void window.showErrorMessage(message); },
+          stopDebugging: () => debug.stopDebugging(session)
         }
-      })
+      )
     }),
     debug.onDidTerminateDebugSession((session) => {
       if (session.type === 'vba') {
