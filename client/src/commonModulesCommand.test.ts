@@ -465,6 +465,41 @@ test('CommonModules commands display a stateful process crash without replay', a
   }
 });
 
+test('an untrusted CommonModules mutation still reports its crash without replay', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const output: string[] = [];
+  const warningMessages: string[] = [];
+  const informationMessages: string[] = [];
+  let launches = 0;
+  const result = await runCommonModulesAddCommand(createOptions({
+    projectRoot,
+    calls: [],
+    output,
+    informationMessages,
+    warningMessages,
+    manifestUntrusted: true,
+    startStdout: () => '',
+    startProcess: () => {
+      launches += 1;
+      return {
+        onStdout: listener => listener(''),
+        onStderr: listener => listener(''),
+        onExit: listener => listener(0xC0000005, null),
+        kill: () => undefined
+      };
+    }
+  }), ['ModuleA']);
+
+  assert.equal(launches, 1);
+  assert.equal(result?.commonModulesMutation, undefined);
+  assert.deepEqual(informationMessages, []);
+  assert.equal(warningMessages.length, 1);
+  assert.match(warningMessages[0]!, /terminated abnormally.*0xC0000005.*not retried/i);
+  assert.doesNotMatch(warningMessages[0]!, /completed with an untrusted result/i);
+  assert.match(warningMessages[0]!, /manifest may already have committed.*inspect.*before retrying/i);
+  assert.match(output.join(''), /role=vba-dev.*stage=common-module .*attempt=1\/1.*0xC0000005/i);
+});
+
 test('CommonModules command refreshes project diagnostics from failed command output', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const diagnosticRefreshes: Array<{ scopeKey: string; output: string }> = [];

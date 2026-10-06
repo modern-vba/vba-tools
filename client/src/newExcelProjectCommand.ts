@@ -222,7 +222,10 @@ export class NewExcelProjectCommand {
       this.invalidatePreflight();
       this.releaseSingleFlight(flow);
       const action = await this.options.showErrorMessage(
-        `Excel VBA project creation failed for "${projectName}".`,
+        creationResult.failureMessage === undefined
+          ? `Excel VBA project creation failed for "${projectName}".`
+          : `Excel VBA project creation failed for "${projectName}". ` +
+            `${creationResult.failureMessage} Inspect the target and VBA Tools Output before retrying.`,
         undefined,
         'Show Output'
       );
@@ -347,6 +350,16 @@ export class NewExcelProjectCommand {
         ['doctor', '--scope', 'environment', '--format', 'json']
       );
       if (doctorResult.exitCode === 130) {
+        return false;
+      }
+      if (doctorResult.failureMessage !== undefined) {
+        const action = await this.options.showErrorMessage(
+          `Excel VBA project prerequisite check failed. ${doctorResult.failureMessage} ` +
+            'Project creation was not started. See VBA Tools Output.',
+          undefined,
+          'Show Output'
+        );
+        await this.handleBlockingPreflightAction(action, flow);
         return false;
       }
       const doctorCapability = resolution.capabilities.commands.doctor;

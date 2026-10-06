@@ -4,6 +4,7 @@ import { SnapshotProviderCancellationError, SnapshotProviders, resolveSnapshotPr
 import { windowsPathKey } from './windowsPathIdentity';
 import { DebugSnapshotBuildReport, parseDebugSnapshotBuildReport } from './debugSnapshotBuildReport';
 import { ordinalIgnoreCaseKey } from './ordinalIgnoreCase';
+import { classifyAbnormalProcessTermination, formatAbnormalProcessTermination } from './companionProcessTermination';
 
 import {
   CompanionExecutableResolver,
@@ -178,6 +179,8 @@ export interface VscodeDebugIntegrationOptions {
   debugConfigurationHost?: VbaDebugConfigurationHost | undefined;
   debugAdapterCleanupProcess?: ProcessRunner | undefined;
   reportDebugAdapterCleanupWarning?: ((message: string) => unknown) | undefined;
+  reportDebugAdapterCrash?: ((message: string) => void) | undefined;
+  notifyDebugAdapterCrash?: ((message: string) => PromiseLike<unknown> | unknown) | undefined;
   reportSnapshotBuild?: ((report: DebugSnapshotBuildReport) => void) | undefined;
   reportSnapshotBuildWarning?: ((message: string) => void) | undefined;
   reportCapabilityDiagnostic?: ((message: string) => void) | undefined;
@@ -341,6 +344,42 @@ export function handleVbaDebugSessionTermination(
   }
 
   integration.releaseSession(session.id);
+}
+
+export function createVbaDebugAdapterTracker(
+  integration: VscodeDebugIntegration,
+  session: {
+    readonly id: string;
+    readonly configuration: VbaDebugConfiguration;
+    customRequest: (command: string, argumentsValue: Record<string, unknown>) => PromiseLike<unknown> | unknown;
+  },
+  callbacks: {
+    reportLifecycleFailure: (message: string) => void;
+    stopDebugging: () => PromiseLike<unknown> | unknown;
+  }
+) {
+  return {
+    onWillReceiveMessage: (message: unknown): void => {
+      integration.observeDebugAdapterRequest(session.id, message);
+      void handleVbaDebugLifecycleRequest(
+        integration,
+        session.configuration,
+        message,
+        (command, argumentsValue) => session.customRequest(command, argumentsValue)
+      )?.catch((error: unknown) => stopVbaDebugSessionAfterLifecycleFailure(
+        error,
+        callbacks.reportLifecycleFailure,
+        callbacks.stopDebugging,
+        () => session.customRequest('disconnect', { terminateDebuggee: true })
+      ));
+    },
+    onDidSendMessage: (message: unknown): void => {
+      integration.observeDebugAdapterMessage(session.configuration, message);
+    },
+    onExit: (exitCode?: number, signal?: string): Promise<void> => (
+      integration.handleAdapterExit(session.id, exitCode, signal)
+    )
+  };
 }
 
 export class VscodeDebugIntegration {
@@ -643,11 +682,60 @@ export class VscodeDebugIntegration {
     }
   }
 
-  public async handleAdapterExit(sessionId: string): Promise<void> {
+  public observeDebugAdapterRequest(sessionId: string, message: unknown): void {
+    if (typeof message !== 'object' || message === null) {
+      return;
+    }
+    const request = message as { type?: unknown; command?: unknown };
+    if (request.type === 'request'
+        && (request.command === 'disconnect' || request.command === 'terminate')) {
+      const ownedSession = this.ownedAdapterSessions.get(sessionId);
+      if (ownedSession !== undefined) {
+        ownedSession.terminationRequested = true;
+      }
+    }
+  }
+
+  public async handleAdapterExit(
+    sessionId: string,
+    exitCode?: number,
+    signal?: string
+  ): Promise<void> {
     const ownedSession = this.ownedAdapterSessions.get(sessionId);
     this.releaseSession(sessionId);
     if (ownedSession === undefined) {
       return;
+    }
+
+    if (!ownedSession.exitObserved) {
+      ownedSession.exitObserved = true;
+      const abnormalTermination = ownedSession.terminationRequested || this.shutdownRequested
+        ? undefined
+        : classifyAbnormalProcessTermination(exitCode, signal);
+      if (abnormalTermination !== undefined) {
+        try {
+          this.options.reportDebugAdapterCrash?.(formatAbnormalProcessTermination(
+            'vba-debug-adapter', 'debug-session', ownedSession.executablePath,
+            1, 1, abnormalTermination, 'not-retried'
+          ));
+        } catch {
+          // Output failure must not prevent owned-session cleanup.
+        }
+        const status = abnormalTermination.kind === 'exit'
+          ? `exit code ${abnormalTermination.hexExitCode}`
+          : `signal ${abnormalTermination.signal}`;
+        try {
+          const notification = this.options.notifyDebugAdapterCrash?.(
+            `VBA debug adapter terminated abnormally (${status}); ` +
+            'the debug session was not retried. See VBA Tools Output.'
+          );
+          if (notification !== undefined) {
+            void Promise.resolve(notification).catch(() => undefined);
+          }
+        } catch {
+          // Notification failure must not prevent owned-session cleanup.
+        }
+      }
     }
 
     if (ownedSession.cleanup !== undefined) {
@@ -895,6 +983,8 @@ interface OwnedVbaDebugAdapterSession {
   readonly executablePath: string;
   readonly adapterSessionId: string;
   readonly stop: () => PromiseLike<unknown> | unknown;
+  terminationRequested?: boolean | undefined;
+  exitObserved?: boolean | undefined;
   cleanup?: Promise<void> | undefined;
 }
 
