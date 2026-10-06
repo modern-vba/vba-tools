@@ -67,10 +67,19 @@ internal static class DebugRequestAdmission
                 "procedure",
                 "noDebug",
                 "__sessionId",
+                "__configurationTarget",
                 "__vbaRestartPreparation"
             ]);
         // VS Code adds an opaque client ID. Only the CLI --session lease establishes ownership.
         _ = OptionalExactString(arguments, "__sessionId");
+        // Saved VS Code configurations include a numeric target hint; it does not select the workbook.
+        if (arguments.TryGetProperty("__configurationTarget", out var configurationTarget) &&
+            (configurationTarget.ValueKind != JsonValueKind.Number ||
+             !configurationTarget.TryGetInt32(out _)))
+        {
+            throw new DebugRequestRejectedException(
+                "The VBA launch __configurationTarget property must be an integer.");
+        }
         if (arguments.TryGetProperty("noDebug", out var noDebug))
         {
             if (noDebug.ValueKind is not JsonValueKind.True and not JsonValueKind.False)

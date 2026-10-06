@@ -512,10 +512,20 @@ Excel installed and without a separately installed .NET runtime.
     and publish outputs are unchanged. Repeat with a saved `launch.json` target
     after another dirty edit and confirm a new F5 captures the fresh editor
     content without saving it.
-20. Run the bundled language-server executable directly:
+20. Run the bundled language-server executable directly from the installed
+    extension directory, not from the smoke workspace. Confirm the printed
+    directory belongs to the VSIX just installed, especially if more than one
+    version remains:
 
     ```powershell
-    .\bin\vba-language-server\win-x64\vba-language-server.exe --version
+    $extensionRoot = Get-ChildItem -LiteralPath (Join-Path $env:USERPROFILE '.vscode\extensions') -Directory -Filter 'modern-vba.vba-tools-*' |
+      Sort-Object LastWriteTimeUtc -Descending |
+      Select-Object -First 1
+    if ($null -eq $extensionRoot) { throw 'Installed VBA Tools extension not found.' }
+    $languageServer = Join-Path $extensionRoot.FullName 'bin\vba-language-server\win-x64\vba-language-server.exe'
+    if (-not (Test-Path -LiteralPath $languageServer -PathType Leaf)) { throw "Bundled language server not found: $languageServer" }
+    $extensionRoot.FullName
+    & $languageServer --version
     ```
 
 Treat failures in the required native VBE smoke as release blockers. If an
