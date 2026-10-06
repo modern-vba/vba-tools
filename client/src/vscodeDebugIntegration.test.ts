@@ -12,6 +12,7 @@ import {
 } from './devtool';
 import {
   VscodeDebugIntegration,
+  createVbaDebugAdapterTracker,
   createVbaDebugConfigurationProvider,
   handleVbaDebugSessionTermination,
   stopVbaDebugSessionAfterLifecycleFailure,
@@ -1372,6 +1373,125 @@ test('unexpected VBA debug adapter exit invokes cleanup with only its generated 
     file: adapterPath,
     args: ['cleanup', '--session', adapterSessionId]
   }]);
+});
+
+test('a crashed VBA debug adapter reports its pinned executable and terminal status once without relaunch', async () => {
+  const vbaDevPath = path.join('D:', 'tools', 'vba-dev.exe');
+  const adapterPath = path.join('D:', 'tools', 'vba-debug-adapter.exe');
+  const diagnostics: string[] = [];
+  const notifications: string[] = [];
+  const cleanupCalls: Array<{ file: string; args: readonly string[] }> = [];
+  let adapterResolutions = 0;
+  let stopCalls = 0;
+  const integrationOptions = {
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    vbaDevResolver: { resolve: async () => ({
+      executablePath: vbaDevPath, bundledPath: vbaDevPath,
+      source: 'configured' as const, capabilities: compatibleCapabilities()
+    }) },
+    vbaDebugAdapterResolver: { resolve: async () => {
+      adapterResolutions += 1;
+      return { executablePath: adapterPath, capabilities: compatibleDebugAdapterCapabilities() };
+    } },
+    createDebugSessionId: () => '0123456789abcdef0123456789abcdef',
+    debugAdapterCleanupProcess: async (file: string, args: readonly string[]) => {
+      cleanupCalls.push({ file, args });
+      return { stdout: '', stderr: '' };
+    },
+    reportDebugAdapterCrash: (message: string) => diagnostics.push(message),
+    notifyDebugAdapterCrash: (message: string) => notifications.push(message)
+  };
+  const integration = fixtureIntegration(integrationOptions);
+  await integration.createDebugAdapterExecutable({
+    id: 'crashed-session',
+    stop: () => { stopCalls += 1; }
+  });
+  const tracker = createVbaDebugAdapterTracker(integration, {
+    id: 'crashed-session', configuration: {}, customRequest: () => undefined
+  }, {
+    reportLifecycleFailure: () => undefined, stopDebugging: () => undefined
+  });
+
+  await tracker.onExit(0xC0000005);
+  await tracker.onExit(0xC0000005);
+
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0] ?? '', /role=vba-debug-adapter stage=debug-session/);
+  assert.match(diagnostics[0] ?? '', /executable=.*vba-debug-adapter\.exe.*attempt=1\/1/);
+  assert.match(diagnostics[0] ?? '', /exitCodeSigned=-1073741819 exitCodeHex=0xC0000005/);
+  assert.match(diagnostics[0] ?? '', /outcome=not-retried/);
+  assert.equal(notifications.length, 1);
+  assert.match(notifications[0] ?? '', /terminated abnormally.*0xC0000005.*not retried.*Output/i);
+  assert.deepEqual(cleanupCalls, [{
+    file: adapterPath,
+    args: ['cleanup', '--session', '0123456789abcdef0123456789abcdef']
+  }]);
+  assert.equal(adapterResolutions, 1);
+  assert.equal(stopCalls, 0);
+});
+
+test('the VBA debug tracker distinguishes a signal crash from normal and intentional exits', async () => {
+  const adapterPath = path.join('D:', 'tools', 'vba-debug-adapter.exe');
+  const scenarios: Array<{
+    name: string;
+    exitCode?: number;
+    signal?: string;
+    request?: 'disconnect' | 'terminate';
+    crash: boolean;
+  }> = [
+    { name: 'normal exit', exitCode: 0, crash: false },
+    { name: 'ordinary nonzero exit', exitCode: 1, crash: false },
+    { name: 'signal crash', signal: 'SIGABRT', crash: true },
+    { name: 'intentional disconnect', exitCode: 0xC0000005, request: 'disconnect', crash: false },
+    { name: 'intentional terminate', signal: 'SIGTERM', request: 'terminate', crash: false }
+  ];
+  for (const scenario of scenarios) {
+    const diagnostics: string[] = [];
+    const notifications: string[] = [];
+    const cleanupCalls: string[] = [];
+    const integrationOptions = {
+      extensionRoot: path.resolve(__dirname, '..', '..'),
+      getConfiguredDevToolPath: () => undefined,
+      vbaDevResolver: { resolve: async () => ({
+        executablePath: path.join('D:', 'tools', 'vba-dev.exe'),
+        bundledPath: path.join('D:', 'tools', 'vba-dev.exe'),
+        source: 'configured' as const, capabilities: compatibleCapabilities()
+      }) },
+      vbaDebugAdapterResolver: { resolve: async () => ({
+        executablePath: adapterPath, capabilities: compatibleDebugAdapterCapabilities()
+      }) },
+      createDebugSessionId: () => '0123456789abcdef0123456789abcdef',
+      debugAdapterCleanupProcess: async (file: string) => {
+        cleanupCalls.push(file);
+        return { stdout: '', stderr: '' };
+      },
+      reportDebugAdapterCrash: (message: string) => diagnostics.push(message),
+      notifyDebugAdapterCrash: (message: string) => notifications.push(message)
+    };
+    const integration = fixtureIntegration(integrationOptions);
+    await integration.createDebugAdapterExecutable({
+      id: scenario.name, stop: () => undefined
+    });
+    const tracker = createVbaDebugAdapterTracker(integration, {
+      id: scenario.name, configuration: {}, customRequest: () => undefined
+    }, {
+      reportLifecycleFailure: () => undefined, stopDebugging: () => undefined
+    });
+    if (scenario.request !== undefined) {
+      tracker.onWillReceiveMessage({ type: 'request', command: scenario.request });
+    }
+
+    await tracker.onExit(scenario.exitCode, scenario.signal);
+
+    assert.equal(diagnostics.length, scenario.crash ? 1 : 0, scenario.name);
+    assert.equal(notifications.length, scenario.crash ? 1 : 0, scenario.name);
+    assert.deepEqual(cleanupCalls, [adapterPath], scenario.name);
+    if (scenario.crash) {
+      assert.match(diagnostics[0] ?? '', /role=vba-debug-adapter stage=debug-session.*signal=SIGABRT.*outcome=not-retried/);
+      assert.match(notifications[0] ?? '', /signal SIGABRT.*not retried.*Output/i);
+    }
+  }
 });
 
 test('adapter cleanup identity survives an active shutdown attempt until confirmed exit', async () => {

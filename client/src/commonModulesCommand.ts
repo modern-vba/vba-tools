@@ -185,7 +185,11 @@ async function runCommonModulesMutation(
     cancelled: coordinated.processResult.cancelled
   };
   if (coordinated.manifestOutcome === 'untrusted' || coordinated.coherence === 'untrusted') {
-    await warnUntrustedMutation(options, context, operation);
+    await warnUntrustedMutation(
+      options,
+      context,
+      operation,
+      coordinated.processResult.failureMessage);
     return fallbackResult;
   }
   const result = coordinated.processResult;
@@ -286,14 +290,19 @@ async function notifyTrustedMutation(
 async function warnUntrustedMutation(
   options: CommonModulesCommandOptions,
   context: VbaDevProjectCommandContext,
-  operation: CommonModulesMutationOperation
+  operation: CommonModulesMutationOperation,
+  failureMessage?: string
 ): Promise<void> {
   const command = operation === 'add' ? 'Add' : 'Update';
   const subject = operation === 'add'
     ? `${context.document?.name ?? 'the selected document'}'s manifest`
     : 'the project manifest';
   const selected = await options.showWarningMessage(
-    `CommonModules ${command} completed with an untrusted result; ${subject} may already have committed. ` +
+    (failureMessage === undefined ? '' : `${failureMessage} `) +
+    (failureMessage === undefined
+      ? `CommonModules ${command} completed with an untrusted result; `
+      : `CommonModules ${command} result is untrusted after process failure; `) +
+    `${subject} may already have committed. ` +
       'Inspect the manifest and VBA Tools Output before retrying.',
     'Show Output'
   );

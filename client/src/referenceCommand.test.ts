@@ -388,6 +388,49 @@ test('an untrusted available inventory offers Output without items, mutation, or
   ]);
 });
 
+test('a crashed reference inventory reports the abnormal exit without starting a mutation', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const output: string[] = [];
+  const errors: string[] = [];
+  let mutationProgressCount = 0;
+  const base = createOptions({
+    projectRoot,
+    calls,
+    output,
+    documentName: 'Book2',
+    startExitCode: args => args[1] === 'list' ? 0xC0000005 : 0,
+    startStdout: () => ''
+  });
+  const options: ReferenceQuickPickWorkflowOptions = {
+    ...base,
+    selectReferences: async request => {
+      try {
+        await request.discover(notCancelledToken);
+        assert.fail('A crashed inventory must not publish picker items.');
+      } catch (error) {
+        return { kind: 'failed', error };
+      }
+    },
+    runMutationWithProgress: async () => { mutationProgressCount += 1; },
+    showInformationMessage: async () => undefined,
+    showWarningMessage: async () => undefined,
+    showReferenceErrorMessage: async message => {
+      errors.push(message);
+      return undefined;
+    },
+    showOutput: () => undefined
+  };
+
+  await runReferenceQuickPickWorkflow(options, 'add');
+
+  assert.equal(errors.length, 1);
+  assert.match(errors[0]!, /terminated abnormally.*0xC0000005.*not retried/i);
+  assert.match(output.join(''), /role=vba-dev.*stage=reference .*attempt=1\/1.*0xC0000005/i);
+  assert.equal(mutationProgressCount, 0);
+  assert.equal(calls.filter(call => call.args[0] === 'reference').length, 1);
+});
+
 test('a trusted reference mutation with warnings emits one warning notification and no success duplicate', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const information: string[] = [];
@@ -524,6 +567,58 @@ test('untrusted manifest coherence suppresses a trusted mutation success notific
   assert.deepEqual(information, []);
   assert.equal(warnings.length, 1);
   assert.match(warnings[0]!, /manifest may already have committed/i);
+});
+
+test('an untrusted reference mutation still reports its crash without replay', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const output: string[] = [];
+  const information: string[] = [];
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  const base = createOptions({
+    projectRoot,
+    calls,
+    output,
+    documentName: 'Book2',
+    mutationManifestOutcome: 'untrusted',
+    mutationCoherence: 'untrusted',
+    startExitCode: args => args[1] === 'remove' ? 0xC0000005 : 0,
+    startStdout: args => args[1] === 'list'
+      ? JSON.stringify({
+        schemaVersion: '1.0',
+        scope: 'project',
+        project: projectRoot,
+        document: 'Book2',
+        mode: 'selection',
+        complete: true,
+        warnings: [],
+        references: [{ name: 'Broken Library' }]
+      })
+      : ''
+  });
+  const options: ReferenceQuickPickWorkflowOptions = {
+    ...base,
+    selectReferences: async request => {
+      const items = await request.discover(notCancelledToken);
+      return { kind: 'accepted', names: [items[0]!.canonicalName] };
+    },
+    runMutationWithProgress: async (_title, task) => task(notCancelledToken),
+    showInformationMessage: async message => { information.push(message); },
+    showWarningMessage: async message => { warnings.push(message); return undefined; },
+    showReferenceErrorMessage: async message => { errors.push(message); return undefined; },
+    showOutput: () => undefined
+  };
+
+  await runReferenceQuickPickWorkflow(options, 'remove');
+
+  assert.equal(calls.filter(call => call.args[1] === 'remove').length, 1);
+  assert.deepEqual(information, []);
+  assert.deepEqual(errors, []);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /terminated abnormally.*0xC0000005.*not retried/i);
+  assert.match(warnings[0]!, /manifest may already have committed.*do not retry automatically/i);
+  assert.match(output.join(''), /role=vba-dev.*stage=reference .*attempt=1\/1.*0xC0000005/i);
 });
 
 test('an empty configured reference selection reports a non-error without opening mutation progress', async () => {

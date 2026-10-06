@@ -90,6 +90,44 @@ test('Test Explorer reports a crashed test process without replaying it', async 
   assert.ok(controller.runs[0].events.some(event => event.startsWith('errored:')));
 });
 
+test('Test Explorer reports a crash after completed failed test events instead of a normal failed run', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const controller = new FakeTestController();
+  const errors: string[] = [];
+  let launches = 0;
+  const explorer = createExplorer(controller, {
+    manifests: new Map([[path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]]),
+    errorMessages: errors,
+    startProcess: () => {
+      launches += 1;
+      return {
+        onStdout: listener => listener(ndjson(
+          {
+            ...testFinishedWithLocation(projectRoot, 'Book1', 'Test_Module', 'Test_Fails'),
+            outcome: 'failed',
+            message: 'Expected 1 but was 2'
+          },
+          { ...runFinished('Book1'), outcome: 'failed', passed: 0, failed: 1 })),
+        onStderr: () => undefined,
+        onExit: listener => listener(0xC0000005, null),
+        kill: () => undefined
+      };
+    }
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+
+  assert.equal(launches, 1);
+  assert.ok(controller.runs[0].events.some(event =>
+    event.startsWith(`errored:${documentItem.id}:`) && /0xC0000005/.test(event)));
+  assert.equal(controller.runs[0].events.some(event =>
+    event === `failed:${documentItem.id}:One or more VBA tests failed.`), false);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /terminated abnormally.*0xC0000005.*not retried/i);
+});
+
 test('Test Explorer reports snapshot build errors at original sources and clears only a corrected build run', async () => {
   const projectRoot = path.resolve('C:/work/BookProject');
   const snapshot = path.resolve('C:/temp/explorer-snapshot');
@@ -970,7 +1008,8 @@ test('each unavailable location warns without replacing passed or failed procedu
         procedure: 'Test_Fails',
         outcome: 'failed',
         message: 'Expected 1 but was 2'
-      }
+      },
+      { ...runFinished('Book1'), outcome: 'failed', total: 2, passed: 1, failed: 1 }
     ),
     exitCode: 1,
     errorMessages
@@ -990,6 +1029,8 @@ test('each unavailable location warns without replacing passed or failed procedu
   assert.ok(controller.runs[0].events.includes(`passed:${passedItem.id}`));
   assert.ok(controller.runs[0].events.includes(
     `failed:${failedItem.id}:Expected 1 but was 2`));
+  assert.ok(controller.runs[0].events.includes(
+    `failed:${documentItem.id}:One or more VBA tests failed.`));
   assert.deepEqual(controller.runs[0].outputs, [
     'Source location unavailable: Test_Module.Test_Passes\n',
     'Source location unavailable: Test_Module.Test_Fails\n'
