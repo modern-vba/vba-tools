@@ -161,6 +161,25 @@ test('annotated release tag binds reviewed versions channel and Windows evidence
   });
 });
 
+test('first published 0.1.1 tag rejects a skipped clean Windows smoke', () => {
+  const tagObject = validTagObject
+    .replaceAll('0.1.0', '0.1.1')
+    .replace('Clean-Windows-Smoke: pass',
+      'Clean-Windows-Smoke: not-required\nClean-Windows-Smoke-Reason: No package changes.');
+  assert.throws(() => validateAnnotatedReleaseTag({
+    tagName: 'vba-tools-v0.1.1',
+    tagType: 'tag',
+    tagObject,
+    packageJson: { ...packageJson, version: '0.1.1' },
+    packageLock: {
+      ...packageLock,
+      version: '0.1.1',
+      packages: { '': { version: '0.1.1' } }
+    },
+    vbaDevProps
+  }), /initial.*0\.1\.1.*Clean Windows smoke/i);
+});
+
 test('release tag validation rejects lightweight tags unknown evidence and cross-version metadata', () => {
   const valid = {
     tagName: 'vba-tools-v0.1.0',

@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { windowsPathKey } from './windowsPathIdentity';
 
@@ -83,6 +85,111 @@ test('CommonModules add preserves exact names and trusts one exhaustive result w
     'process:common-module add',
     'mutation:complete:Common Module Add'
   ]);
+});
+
+test('CommonModules Add trusts a same-directory project alias but not a different project', async () => {
+  const fixtureRoot = await mkdtemp(path.join(tmpdir(), 'vba-tools-commonmodules-alias-'));
+  const actualProjectRoot = path.join(fixtureRoot, 'ActualProject');
+  const aliasProjectRoot = path.join(fixtureRoot, 'AliasProject');
+  const otherProjectRoot = path.join(fixtureRoot, 'OtherProject');
+  try {
+    await mkdir(actualProjectRoot);
+    await mkdir(otherProjectRoot);
+    await symlink(actualProjectRoot, aliasProjectRoot, 'junction');
+
+    const calls: Array<{ file: string; args: readonly string[] }> = [];
+    const informationMessages: string[] = [];
+    const warningMessages: string[] = [];
+    const documentResult = [{
+      document: 'Book2',
+      modules: [changedModule('Feature', true, [{
+        kind: 'installed',
+        sourceSetRelativePath: 'common-modules/Feature.bas'
+      }])],
+      referenceChanges: []
+    }];
+    const trusted = await runCommonModulesAddCommand(createOptions({
+      projectRoot: aliasProjectRoot,
+      calls,
+      output: [],
+      informationMessages,
+      warningMessages,
+      startStdout: () => mutationOutput(actualProjectRoot, 'Book2', 'add', documentResult)
+    }), ['Feature']);
+
+    assert.ok(trusted?.commonModulesMutation);
+    assert.equal(trusted.commonModulesMutation.project, actualProjectRoot);
+    assert.deepEqual(informationMessages, [
+      'CommonModules for Book2: 1 changed, 0 unchanged, 0 references added.'
+    ]);
+    assert.deepEqual(warningMessages, []);
+    assert.equal(calls.filter((call) => call.args[1] === 'add').length, 1);
+    assert.equal(calls.some((call) => call.args[1] === 'list'), false);
+
+    const updateWarnings: string[] = [];
+    const update = await runCommonModulesUpdateCommand(createOptions({
+      projectRoot: aliasProjectRoot,
+      calls,
+      output: [],
+      warningMessages: updateWarnings,
+      startStdout: () => mutationOutput(actualProjectRoot, null, 'update', [])
+    }));
+    assert.ok(update?.commonModulesMutation);
+    assert.deepEqual(update.commonModulesMutation.documents, []);
+    assert.deepEqual(updateWarnings, []);
+    assert.equal(calls.filter((call) => call.args[1] === 'update').length, 1);
+
+    const unrelatedWarnings: string[] = [];
+    const unrelated = await runCommonModulesAddCommand(createOptions({
+      projectRoot: aliasProjectRoot,
+      calls: [],
+      output: [],
+      warningMessages: unrelatedWarnings,
+      startStdout: () => mutationOutput(otherProjectRoot, 'Book2', 'add', documentResult)
+    }), ['Feature']);
+    assert.equal(unrelated?.commonModulesMutation, undefined);
+    assert.equal(unrelatedWarnings.length, 1);
+    assert.match(unrelatedWarnings[0]!, /completed with an untrusted result/i);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test('CommonModules Add trusts an existing Windows 8.3 project alias', async (context) => {
+  const programFilesRoot = process.env.ProgramFiles;
+  if (process.platform !== 'win32' || !programFilesRoot) {
+    context.skip('A Windows Program Files directory is required.');
+    return;
+  }
+  const shortRoot = path.join(path.parse(programFilesRoot).root, 'PROGRA~1');
+  try {
+    if (await realpath(shortRoot) !== await realpath(programFilesRoot)) {
+      context.skip('The 8.3 Program Files alias is not available.');
+      return;
+    }
+  } catch {
+    context.skip('The 8.3 Program Files alias is not available.');
+    return;
+  }
+
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const trusted = await runCommonModulesAddCommand(createOptions({
+    projectRoot: shortRoot,
+    calls,
+    output: [],
+    startStdout: () => mutationOutput(programFilesRoot, 'Book2', 'add', [{
+      document: 'Book2',
+      modules: [changedModule('Feature', true, [{
+        kind: 'installed',
+        sourceSetRelativePath: 'common-modules/Feature.bas'
+      }])],
+      referenceChanges: []
+    }])
+  }), ['Feature']);
+
+  assert.ok(trusted?.commonModulesMutation);
+  assert.equal(trusted.commonModulesMutation.project, programFilesRoot);
+  assert.equal(calls.filter((call) => call.args[1] === 'add').length, 1);
 });
 
 test('CommonModules update command remains project-scoped without an implicit document list', async () => {
