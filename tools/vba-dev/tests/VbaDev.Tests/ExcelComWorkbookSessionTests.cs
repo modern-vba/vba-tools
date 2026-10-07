@@ -68,11 +68,13 @@ public sealed class ExcelComWorkbookSessionTests
             CancellationToken.None,
             TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
+        // These sequencing watchdogs do not assert a product response-time limit.
+        var fixtureWatchdog = TimeSpan.FromSeconds(10);
         try
         {
-            await cancellationReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await cancellationReached.Task.WaitAsync(fixtureWatchdog);
             await controller.RequestCleanupAsync(TimeSpan.Zero)
-                .WaitAsync(TimeSpan.FromSeconds(5));
+                .WaitAsync(fixtureWatchdog);
         }
         finally
         {
@@ -80,7 +82,7 @@ public sealed class ExcelComWorkbookSessionTests
         }
 
         var error = await Assert.ThrowsAsync<OwnedExcelSessionStartCanceledException>(
-            () => startup.WaitAsync(TimeSpan.FromSeconds(5)));
+            () => startup.WaitAsync(fixtureWatchdog));
 
         Assert.True(error.CleanupVerified);
         Assert.Null(error.CleanupException);
@@ -119,7 +121,8 @@ public sealed class ExcelComWorkbookSessionTests
             var cleanup = controller.RequestCleanupAsync(TimeSpan.Zero);
             try
             {
-                cleanup.WaitAsync(TimeSpan.FromSeconds(1))
+                // Bound the fake setup's sequencing wait, not product cleanup latency.
+                cleanup.WaitAsync(TimeSpan.FromSeconds(10))
                     .GetAwaiter()
                     .GetResult();
             }

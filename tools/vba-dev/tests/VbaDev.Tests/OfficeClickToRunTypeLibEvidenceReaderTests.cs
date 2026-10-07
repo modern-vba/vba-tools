@@ -70,6 +70,36 @@ public sealed class OfficeClickToRunTypeLibEvidenceReaderTests
     }
 
     [Fact]
+    public void X64SnapshotRemainsCompleteWhenFormsHasAnUnreadableWin32Default()
+    {
+        var forms = new RegistryKeyNode()
+            .Add("2.0", new RegistryKeyNode()
+                .Value(null, "Microsoft Forms 2.0 Object Library")
+                .Add("0", new RegistryKeyNode()
+                    // REG_NONE is exposed as null by the Windows registry boundary.
+                    .Add("win32", new RegistryKeyNode().Value(null, null))
+                    .Add("win64", new RegistryKeyNode().Value(null, "C:/Windows/system32/FM20.DLL"))));
+        var typeLib = TypeLibWithRegistration()
+            .Add("{0D452EE1-E08F-101A-852E-02608C4D0BB4}", forms);
+        var root = CreateRoot(
+            new RegistryKeyNode()
+                .Value("InstallationPath", "C:/Program Files/Microsoft Office")
+                .Value("Platform", "x64"),
+            nativeTypeLib: typeLib);
+        var reader = new RegistryOfficeClickToRunTypeLibEvidenceReader(new RegistryRootProvider(root), () => true);
+
+        var snapshot = reader.Read();
+
+        Assert.True(snapshot.Complete, snapshot.Diagnostic);
+        Assert.Null(snapshot.Diagnostic);
+        var registrations = Assert.Single(snapshot.Installations).Registrations;
+        Assert.Equal(2, registrations.Count);
+        Assert.All(registrations, registration => Assert.Equal("win64", registration.Platform));
+        Assert.Contains(registrations, registration => registration.ReferenceName == "Microsoft Windows Common Controls 6.0 (SP6)");
+        Assert.Contains(registrations, registration => registration.ReferenceName == "Microsoft Forms 2.0 Object Library");
+    }
+
+    [Fact]
     public void X64ConfigurationDoesNotFlattenWow6432NodeTypeLibEvidence()
     {
         var misplaced = new RegistryKeyNode()
@@ -96,6 +126,87 @@ public sealed class OfficeClickToRunTypeLibEvidenceReaderTests
 
         Assert.True(snapshot.Complete, snapshot.Diagnostic);
         Assert.Empty(Assert.Single(snapshot.Installations).Registrations);
+    }
+
+    [Theory]
+    [InlineData("x64", true, "win64", false)]
+    [InlineData("x64", true, "win64", true)]
+    [InlineData("x86", true, "win32", false)]
+    [InlineData("x86", true, "win32", true)]
+    [InlineData("x86", false, "win32", false)]
+    [InlineData("x86", false, "win32", true)]
+    public void SnapshotCapturesOnlyArchitectureApplicablePlatformLeaves(
+        string officePlatform, bool is64BitOperatingSystem, string applicablePlatform, bool otherLeafIsReadable)
+    {
+        const string path = "C:/Windows/system32/MSCOMCTL.OCX";
+        var otherPlatform = applicablePlatform == "win64" ? "win32" : "win64";
+        var applicableLeaf = new RegistryKeyNode().Value(null, path);
+        var otherLeaf = otherLeafIsReadable
+            ? new RegistryKeyNode().Value(null, path)
+            : new RegistryKeyNode().FailGetValue(new UnauthorizedAccessException("Inapplicable leaf."));
+        var typeLib = new RegistryKeyNode()
+            .Add("{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}", new RegistryKeyNode()
+                .Add("2.2", new RegistryKeyNode()
+                    .Value(null, "Microsoft Windows Common Controls 6.0 (SP6)")
+                    .Add("0", new RegistryKeyNode()
+                        .Add(applicablePlatform, applicableLeaf)
+                        .Add(otherPlatform, otherLeaf))));
+        var useWow6432Node = officePlatform == "x86" && is64BitOperatingSystem;
+        var root = CreateRoot(
+            new RegistryKeyNode()
+                .Value("InstallationPath", "C:/Program Files/Microsoft Office")
+                .Value("Platform", officePlatform),
+            nativeTypeLib: useWow6432Node ? null : typeLib,
+            wow6432NodeTypeLib: useWow6432Node ? typeLib : null);
+        var reader = new RegistryOfficeClickToRunTypeLibEvidenceReader(
+            new RegistryRootProvider(root), () => true, () => is64BitOperatingSystem);
+
+        var snapshot = reader.Read();
+
+        Assert.True(snapshot.Complete, snapshot.Diagnostic);
+        var registration = Assert.Single(Assert.Single(snapshot.Installations).Registrations);
+        Assert.Equal(applicablePlatform, registration.Platform);
+        Assert.Equal(path, registration.VirtualPath);
+        Assert.Equal(1, applicableLeaf.DisposeCalls);
+        Assert.Equal(0, otherLeaf.DisposeCalls);
+    }
+
+    [Theory]
+    [InlineData("x64", true, "win64", "missing")]
+    [InlineData("x64", true, "win64", "non-string")]
+    [InlineData("x64", true, "win64", "access-denied")]
+    [InlineData("x86", true, "win32", "missing")]
+    [InlineData("x86", true, "win32", "non-string")]
+    [InlineData("x86", true, "win32", "access-denied")]
+    [InlineData("x86", false, "win32", "missing")]
+    [InlineData("x86", false, "win32", "non-string")]
+    [InlineData("x86", false, "win32", "access-denied")]
+    public void MalformedApplicablePlatformStillMakesTheSnapshotIncomplete(
+        string officePlatform, bool is64BitOperatingSystem, string applicablePlatform, string failure)
+    {
+        var leaf = new RegistryKeyNode().Value(null, failure == "non-string" ? 42 : null);
+        if (failure == "access-denied")
+            leaf.FailGetValue(new UnauthorizedAccessException("Applicable leaf."));
+        var typeLib = new RegistryKeyNode()
+            .Add("{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}", new RegistryKeyNode()
+                .Add("2.2", new RegistryKeyNode()
+                    .Value(null, "Microsoft Windows Common Controls 6.0 (SP6)")
+                    .Add("0", new RegistryKeyNode().Add(applicablePlatform, leaf))));
+        var useWow6432Node = officePlatform == "x86" && is64BitOperatingSystem;
+        var root = CreateRoot(
+            new RegistryKeyNode()
+                .Value("InstallationPath", "C:/Program Files/Microsoft Office")
+                .Value("Platform", officePlatform),
+            nativeTypeLib: useWow6432Node ? null : typeLib,
+            wow6432NodeTypeLib: useWow6432Node ? typeLib : null);
+        var reader = new RegistryOfficeClickToRunTypeLibEvidenceReader(
+            new RegistryRootProvider(root), () => true, () => is64BitOperatingSystem);
+
+        var snapshot = reader.Read();
+
+        Assert.False(snapshot.Complete);
+        Assert.False(string.IsNullOrWhiteSpace(snapshot.Diagnostic));
+        Assert.Equal(1, leaf.DisposeCalls);
     }
 
     [Fact]
