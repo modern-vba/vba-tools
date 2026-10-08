@@ -4,6 +4,43 @@ All notable user-facing changes to the VBA Tools extension are recorded here.
 The extension history is versioned independently from the bundled `vba-dev`
 CLI history.
 
+## [0.1.1] - 2026-10-07
+
+This is the first publicly available VBA Tools pre-release. Version 0.1.0 was
+tagged but was not published to the VS Code Marketplace or as a GitHub Release.
+
+### Added
+
+- Windows x64 VBA language assistance for exported `.bas`, `.cls`, and `.frm`
+  files, including diagnostics, formatting, completion, navigation, symbols,
+  and semantic Rename.
+- Workbook build, test, publish, import/export, CommonModules, and reference
+  workflows through bundled `vba-dev`, with Test Explorer integration.
+- Native VBE debugging for supported public parameterless procedures, Doctor
+  diagnostics, and an environment-scoped UserForm Event catalog.
+- Self-contained companion executables and a standalone `vba-dev` 0.1.0 ZIP;
+  no separately installed .NET runtime is required.
+
+### Fixed
+
+- CommonModules Add and Update no longer treat a completed result as untrusted
+  when the selected project and CLI receipt use equivalent Windows short and
+  long paths. Side-effecting operations are not retried.
+
+### Requirements
+
+- Windows 10 or 11 on x64 hardware and VS Code 1.137.0 or later. Workbook
+  automation and native VBE debugging require desktop Excel with trusted VBA
+  project access; editor-only language features do not require Excel.
+
+### Known Limitations
+
+- The extension targets Windows x64. Worksheet and `ThisWorkbook` code-behind
+  and control-instance Event intelligence are not supported.
+- Intermittent source-analysis and companion-process failures observed on an
+  affected Windows host remain under investigation ([#409], [#415]). The
+  capability-probe retry does not fix their underlying cause.
+
 ## [0.1.0] - 2026-10-06
 
 ### Added

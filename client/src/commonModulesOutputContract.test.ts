@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as path from 'node:path';
 
 import {
+  CommonModulesMutationProjectMismatchError,
   CommonModulesMutationOutputContractError,
   parseCommonModulesMutationOutput
 } from './commonModulesOutputContract';
@@ -116,6 +117,20 @@ test('CommonModules output rejects untrusted envelopes and request mismatches', 
       testCase.name
     );
   }
+});
+
+test('CommonModules project mismatch exposes only the reported path for identity verification', () => {
+  const candidate = createAddOutput();
+  const reportedProjectRoot = `${projectRoot}-alias`;
+  candidate.project = reportedProjectRoot;
+
+  assert.throws(
+    () => parseCommonModulesMutationOutput(
+      JSON.stringify(candidate), projectRoot, 'Book2', 'add', ['Feature']
+    ),
+    (error: unknown) => error instanceof CommonModulesMutationProjectMismatchError &&
+      error.reportedProjectRoot === reportedProjectRoot
+  );
 });
 
 test('CommonModules output enforces closed objects at every schema level', () => {

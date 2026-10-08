@@ -1,3 +1,4 @@
+import { realpath, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 
 import { VbaToolsOutputChannel } from './devtoolCommand';
@@ -14,10 +15,12 @@ import {
 } from './vbaDevOutputContract';
 import { ProjectManifestMutationCommandCoordinator } from './projectManifestMutation';
 import {
+  CommonModulesMutationProjectMismatchError,
   CommonModulesMutationOperation,
   TrustedCommonModulesMutationOutput,
   parseCommonModulesMutationOutput
 } from './commonModulesOutputContract';
+import { windowsPathKey } from './windowsPathIdentity';
 
 export interface CommonModulesCommandOptions extends VbaDevCommandRuntimeOptions {
   projectManifestMutationCoordinator: ProjectManifestMutationCommandCoordinator;
@@ -217,7 +220,7 @@ async function runCommonModulesMutation(
     : null;
   let trusted: TrustedCommonModulesMutationOutput;
   try {
-    trusted = parseCommonModulesMutationOutput(
+    trusted = await parseMutationForSelectedProject(
       result.stdout,
       context.project.projectRoot,
       expectedDocument,
@@ -243,6 +246,61 @@ async function runCommonModulesMutation(
     cancelled: false,
     commonModulesMutation: trusted
   };
+}
+
+async function parseMutationForSelectedProject(
+  stdout: string,
+  expectedProjectRoot: string,
+  expectedDocument: string | null,
+  operation: CommonModulesMutationOperation,
+  submittedModuleNames: readonly string[]
+): Promise<TrustedCommonModulesMutationOutput> {
+  try {
+    return parseCommonModulesMutationOutput(
+      stdout, expectedProjectRoot, expectedDocument, operation, submittedModuleNames
+    );
+  } catch (error) {
+    if (!(error instanceof CommonModulesMutationProjectMismatchError)) {
+      throw error;
+    }
+    if (!await sameExistingProjectDirectory(expectedProjectRoot, error.reportedProjectRoot)) {
+      throw error;
+    }
+    // Preserve the invoked path: changing it could redirect manifest-relative locations.
+    // Only a proved same-directory alias may receive full receipt validation again.
+    return parseCommonModulesMutationOutput(
+      stdout, error.reportedProjectRoot, expectedDocument, operation, submittedModuleNames
+    );
+  }
+}
+
+async function sameExistingProjectDirectory(left: string, right: string): Promise<boolean> {
+  if (!path.isAbsolute(left) || !path.isAbsolute(right)) {
+    return false;
+  }
+  // Do not resolve a receipt-supplied path on another drive or network share.
+  // The release failure involved two spellings on the same Windows volume.
+  if (process.platform === 'win32' &&
+      windowsPathKey(path.parse(left).root) !== windowsPathKey(path.parse(right).root)) {
+    return false;
+  }
+  try {
+    const [leftCanonical, rightCanonical] = await Promise.all([
+      realpath(left),
+      realpath(right)
+    ]);
+    // Preserve case here: some Windows directories are case-sensitive.
+    if (leftCanonical !== rightCanonical) {
+      return false;
+    }
+    const [leftStats, rightStats] = await Promise.all([
+      stat(left),
+      stat(right)
+    ]);
+    return leftStats.isDirectory() && rightStats.isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 async function notifyTrustedMutation(

@@ -75,6 +75,14 @@ export class CommonModulesMutationOutputContractError extends Error {
   }
 }
 
+export class CommonModulesMutationProjectMismatchError
+  extends CommonModulesMutationOutputContractError {
+  public constructor(public readonly reportedProjectRoot: string) {
+    super('CommonModules mutation project does not match the requested projectRoot.');
+    this.name = 'CommonModulesMutationProjectMismatchError';
+  }
+}
+
 const moduleNameBoundaryWhitespace =
   /^[\u0009\u0019\u0020\u1680\u180E\u2000-\u200A\u202F\u205F\u3000\r\n]|[\u0009\u0019\u0020\u1680\u180E\u2000-\u200A\u202F\u205F\u3000\r\n]$/u;
 const vbaLayoutWhitespaceCodeUnit =
@@ -125,9 +133,11 @@ export function parseCommonModulesMutationOutput(
   if (root.scope !== 'project') {
     fail('CommonModules mutation output must use project scope.');
   }
-  if (typeof root.project !== 'string' ||
-      !sameOrdinalIgnoreCase(root.project, expectedProjectRoot)) {
+  if (typeof root.project !== 'string') {
     fail('CommonModules mutation project does not match the requested projectRoot.');
+  }
+  if (!sameOrdinalIgnoreCase(root.project, expectedProjectRoot)) {
+    throw new CommonModulesMutationProjectMismatchError(root.project);
   }
   if (root.document !== expectedDocument) {
     fail('CommonModules mutation document does not match the requested scope.');

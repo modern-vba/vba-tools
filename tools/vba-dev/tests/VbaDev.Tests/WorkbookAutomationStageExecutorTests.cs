@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
 using VbaDev.Infrastructure.Workbooks;
@@ -377,27 +378,56 @@ public sealed class WorkbookAutomationStageExecutorTests
             beforeTerminationReturns: () =>
             {
                 terminationEntered.Set();
-                releaseTermination.Wait(TimeSpan.FromSeconds(5));
+                // Keep termination blocked until the gate verdict is fixed.
+                releaseTermination.Wait();
             });
         using var controller = new OwnedExcelTerminationController();
         controller.Attach(owned);
 
         var request = Task.Run(() =>
             controller.RequestForcedTermination(TimeSpan.Zero));
-        Assert.True(terminationEntered.Wait(TimeSpan.FromSeconds(1)));
-        var gateProbe = Task.Factory.StartNew(
-            () => controller.HasAttachedProcess,
-            CancellationToken.None,
-            TaskCreationOptions.LongRunning,
-            TaskScheduler.Default);
-        var gateWasAvailable = await Task.WhenAny(
-            gateProbe,
-            Task.Delay(TimeSpan.FromSeconds(1))) == gateProbe;
-        releaseTermination.Set();
-        await request.WaitAsync(TimeSpan.FromSeconds(1));
-        await controller.RequestCleanupAsync(TimeSpan.Zero).WaitAsync(TimeSpan.FromSeconds(1));
+        // Sequencing watchdogs are separate from the unchanged one-second gate proof.
+        var fixtureWatchdog = TimeSpan.FromSeconds(10);
+        Task<bool>? gateProbe = null;
+        Exception? primaryFailure = null;
+        try
+        {
+            Assert.True(terminationEntered.Wait(fixtureWatchdog));
+            gateProbe = Task.Factory.StartNew(
+                () => controller.HasAttachedProcess,
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
+            var gateWasAvailable = await Task.WhenAny(
+                gateProbe,
+                Task.Delay(TimeSpan.FromSeconds(1))) == gateProbe;
+            Assert.True(gateWasAvailable);
+        }
+        catch (Exception error)
+        {
+            primaryFailure = error;
+        }
+        finally
+        {
+            releaseTermination.Set();
+        }
 
-        Assert.True(gateWasAvailable);
+        try
+        {
+            await Task.WhenAll(
+                request,
+                (Task?)gateProbe ?? Task.CompletedTask,
+                controller.RequestCleanupAsync(TimeSpan.Zero)).WaitAsync(fixtureWatchdog);
+        }
+        catch (Exception drainError)
+        {
+            if (primaryFailure is null) throw;
+            if (!ReferenceEquals(primaryFailure, drainError))
+                throw new AggregateException(primaryFailure,
+                    new InvalidOperationException("The gate-proof fixture also failed to drain.", drainError));
+        }
+
+        if (primaryFailure is not null) ExceptionDispatchInfo.Capture(primaryFailure).Throw();
     }
 
     [Fact]

@@ -86,6 +86,7 @@ public sealed class RegistryOfficeClickToRunTypeLibEvidenceReader : IOfficeClick
 
             var registrations = new List<OfficeClickToRunTypeLibRegistrationEvidence>();
             var malformed = 0;
+            var applicablePlatform = platform.Equals("x64", StringComparison.OrdinalIgnoreCase) ? "win64" : "win32";
             if (useWow6432Node)
             {
                 using var wow6432Node = classes.OpenSubKey("Wow6432Node");
@@ -94,7 +95,7 @@ public sealed class RegistryOfficeClickToRunTypeLibEvidenceReader : IOfficeClick
                 {
                     return Incomplete("The architecture-applicable Office Click-to-Run Wow6432Node\\TypeLib registry could not be opened.");
                 }
-                ReadRegistrations(typeLib, registrations, ref malformed);
+                ReadRegistrations(typeLib, applicablePlatform, registrations, ref malformed);
             }
             else
             {
@@ -103,7 +104,7 @@ public sealed class RegistryOfficeClickToRunTypeLibEvidenceReader : IOfficeClick
                 {
                     return Incomplete("The architecture-applicable Office Click-to-Run TypeLib registry could not be opened.");
                 }
-                ReadRegistrations(typeLib, registrations, ref malformed);
+                ReadRegistrations(typeLib, applicablePlatform, registrations, ref malformed);
             }
 
             var installation = new OfficeClickToRunInstallationEvidence(
@@ -130,6 +131,7 @@ public sealed class RegistryOfficeClickToRunTypeLibEvidenceReader : IOfficeClick
 
     private static void ReadRegistrations(
         IOfficeClickToRunRegistryKey typeLibRoot,
+        string applicablePlatform,
         ICollection<OfficeClickToRunTypeLibRegistrationEvidence> registrations,
         ref int malformed)
     {
@@ -170,8 +172,7 @@ public sealed class RegistryOfficeClickToRunTypeLibEvidenceReader : IOfficeClick
 
                     foreach (var platformName in lcidKey.GetSubKeyNames())
                     {
-                        if (!platformName.Equals("win32", StringComparison.OrdinalIgnoreCase)
-                            && !platformName.Equals("win64", StringComparison.OrdinalIgnoreCase))
+                        if (!platformName.Equals(applicablePlatform, StringComparison.OrdinalIgnoreCase))
                         {
                             continue;
                         }

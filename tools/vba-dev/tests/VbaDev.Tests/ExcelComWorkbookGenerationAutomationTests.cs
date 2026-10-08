@@ -736,7 +736,8 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             (_, _) => failOperation
                 ? Task.FromException<string>(operationError)
                 : Task.FromResult("completed work"),
-            CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+            // This fixture watchdog does not change the 20ms cleanup deadline.
+            CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.True(outcome.Evidence.ProcessReleaseVerified);
         Assert.False(outcome.Evidence.DispatcherRetired);

@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using VbaDev.App.Cli;
 using VbaDev.App.HostEvents;
@@ -325,11 +326,18 @@ public sealed class ExcelComHostEventCatalogAutomationTests
     }
 
     [Fact]
-    public async Task PublicCommandWithholdsCatalogWhenDispatcherRetirementStalls()
+    public Task PublicCommandWithholdsCatalogWhenDispatcherRetirementStalls()
+        => VerifyUnprovedDispatcherRetirementAsync(TimeSpan.Zero);
+
+    [Fact]
+    public Task DelayedStartupDoesNotChangeUnprovedDispatcherRetirementResult()
+        => VerifyUnprovedDispatcherRetirementAsync(TimeSpan.FromMilliseconds(2200));
+
+    private static async Task VerifyUnprovedDispatcherRetirementAsync(TimeSpan startupDelay)
     {
         var events = new List<string>();
         var lifecycle = new RecordingHostEventLifecycle(events);
-        var dispatcher = new DisposalBlockedDispatcher(events);
+        var dispatcher = new DisposalBlockedDispatcher(events, startupDelay);
         var automation = new ExcelComHostEventCatalogAutomation(
             new DisposalBlockedDispatcherFactory(dispatcher),
             lifecycle.ProcessLifecycle,
@@ -341,23 +349,42 @@ public sealed class ExcelComHostEventCatalogAutomationTests
         var command = new HostEventListCommand(automation);
 
         var execution = command.RunAsync("json", CancellationToken.None);
-        CommandResult result;
+        // Watchdogs bound a hung fixture; they are not product deadline assertions.
+        var fixtureWatchdog = TimeSpan.FromSeconds(10);
+        Exception? primaryFailure = null;
         try
         {
-            result = await execution.WaitAsync(TimeSpan.FromSeconds(2));
+            await dispatcher.DisposalStarted.WaitAsync(fixtureWatchdog);
+            var result = await execution.WaitAsync(fixtureWatchdog);
+            Assert.Equal(1, result.ExitCode);
+            Assert.Empty(result.StandardOutput);
+            Assert.Contains(
+                "dispatcher retirement could not be proved",
+                result.StandardError,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception error)
+        {
+            primaryFailure = error;
         }
         finally
         {
             dispatcher.AllowRetirement();
-            await execution.WaitAsync(TimeSpan.FromSeconds(2));
         }
 
-        Assert.Equal(1, result.ExitCode);
-        Assert.Empty(result.StandardOutput);
-        Assert.Contains(
-            "dispatcher retirement could not be proved",
-            result.StandardError,
-            StringComparison.OrdinalIgnoreCase);
+        try
+        {
+            await execution.WaitAsync(fixtureWatchdog);
+        }
+        catch (Exception drainError)
+        {
+            if (primaryFailure is null) throw;
+            if (!ReferenceEquals(primaryFailure, drainError))
+                throw new AggregateException(primaryFailure,
+                    new InvalidOperationException("The dispatcher-retirement fixture also failed to drain.", drainError));
+        }
+
+        if (primaryFailure is not null) ExceptionDispatchInfo.Capture(primaryFailure).Throw();
     }
 
     [Theory]
@@ -458,21 +485,36 @@ public sealed class ExcelComHostEventCatalogAutomationTests
             => dispatcher;
     }
 
-    private sealed class DisposalBlockedDispatcher(List<string> events)
+    private sealed class DisposalBlockedDispatcher(List<string> events, TimeSpan startupDelay)
         : IStaComDispatcher
     {
         private readonly TaskCompletionSource disposal =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource disposalStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int invocations;
+
+        internal Task DisposalStarted => disposalStarted.Task;
 
         public Task<T> InvokeAsync<T>(Func<T> operation, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (Interlocked.Increment(ref invocations) == 1 && startupDelay > TimeSpan.Zero)
+                return InvokeAfterStartupDelayAsync(operation, cancellationToken);
             return Task.FromResult(operation());
+        }
+
+        private async Task<T> InvokeAfterStartupDelayAsync<T>(Func<T> operation, CancellationToken cancellationToken)
+        {
+            await Task.Delay(startupDelay, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            return operation();
         }
 
         public ValueTask DisposeAsync()
         {
             events.Add("dispatcher-dispose");
+            disposalStarted.TrySetResult();
             return new ValueTask(disposal.Task);
         }
 
