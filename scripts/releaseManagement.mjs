@@ -239,8 +239,9 @@ export async function createReleaseTag({
   if (cleanWindowsSmoke !== 'pass' && cleanWindowsSmoke !== 'not-required') {
     throw new Error('Clean Windows smoke must be pass or not-required.');
   }
-  if (extensionVersion === '0.1.0' && cleanWindowsSmoke !== 'pass') {
-    throw new Error('The initial 0.1.0 release requires Clean Windows smoke to pass.');
+  if ((extensionVersion === '0.1.0' || extensionVersion === '0.1.1') &&
+      cleanWindowsSmoke !== 'pass') {
+    throw new Error(`The initial ${extensionVersion} release requires Clean Windows smoke to pass.`);
   }
   if (cleanWindowsSmoke === 'not-required' && !cleanWindowsSmokeReason?.trim()) {
     throw new Error('Clean Windows smoke not-required evidence needs a concise reason.');

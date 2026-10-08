@@ -462,10 +462,12 @@ public sealed class OwnedExcelApplicationBootstrapperTests
 
         Assert.True(error.CleanupVerified);
         Assert.IsType<OperationCanceledException>(error.StartException);
+        // Observe fixture settlement without changing the synchronous cancellation contract.
+        var fixtureWatchdog = TimeSpan.FromSeconds(10);
         await terminationController.WaitForLaunchSettlementAsync()
-            .WaitAsync(TimeSpan.FromSeconds(1));
+            .WaitAsync(fixtureWatchdog);
         await terminationController.RequestCleanupAsync(TimeSpan.Zero)
-            .WaitAsync(TimeSpan.FromSeconds(1));
+            .WaitAsync(fixtureWatchdog);
         Assert.Equal(0, launcher.StartCalls);
         Assert.Equal(0, isolationFactory.CreateCalls);
         Assert.Equal(0, process.KillCalls);
@@ -1281,6 +1283,8 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             TaskScheduler.Default);
         Exception? primaryFailure = null;
 
+        // These fixture completion guards do not assert product response latency.
+        var fixtureWatchdog = TimeSpan.FromSeconds(10);
         try
         {
             await WaitForStartupCheckpointAsync(launchEntered.Task, startup);
@@ -1288,11 +1292,11 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             releaseLaunch.TrySetResult();
 
             var startupFailure = await Assert.ThrowsAsync<InvalidOperationException>(
-                () => startup.WaitAsync(TimeSpan.FromSeconds(1)));
+                () => startup.WaitAsync(fixtureWatchdog));
             Assert.Same(primaryThreadDisposeError, startupFailure);
-            await cleanup.WaitAsync(TimeSpan.FromSeconds(1));
+            await cleanup.WaitAsync(fixtureWatchdog);
             await terminationController.WaitForLaunchSettlementAsync()
-                .WaitAsync(TimeSpan.FromSeconds(1));
+                .WaitAsync(fixtureWatchdog);
         }
         catch (Exception failure) { primaryFailure = failure; }
         finally

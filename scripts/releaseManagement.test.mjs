@@ -390,6 +390,31 @@ test('release tag records reviewed commit and Windows evidence in a local annota
 });
 
 test('initial release tag fails closed on incomplete evidence or an unreviewed commit', async (t) => {
+  await t.test('first published 0.1.1 requires clean Windows smoke', async (subtest) => {
+    const { root } = await createPreparedReleaseCommit(subtest);
+    const manifest = await readJson(root, 'package.json');
+    manifest.version = '0.1.1';
+    await write(root, 'package.json', `${JSON.stringify(manifest, null, 2)}\n`);
+    const lock = await readJson(root, 'package-lock.json');
+    lock.version = '0.1.1';
+    lock.packages[''].version = '0.1.1';
+    await write(root, 'package-lock.json', `${JSON.stringify(lock, null, 2)}\n`);
+    await commitAll(root, 'chore(release): prepare 0.1.1');
+    const verifiedCommit = (await run('git', ['rev-parse', 'HEAD'], root)).stdout.trim();
+    await run('git', ['update-ref', 'refs/remotes/origin/main', verifiedCommit], root);
+
+    await assert.rejects(() => createReleaseTag({
+      root,
+      extensionVersion: '0.1.1',
+      channel: 'pre-release',
+      vbaDevVersion: '0.1.0',
+      verifiedCommit,
+      windowsExcelResult: 'pass',
+      cleanWindowsSmoke: 'not-required',
+      cleanWindowsSmokeReason: 'No package changes.'
+    }), /initial.*0\.1\.1.*Clean Windows smoke/i);
+  });
+
   await t.test('worktree is dirty', async (subtest) => {
     const { root, verifiedCommit } = await createPreparedReleaseCommit(subtest);
     await fs.writeFile(path.join(root, 'dirty.txt'), 'unreviewed\n');

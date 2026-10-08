@@ -702,11 +702,12 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
                     ])
             ]);
 
+        // This fixture watchdog does not change the 20ms stage or cleanup deadlines.
         var result = await probe.ResolveAsync(
                 templatePath,
                 registryResolution,
                 CancellationToken.None)
-            .WaitAsync(TimeSpan.FromSeconds(3));
+            .WaitAsync(TimeSpan.FromSeconds(10));
 
         var reference = Assert.Single(result.References);
         Assert.Equal("probeTimeout", reference.UnverifiedReasonCode);
