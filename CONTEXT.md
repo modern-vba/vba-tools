@@ -133,11 +133,13 @@ The internal sealed command-family module that attaches the actual Build and
 Publish leaves at their established positions on the single
 `VbaDevCommandGrammar` graph. It owns their descriptions, symbols, static
 completion, grammar rules, closed command-intent binding, action connection,
-and capability registrations. Build binds either a persistent-build intent or
+and capability registrations. Build binds either a source-workbook-build intent or
 a source-snapshot-build intent with a complete non-null source/output pair;
 Publish binds its project/document materialization intent and exposes no output
 or format override. Application resolves caller-relative snapshot paths, while
-`WorkbookMaterializer` retains staging and output commitment.
+`WorkbookMaterializer` retains staging and output commitment for Publish and
+snapshot output. Ordinary Build uses `SourceWorkbookBuildCommand` and an
+explicit confirmation policy instead of materializing bin output.
 _Avoid_: Boolean build mode, nullable snapshot/output pair, CLI output commitment, second command root
 
 **VbaDevTestCommandFamily**:
@@ -477,6 +479,10 @@ baseline cleanup, coalescing, and public ambiguity/unavailability diagnostics.
 Runtime evidence distinguishes a dispatcher that was never created from one
 whose retirement failed, without making reference-result policy part of the
 runtime. No automatic Excel restart is introduced.
+Ordinary source-workbook Build and project Export have a separate
+`ISourceWorkbookAutomation` boundary. They may borrow an exact user workbook;
+that borrowed session is not an `AutomationExcelProcess` and receives none of
+this runtime's force-termination authority.
 Initial workbook creation also uses this runtime through a narrow scenario
 that establishes, saves, and verifies the existing initial identity baseline.
 The creator retains staging observation, release-gated receipt completion, and
@@ -779,7 +785,16 @@ round-trip through the operation-fixed active Windows ANSI code page while
 unrepresentable or best-fit-only character fails before generation opens its
 staged workbook, and the
 mirror never changes caller-owned bytes. Its exact owned copies are eligible for
-command scratch cleanup only after the consuming Excel process is proved released.
+command scratch cleanup only after the consuming workbook automation is proved
+released and its STA dispatcher retired. Owned generation additionally requires
+its Excel process to be proved released; a borrowed user's process stays open.
+Source-workbook Build uses a flat mirror of GUID-prefixed invocation-owned files
+under a stable shared parent that it never deletes. Only parser-proven UserForm
+designer resource filenames are rewritten to their prefixed `.frx` basenames;
+code, unrelated literals, component identity and binary sidecar bytes do not
+change. Its cleanup targets only exact owned files, not the parent or files from
+other invocations. Publish, explicit Import and legacy Test/snapshot generation
+retain their existing invocation-owned directory mirror and cleanup policy.
 For explicit Import, project Build and Publish, and snapshot Build/Test, it
 consumes the admission's final source order, Unicode, fixed ACP, and captured
 sidecar bytes without reordering, calling `GetACP`, choosing a source encoding,
@@ -1274,6 +1289,66 @@ Office macro documents under a project manifest. The initial supported document
 kind for workbook-backed automation is an Excel `.xlsm` workbook.
 _Avoid_: workspace folder, repository, source folder
 
+**SourceWorkbook**:
+The exact workbook selected by a document's manifest `templatePath`,
+conventionally `src/<document_name>/<document_name>.xlsm`. Ordinary Build imports
+saved exported source and saves this workbook in place; project Export extracts
+its actual VBA. When already open, its exact workbook/process identity, live
+state and user-owned lifetime remain authoritative. Publish and public paired
+snapshot-output Build still copy its saved package as their template. Legacy
+Test and Debug generation retain their existing copy semantics until their
+separate migration issues are integrated.
+_Avoid_: arbitrary active workbook, same-basename match, bin output
+
+**SourceWorkbookBuildCommand**:
+The VbaDev ordinary Build operation owner, distinct from staged workbook
+materialization. It consumes complete, error-free analyzed saved-source
+admission, uses `ISourceWorkbookAutomation` for the exact selected workbook,
+checks live project/reference/component authority, and saves in place after
+verified import. Dirty editor buffers are not source authority. A dirty borrowed
+workbook requires explicit consent before replacement; direct CLI consent is
+terminal `[y/N]`, default refusal, with `--interactive false` prohibiting prompts.
+No terminal or CI inference grants consent.
+
+Before destructively replacing a borrowed workbook's code, the operation captures
+replaceable modules, UserForm sidecars and references. Failure or cancellation
+before Save starts attempts restoration without saving or closing the user's
+workbook. The independent ten-minute total recovery budget complements existing
+per-COM-operation limits; expiry permits no new recovery mutation request. Restoration
+is checked against the capture by re-exporting exact module/form and `.frx`
+bytes, and comparing module inventory and reference priority. Incomplete recovery
+retains materials and reports manual guidance.
+`SourceWorkbookSaveState` distinguishes `NotStarted`, `Unknown`, and `Saved`;
+required live VBE/authority verification precedes native Save, without a separate
+saved-package reopen/hash gate. Late cancellation cannot undo verified saved
+success, and post-save failure must retain the saved fact. This boundary grants
+no whole-workbook, arbitrary-side-effect or completed-Save rollback.
+See [ADR 0061](docs/adr/0061-build-and-export-the-source-workbook-in-place.md).
+_Avoid_: bin generation, automatic source-editor save, full-workbook transaction
+
+**ISourceWorkbookAutomation**:
+The operation boundary that borrows the exact open source workbook or opens the
+closed source file hidden with command-owned cleanup. Its bounded
+`ISourceWorkbookSession` provides workbook operations, `WasAlreadyOpen`,
+`IsSavedAsync`, and `SaveState`, but no caller lifecycle authority. Borrowed
+Excel windows keep their display state, workbook lifetime and process ownership;
+cleanup releases automation handles without hiding, closing, quitting or
+terminating the user's session. Closed-source Build saves before owned cleanup;
+project Export performs no Save. This is separate from the private-desktop
+generation runtime, not a fallback mode for it.
+_Avoid_: active Excel attachment, process ownership by workbook count, generic lifecycle callback
+
+**ProjectWorkbookExport**:
+The manifest-selected Export mode that reads the `SourceWorkbook`: live VBA
+when that exact workbook is already open, saved VBA when it is closed. It does
+not save the workbook or close a borrowed session. `SourceWorkbookModuleExporter`
+produces the existing source-unit staging contract, while the Export command
+retains destination placement, overwrite/deletion consent, recovery and
+commitment. Dirty destination editor buffers are neither a mandatory stop nor
+automatically saved, discarded or reloaded; a later editor save may conflict
+with or overwrite exported disk files. `ExplicitWorkbookExport` is unchanged.
+_Avoid_: bin export, live editor-to-workbook sync, editor conflict resolution
+
 **ExplicitWorkbookExport**:
 A `VbaDev` export operation scoped by a caller-provided workbook path rather
 than by a `ProjectManifest` document definition.
@@ -1283,7 +1358,9 @@ _Avoid_: path-only export, ad hoc export, project export
 The shared invocation-owned source-unit producer boundary for both Export modes.
 Its directories are create-only receipts. Each declared source and optional form
 sidecar is observed immediately after its producer returns, while the Excel
-session is still active; receipt completion follows proved process release.
+session is still active. An invocation-owned producer must prove resource
+release before receipt completion; a borrowed source-workbook producer releases
+its automation handles without requiring or authorizing the user's process exit.
 No cleanup enumerates paths to adopt arbitrary occupants. Before destination
 mutation, registered objects must remain unchanged and unregistered source,
 sidecar, or directory entries cannot become export input. The existing destination
@@ -1294,7 +1371,7 @@ normal success output, and synchronous command entry points remain unchanged.
 After destination commitment, retained or inconclusive `InvocationScratch`
 evidence is an actionable stderr warning with stable absolute paths and exit
 code zero. Before commitment it augments the primary failure or cancellation.
-Unproved process release forbids dependent deletion and returns exit one;
+Unproved owned-process release forbids dependent deletion and returns exit one;
 proved release permits cleanup despite a secondary cleanup failure, which remains
 a command failure. Later cancellation cannot undo committed output. Destination
 recovery/protection data remain separate from this non-authoritative staging.
@@ -1471,7 +1548,9 @@ The internal sealed VbaDev operation owner for the four closed write intents
 `WorkbookMaterializationIntent.Publish`,
 `WorkbookMaterializationIntent.SourceSnapshotBuild`, or
 `WorkbookMaterializationIntent.ExplicitImport`, and for the separate
-observational `ProjectInspectionIntent` used by project Doctor. `ProjectBuild`
+observational `ProjectInspectionIntent` used by project Doctor. The legacy
+`ProjectBuild` intent remains the ordinary Test generation route, not the
+ordinary public Build route described by `SourceWorkbookBuildCommand`. `ProjectBuild`
 and `Publish` obtain their purpose-specific, final-order admissions from
 `VbaSourceAdmission`; ordinary saved-source `ProjectBuild` additionally requires
 complete, error-free analyzed admission before generation. `SourceSnapshotBuild` consumes a command-owned
@@ -1545,7 +1624,8 @@ The project-local manifest, stored as `vba-project.json`, that identifies a
 `VbaDev` operations. It is also the language server's source of truth for the
 `VbaProjectReferenceSelection` of each document definition; VS Code settings do
 not define project references for workbook-backed projects. It identifies each
-document's source template for workbook operations and for a request-scoped
+document's `SourceWorkbook` through `templatePath` for ordinary Build/project
+Export and as a saved template for copied-workbook operations and a request-scoped
 `VbaProjectIdentityRead`, but stores neither environment-discovered UserForm
 Events nor `IntrinsicHostEventCatalogSnapshot` state. A project-local
 `project.json` is not a
@@ -1959,7 +2039,7 @@ subject of project lifecycle commands.
 _Avoid_: arbitrary workbook, generated output, secondary document
 
 **DocumentSourceSet**:
-The exported VBA source files and source template document that belong to one
+The exported VBA source files and source workbook that belong to one
 Office macro document within a `WorkbookBackedProject`. Nested organization
 directories under the document source path do not create separate source sets;
 exported VBA source identity remains flat, and extension-including source file

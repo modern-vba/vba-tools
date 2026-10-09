@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using VbaDev.App.Build;
 using VbaDev.App.Diagnostics;
 using VbaDev.App.Export;
+using VbaDev.App.FileSystem;
 using VbaDev.App.Import;
 using VbaDev.App.Projects;
 using VbaDev.App.References;
@@ -54,7 +55,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
 
         try
         {
-            var result = await CreateOrdinaryBuildCommand(_ => { }).RunAsync(context, cancellation.Token);
+            var result = await CreateLegacyStagedBuildCommand(_ => { }).RunAsync(context, cancellation.Token);
             output.WriteLine(result.StandardOutput);
             output.WriteLine(result.StandardError);
             Assert.Equal(0, result.ExitCode);
@@ -78,6 +79,534 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         {
             await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
         }
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task ClosedSourceWorkbookIsSavedInPlaceWithoutLeavingOwnedExcelRunning()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var workbookPath = Path.Combine(temp.Path, "SourceWorkbook.xlsm");
+        CreateEmptyMacroEnabledWorkbook(workbookPath);
+        var initialProcesses = CaptureExcelProcessIds();
+
+        try
+        {
+            var state = await new ExcelComSourceWorkbookAutomation().RunAsync(
+                workbookPath,
+                WorkbookAutomationTimeouts.Default,
+                async (session, token) =>
+                {
+                    Assert.False(session.WasAlreadyOpen);
+                    Assert.Equal(SourceWorkbookSaveState.NotStarted, session.SaveState);
+                    await session.SaveAsync(token);
+                    return session.SaveState;
+                },
+                cancellation.Token);
+
+            Assert.Equal(SourceWorkbookSaveState.Saved, state);
+            Assert.True(File.Exists(workbookPath));
+        }
+        finally
+        {
+            await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+        }
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task ProjectExportReadsLiveAlreadyOpenSourceWithoutSavingOrClosingExcel()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var workbookPath = Path.Combine(temp.Path, "LiveSource.xlsm");
+        CreateEmptyMacroEnabledWorkbook(workbookPath);
+        var originalWorkbook = File.ReadAllBytes(workbookPath);
+        var initialProcesses = CaptureExcelProcessIds();
+        object? excelObject = null;
+        object? workbooksObject = null;
+        object? workbookObject = null;
+
+        await ExcelIntegrationScenario.RunAsync(async () =>
+        {
+            excelObject = CreateHiddenExcelApplication();
+            dynamic excel = excelObject;
+            workbooksObject = excel.Workbooks;
+            dynamic workbooks = workbooksObject;
+            workbookObject = workbooks.Open(workbookPath);
+            dynamic workbook = workbookObject;
+            object? projectObject = null;
+            object? componentsObject = null;
+            object? componentObject = null;
+            object? codeModuleObject = null;
+            try
+            {
+                projectObject = workbook.VBProject;
+                dynamic project = projectObject;
+                componentsObject = project.VBComponents;
+                dynamic components = componentsObject;
+                componentObject = components.Add(1);
+                dynamic component = componentObject;
+                component.Name = "LiveOnlyModule";
+                codeModuleObject = component.CodeModule;
+                dynamic codeModule = codeModuleObject;
+                codeModule.AddFromString("Public Sub LiveOnlyProcedure()\r\nEnd Sub\r\n");
+            }
+            finally
+            {
+                ComObjectReleaser.Release(codeModuleObject);
+                ComObjectReleaser.Release(componentObject);
+                ComObjectReleaser.Release(componentsObject);
+                ComObjectReleaser.Release(projectObject);
+            }
+
+            Assert.False((bool)workbook.Saved);
+            var existingProcesses = CaptureExcelProcessIds();
+            var existingProcessId = Assert.Single(existingProcesses.Except(initialProcesses));
+            var automation = new ExcelComSourceWorkbookAutomation();
+            var wasAlreadyOpen = await automation.RunAsync(
+                workbookPath,
+                WorkbookAutomationTimeouts.Default,
+                (session, _) => Task.FromResult(session.WasAlreadyOpen),
+                cancellation.Token);
+            Assert.True(wasAlreadyOpen);
+
+            using var staging = WorkbookExportStaging.Create(
+                new WindowsExactFileSystemObjectOwnershipFactory());
+            await new SourceWorkbookModuleExporter(automation).ExportModulesAsync(
+                workbookPath, staging, WorkbookAutomationTimeouts.Default, cancellation.Token);
+            staging.CompleteProduction();
+            var source = File.ReadAllText(Path.Combine(staging.Path, "LiveOnlyModule.bas"));
+            Assert.Contains("LiveOnlyProcedure", source, StringComparison.Ordinal);
+            Assert.False((bool)workbook.Saved);
+            Assert.Contains(existingProcessId, CaptureExcelProcessIds());
+            Assert.Equal(workbookPath, Convert.ToString(workbook.FullName));
+            var cleanup = staging.Cleanup();
+            Assert.Equal(InvocationScratchCleanupStatus.Removed, cleanup.Status);
+            Assert.False(Directory.Exists(staging.Path));
+        },
+        () =>
+        {
+            try
+            {
+                if (workbookObject is not null)
+                {
+                    dynamic workbook = workbookObject;
+                    workbook.Close(false);
+                }
+            }
+            finally
+            {
+                ComObjectReleaser.Release(workbookObject);
+                ComObjectReleaser.Release(workbooksObject);
+                QuitExcel(excelObject);
+            }
+        },
+        () => WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20)));
+        Assert.Equal(originalWorkbook, File.ReadAllBytes(workbookPath));
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task CanceledBeforeSaveEventKeepsBorrowedSourceUnsavedWithoutRetry()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var workbookPath = Path.Combine(temp.Path, "CancelSave.xlsm");
+        CreateEmptyMacroEnabledWorkbook(workbookPath);
+        var originalBytes = File.ReadAllBytes(workbookPath);
+        var initialProcesses = CaptureExcelProcessIds();
+        object? excelObject = null;
+        object? workbooksObject = null;
+        object? workbookObject = null;
+
+        await ExcelIntegrationScenario.RunAsync(async () =>
+        {
+            excelObject = CreateHiddenExcelApplication();
+            dynamic excel = excelObject;
+            Assert.True((bool)excel.EnableEvents);
+            workbooksObject = excel.Workbooks;
+            dynamic workbooks = workbooksObject;
+            workbookObject = workbooks.Open(workbookPath);
+            dynamic workbook = workbookObject;
+            object? projectObject = null;
+            object? componentsObject = null;
+            object? componentObject = null;
+            object? codeModuleObject = null;
+            try
+            {
+                projectObject = workbook.VBProject;
+                dynamic project = projectObject;
+                componentsObject = project.VBComponents;
+                dynamic components = componentsObject;
+                componentObject = components.Item((string)workbook.CodeName);
+                dynamic component = componentObject;
+                codeModuleObject = component.CodeModule;
+                dynamic codeModule = codeModuleObject;
+                codeModule.AddFromString(
+                    "Private Sub Workbook_BeforeSave(ByVal SaveAsUI As Boolean, Cancel As Boolean)\r\n" +
+                    "    Me.Worksheets(1).Range(\"A1\").Value2 = CLng(Me.Worksheets(1).Range(\"A1\").Value2) + 1\r\n" +
+                    "    Cancel = True\r\nEnd Sub\r\n");
+            }
+            finally
+            {
+                ComObjectReleaser.Release(codeModuleObject);
+                ComObjectReleaser.Release(componentObject);
+                ComObjectReleaser.Release(componentsObject);
+                ComObjectReleaser.Release(projectObject);
+            }
+
+            Assert.False((bool)workbook.Saved);
+            var automation = new ExcelComSourceWorkbookAutomation();
+            var saveState = await automation.RunAsync(
+                workbookPath, WorkbookAutomationTimeouts.Default,
+                async (session, token) =>
+                {
+                    var error = await Assert.ThrowsAsync<InvalidOperationException>(() => session.SaveAsync(token));
+                    Assert.Contains("remains unsaved", error.Message, StringComparison.OrdinalIgnoreCase);
+                    return session.SaveState;
+                }, cancellation.Token);
+
+            Assert.Equal(SourceWorkbookSaveState.Unknown, saveState);
+            Assert.Equal(1d, (double)workbook.Worksheets(1).Range("A1").Value2);
+            Assert.False((bool)workbook.Saved);
+            Assert.True((bool)excel.EnableEvents);
+            Assert.Equal(workbookPath, Convert.ToString(workbook.FullName));
+        },
+        () =>
+        {
+            try
+            {
+                if (workbookObject is not null)
+                {
+                    dynamic workbook = workbookObject;
+                    workbook.Close(false);
+                }
+            }
+            finally
+            {
+                ComObjectReleaser.Release(workbookObject);
+                ComObjectReleaser.Release(workbooksObject);
+                QuitExcel(excelObject);
+            }
+        },
+        () => WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20)));
+        Assert.Equal(originalBytes, File.ReadAllBytes(workbookPath));
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task OrdinaryBuildOpensClosedSourceHiddenSavesInPlaceAndReleasesOnlyItsExcel()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var root = temp.CreateDirectory("Project");
+        var manifestStore = new JsonProjectManifestStore();
+        manifestStore.Save(root, ProjectManifest.CreateDefault("ClosedBuildProject", "Book1", root, null));
+        var context = new ProjectContextResolver(manifestStore).Resolve(new(root, "Book1", root));
+        Directory.CreateDirectory(context.DocumentSourceSetPath);
+        CreateEmptyMacroEnabledWorkbook(context.TemplateDocumentPath);
+        File.WriteAllText(Path.Combine(context.DocumentSourceSetPath, "Feature.bas"),
+            "Attribute VB_Name = \"Feature\"\r\nOption Explicit\r\nPublic Sub BuildProbe()\r\nEnd Sub\r\n",
+            new UTF8Encoding(false));
+        var originalSource = File.ReadAllBytes(context.TemplateDocumentPath);
+        var otherWorkbookPath = Path.Combine(temp.CreateDirectory("UnrelatedExcel"),
+            Path.GetFileName(context.TemplateDocumentPath));
+        CreateEmptyMacroEnabledWorkbook(otherWorkbookPath);
+        var originalOther = File.ReadAllBytes(otherWorkbookPath);
+        var initialProcesses = CaptureExcelProcessIds();
+        var initialBuildMirrorFiles = CaptureSourceWorkbookBuildMirrorFiles();
+        object? otherExcel = null;
+        object? otherWorkbooks = null;
+        object? otherWorkbook = null;
+
+        await ExcelIntegrationScenario.RunAsync(async () =>
+        {
+            otherExcel = CreateHiddenExcelApplication();
+            dynamic otherApplication = otherExcel;
+            otherWorkbooks = otherApplication.Workbooks;
+            dynamic otherCollection = otherWorkbooks;
+            otherWorkbook = otherCollection.Open(otherWorkbookPath);
+            dynamic other = otherWorkbook;
+            other.Saved = false;
+            var otherVisible = (bool)otherApplication.Visible;
+            var otherAlerts = (bool)otherApplication.DisplayAlerts;
+            var beforeBuildProcesses = CaptureExcelProcessIds();
+            var composition = ToolingCompositionRoot.CreateApplicationComposition(root,
+                environmentDiagnosticPort: new FakeEnvironmentDiagnosticPort(),
+                persistSourceAnalysisFailureEvidence: false);
+
+            Assert.False(File.Exists(context.BinDocumentPath));
+            var result = await composition.BuildCommand.RunAsync(context, cancellation.Token);
+            Assert.True(result.ExitCode == 0, result.StandardError);
+            Assert.False(originalSource.SequenceEqual(File.ReadAllBytes(context.TemplateDocumentPath)));
+            Assert.False(File.Exists(context.BinDocumentPath));
+            Assert.False((bool)other.Saved);
+            Assert.Equal(otherWorkbookPath, Convert.ToString(other.FullName));
+            Assert.Equal(otherVisible, (bool)otherApplication.Visible);
+            Assert.Equal(otherAlerts, (bool)otherApplication.DisplayAlerts);
+            Assert.Equal(beforeBuildProcesses.Order(), CaptureExcelProcessIds().Order());
+            Assert.Equal(initialBuildMirrorFiles, CaptureSourceWorkbookBuildMirrorFiles());
+        },
+        () =>
+        {
+            try
+            {
+                if (otherWorkbook is not null)
+                {
+                    dynamic workbook = otherWorkbook;
+                    workbook.Close(false);
+                }
+            }
+            finally
+            {
+                ComObjectReleaser.Release(otherWorkbook);
+                ComObjectReleaser.Release(otherWorkbooks);
+                QuitExcel(otherExcel);
+            }
+        },
+        () => WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20)));
+        Assert.Equal(originalOther, File.ReadAllBytes(otherWorkbookPath));
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task OrdinaryBuildSavesExactAlreadyOpenSourceWithoutTouchingOtherExcel()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var root = temp.CreateDirectory("Project");
+        var manifestStore = new JsonProjectManifestStore();
+        manifestStore.Save(root, ProjectManifest.CreateDefault("LiveBuildProject", "Book1", root, null));
+        var context = new ProjectContextResolver(manifestStore).Resolve(new(root, "Book1", root));
+        Directory.CreateDirectory(context.DocumentSourceSetPath);
+        CreateEmptyMacroEnabledWorkbook(context.TemplateDocumentPath);
+        File.WriteAllText(Path.Combine(context.DocumentSourceSetPath, "Feature.bas"),
+            "Attribute VB_Name = \"Feature\"\r\nOption Explicit\r\nPublic Sub BuildProbe()\r\nEnd Sub\r\n",
+            new UTF8Encoding(false));
+        var otherWorkbookPath = Path.Combine(temp.CreateDirectory("UnrelatedExcel"),
+            Path.GetFileName(context.TemplateDocumentPath));
+        CreateEmptyMacroEnabledWorkbook(otherWorkbookPath);
+        var originalSource = File.ReadAllBytes(context.TemplateDocumentPath);
+        var originalOther = File.ReadAllBytes(otherWorkbookPath);
+        var initialProcesses = CaptureExcelProcessIds();
+        var initialBuildMirrorFiles = CaptureSourceWorkbookBuildMirrorFiles();
+        object? sourceExcel = null;
+        object? sourceWorkbooks = null;
+        object? sourceWorkbook = null;
+        object? otherExcel = null;
+        object? otherWorkbooks = null;
+        object? otherWorkbook = null;
+
+        await ExcelIntegrationScenario.RunAsync(async () =>
+        {
+            sourceExcel = CreateHiddenExcelApplication();
+            dynamic sourceApplication = sourceExcel;
+            sourceWorkbooks = sourceApplication.Workbooks;
+            dynamic sourceCollection = sourceWorkbooks;
+            sourceWorkbook = sourceCollection.Open(context.TemplateDocumentPath);
+            var sourceProcessId = Assert.Single(CaptureExcelProcessIds().Except(initialProcesses));
+
+            otherExcel = CreateHiddenExcelApplication();
+            dynamic otherApplication = otherExcel;
+            otherWorkbooks = otherApplication.Workbooks;
+            dynamic otherCollection = otherWorkbooks;
+            otherWorkbook = otherCollection.Open(otherWorkbookPath);
+            var otherProcessId = Assert.Single(CaptureExcelProcessIds().Except(initialProcesses),
+                processId => processId != sourceProcessId);
+
+            dynamic source = sourceWorkbook;
+            dynamic other = otherWorkbook;
+            sourceApplication.Visible = true;
+            source.Saved = false;
+            other.Saved = false;
+            var sourceVisible = (bool)sourceApplication.Visible;
+            var sourceAlerts = (bool)sourceApplication.DisplayAlerts;
+            var otherVisible = (bool)otherApplication.Visible;
+            var otherAlerts = (bool)otherApplication.DisplayAlerts;
+            var sourceActiveWorkbookPath = Convert.ToString(sourceApplication.ActiveWorkbook.FullName);
+            var otherActiveWorkbookPath = Convert.ToString(otherApplication.ActiveWorkbook.FullName);
+            Assert.Equal(context.TemplateDocumentPath, sourceActiveWorkbookPath);
+            Assert.Equal(otherWorkbookPath, otherActiveWorkbookPath);
+            Assert.True(sourceVisible);
+            var confirmations = 0;
+            var composition = ToolingCompositionRoot.CreateApplicationComposition(root,
+                environmentDiagnosticPort: new FakeEnvironmentDiagnosticPort(),
+                persistSourceAnalysisFailureEvidence: false);
+
+            var result = await composition.BuildCommand.RunAsync(context,
+                (_, _) =>
+                {
+                    confirmations++;
+                    return Task.FromResult(true);
+                }, cancellation.Token);
+            output.WriteLine(result.StandardOutput);
+            output.WriteLine(result.StandardError);
+            Assert.Equal(0, result.ExitCode);
+            Assert.Equal(1, confirmations);
+            var repeatedBuild = await composition.BuildCommand.RunAsync(context,
+                (_, _) =>
+                {
+                    confirmations++;
+                    return Task.FromResult(true);
+                }, cancellation.Token);
+            Assert.True(repeatedBuild.ExitCode == 0, repeatedBuild.StandardError);
+            Assert.Equal(1, confirmations);
+            Assert.True((bool)source.Saved);
+            Assert.False((bool)other.Saved);
+            Assert.Equal(context.TemplateDocumentPath, Convert.ToString(source.FullName));
+            Assert.Equal(otherWorkbookPath, Convert.ToString(other.FullName));
+            Assert.Equal(sourceVisible, (bool)sourceApplication.Visible);
+            Assert.Equal(sourceAlerts, (bool)sourceApplication.DisplayAlerts);
+            Assert.Equal(otherVisible, (bool)otherApplication.Visible);
+            Assert.Equal(otherAlerts, (bool)otherApplication.DisplayAlerts);
+            Assert.Equal(sourceActiveWorkbookPath,
+                Convert.ToString(sourceApplication.ActiveWorkbook.FullName));
+            Assert.Equal(otherActiveWorkbookPath,
+                Convert.ToString(otherApplication.ActiveWorkbook.FullName));
+            Assert.Contains(sourceProcessId, CaptureExcelProcessIds());
+            Assert.Contains(otherProcessId, CaptureExcelProcessIds());
+            Assert.Equal(initialBuildMirrorFiles, CaptureSourceWorkbookBuildMirrorFiles());
+        },
+        () =>
+        {
+            try
+            {
+                if (sourceWorkbook is not null)
+                {
+                    dynamic workbook = sourceWorkbook;
+                    workbook.Close(false);
+                }
+                if (otherWorkbook is not null)
+                {
+                    dynamic workbook = otherWorkbook;
+                    workbook.Close(false);
+                }
+            }
+            finally
+            {
+                ComObjectReleaser.Release(sourceWorkbook);
+                ComObjectReleaser.Release(otherWorkbook);
+                ComObjectReleaser.Release(sourceWorkbooks);
+                ComObjectReleaser.Release(otherWorkbooks);
+                try { QuitExcel(sourceExcel); }
+                finally { QuitExcel(otherExcel); }
+            }
+        },
+        () => WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20)));
+        Assert.False(originalSource.SequenceEqual(File.ReadAllBytes(context.TemplateDocumentPath)));
+        Assert.Equal(originalOther, File.ReadAllBytes(otherWorkbookPath));
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task GuidPrefixedFlatImportPreservesModuleNamesAndPairedFormState()
+    {
+        using var temp = TempDirectory.Create();
+        var initialProcesses = CaptureExcelProcessIds();
+        var seedPath = Path.Combine(temp.Path, "FormSeed.xlsm");
+        CreateEmptyMacroEnabledWorkbook(seedPath);
+        var formPath = Path.Combine(temp.Path, "Dialog.frm");
+        var formText = SelectNonAsciiFixtureText(ActiveWindowsAnsiCodePage.Get());
+        ExportNestedUserFormFixture(seedPath, formPath, formText);
+        await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+
+        var stableRoot = temp.CreateDirectory("StableImportRoot");
+        var prefix = Guid.NewGuid().ToString("N");
+        var standardPath = Path.Combine(stableRoot, $"{prefix}_NamedStandard.bas");
+        var classPath = Path.Combine(stableRoot, $"{prefix}_NamedClass.cls");
+        var stagedFormBase = $"{prefix}_Dialog";
+        var stagedFormPath = Path.Combine(stableRoot, stagedFormBase + ".frm");
+        var stagedSidecarPath = Path.Combine(stableRoot, stagedFormBase + ".frx");
+        File.WriteAllText(standardPath,
+            "Attribute VB_Name = \"NamedStandard\"\r\nOption Explicit\r\n",
+            new UTF8Encoding(false));
+        File.WriteAllText(classPath,
+            "VERSION 1.0 CLASS\r\nBEGIN\r\n  MultiUse = -1  'True\r\nEND\r\n" +
+            "Attribute VB_Name = \"NamedClass\"\r\nOption Explicit\r\n",
+            new UTF8Encoding(false));
+        var activeEncoding = StrictEncoding(ActiveWindowsAnsiCodePage.Get());
+        var sourceForm = activeEncoding.GetString(File.ReadAllBytes(formPath));
+        Assert.Contains("Dialog.frx", sourceForm, StringComparison.OrdinalIgnoreCase);
+        File.WriteAllBytes(stagedFormPath,
+            activeEncoding.GetBytes(sourceForm.Replace("Dialog.frx", stagedFormBase + ".frx",
+                StringComparison.OrdinalIgnoreCase)));
+        File.Copy(Path.ChangeExtension(formPath, ".frx"), stagedSidecarPath);
+
+        var targetPath = Path.Combine(temp.Path, "ImportTarget.xlsm");
+        CreateEmptyMacroEnabledWorkbook(targetPath);
+        object? excelObject = null;
+        object? workbooksObject = null;
+        object? workbookObject = null;
+        object? projectObject = null;
+        object? componentsObject = null;
+        await ExcelIntegrationScenario.RunAsync(async () =>
+        {
+            excelObject = CreateHiddenExcelApplication();
+            dynamic excel = excelObject;
+            workbooksObject = excel.Workbooks;
+            dynamic workbooks = workbooksObject;
+            workbookObject = workbooks.Open(targetPath);
+            dynamic workbook = workbookObject;
+            projectObject = workbook.VBProject;
+            dynamic project = projectObject;
+            componentsObject = project.VBComponents;
+            dynamic components = componentsObject;
+            var observedNames = new List<string>();
+            foreach (var path in new[] { standardPath, classPath, stagedFormPath })
+            {
+                object? importedObject = null;
+                try
+                {
+                    importedObject = components.Import(path);
+                    dynamic imported = importedObject;
+                    observedNames.Add((string)imported.Name);
+                }
+                finally
+                {
+                    ComObjectReleaser.Release(importedObject);
+                }
+            }
+            Assert.Equal(new[] { "NamedStandard", "NamedClass", "Dialog" }, observedNames);
+            AssertNestedFormState(componentsObject, formText);
+            foreach (var path in new[] { standardPath, classPath, stagedFormPath, stagedSidecarPath })
+            {
+                File.Delete(path);
+                Assert.False(File.Exists(path));
+            }
+            Assert.True(Directory.Exists(stableRoot));
+            await Task.CompletedTask;
+        },
+        () =>
+        {
+            try
+            {
+                if (workbookObject is not null)
+                {
+                    dynamic workbook = workbookObject;
+                    workbook.Close(false);
+                }
+            }
+            finally
+            {
+                ComObjectReleaser.Release(componentsObject);
+                ComObjectReleaser.Release(projectObject);
+                ComObjectReleaser.Release(workbookObject);
+                ComObjectReleaser.Release(workbooksObject);
+                QuitExcel(excelObject);
+            }
+        },
+        () => WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20)));
+    }
+
+    private static string[] CaptureSourceWorkbookBuildMirrorFiles()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "vba-dev-vbe-import", "source-workbook-build");
+        return Directory.Exists(root)
+            ? Directory.GetFiles(root, "*", SearchOption.TopDirectoryOnly)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToArray()
+            : [];
     }
 
     [WindowsExcelIntegrationFact]
@@ -492,7 +1021,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             var fixture = await CreateOrdinaryWorkbookFixtureAsync(temp, activeCodePage, cancellation.Token);
             IReadOnlyList<VbeImportSourceFile>? admittedSources = null;
             string? stagingPath = null;
-            var command = CreateOrdinaryBuildCommand(sourceSet =>
+            var command = CreateLegacyStagedBuildCommand(sourceSet =>
             {
                 Assert.Equal(activeCodePage, sourceSet.ActiveCodePage);
                 Assert.NotNull(sourceSet.Admission);
@@ -553,7 +1082,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 File.Delete(latePath);
                 IReadOnlyList<VbeImportSourceFile>? admittedSources = null;
                 string? stagingPath = null;
-                var command = CreateOrdinaryBuildCommand(sourceSet =>
+                var command = CreateLegacyStagedBuildCommand(sourceSet =>
                 {
                     Assert.Equal(activeCodePage, sourceSet.ActiveCodePage);
                     Assert.NotNull(sourceSet.Admission);
@@ -634,7 +1163,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             var fixture = await CreateOrdinaryWorkbookFixtureAsync(temp, activeCodePage, cancellation.Token);
             var automation = new RecordingOwnedWorkbookGenerationAutomation();
             IReadOnlyList<VbeImportSourceFile>? admittedSources = null;
-            var command = CreateOrdinaryBuildCommand(
+            var command = CreateLegacyStagedBuildCommand(
                 sourceSet => admittedSources = sourceSet.SourceFiles.ToArray(), automation);
             var baseline = await command.RunAsync(fixture.Context, cancellation.Token);
             Assert.True(baseline.ExitCode == 0, baseline.StandardError);
@@ -701,7 +1230,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         {
             var fixture = await CreateOrdinaryWorkbookFixtureAsync(temp, activeCodePage, deadline.Token);
             IReadOnlyList<VbeImportSourceFile>? previousSources = null;
-            var baseline = await CreateOrdinaryBuildCommand(
+            var baseline = await CreateLegacyStagedBuildCommand(
                 sourceSet => previousSources = sourceSet.SourceFiles.ToArray()).RunAsync(fixture.Context, deadline.Token);
             Assert.True(baseline.ExitCode == 0, baseline.StandardError);
             Assert.NotNull(previousSources);
@@ -714,7 +1243,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
             var automation = new RecordingOwnedWorkbookGenerationAutomation(cancellation);
             string? stagingPath = null;
-            var command = CreateOrdinaryBuildCommand(sourceSet => stagingPath = sourceSet.StagingPath, automation);
+            var command = CreateLegacyStagedBuildCommand(sourceSet => stagingPath = sourceSet.StagingPath, automation);
 
             var result = await command.RunAsync(fixture.Context, cancellation.Token);
 
@@ -757,7 +1286,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         try
         {
             var fixture = await CreateOrdinaryWorkbookFixtureAsync(temp, activeCodePage, deadline.Token);
-            var baseline = await CreateOrdinaryBuildCommand(_ => { }).RunAsync(fixture.Context, deadline.Token);
+            var baseline = await CreateLegacyStagedBuildCommand(_ => { }).RunAsync(fixture.Context, deadline.Token);
             Assert.True(baseline.ExitCode == 0, baseline.StandardError);
             var previousWorkbook = File.ReadAllBytes(fixture.Context.BinDocumentPath);
             WriteEncodedFixtureSource(
@@ -769,7 +1298,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             var automation = new RecordingOwnedWorkbookGenerationAutomation();
             IReadOnlyList<VbeImportSourceFile>? admittedSources = null;
             string? stagingPath = null;
-            var command = CreateOrdinaryBuildCommand(
+            var command = CreateLegacyStagedBuildCommand(
                 sourceSet =>
                 {
                     admittedSources = sourceSet.SourceFiles.ToArray();
@@ -1513,7 +2042,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             var outputPath = Path.Combine(temp.CreateDirectory("snapshot-output"), "AdmissionBook.xlsm");
             IReadOnlyList<VbeImportSourceFile>? admittedSources = null;
             var automation = new RecordingOwnedWorkbookGenerationAutomation();
-            var command = CreateOrdinaryBuildCommand(sourceSet =>
+            var command = CreateLegacyStagedBuildCommand(sourceSet =>
             {
                 Assert.Equal(activeCodePage, sourceSet.ActiveCodePage);
                 Assert.NotNull(sourceSet.Admission);
@@ -1617,7 +2146,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             Directory.CreateDirectory(Path.GetDirectoryName(fixture.Context.BinDocumentPath)!);
             CreateEmptyMacroEnabledWorkbook(fixture.Context.BinDocumentPath);
             var originalBin = File.ReadAllBytes(fixture.Context.BinDocumentPath);
-            var build = CreateOrdinaryBuildCommand(sourceSet => Assert.NotNull(sourceSet.Admission));
+            var build = CreateLegacyStagedBuildCommand(sourceSet => Assert.NotNull(sourceSet.Admission));
             var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
             var command = new TestCommand(build, new ExcelComWorkbookTestRunner(),
                 new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
@@ -1664,11 +2193,22 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         try
         {
             var fixture = await CreateOrdinaryWorkbookFixtureAsync(temp, activeCodePage, cancellation.Token);
-            var build = await CreateOrdinaryBuildCommand(_ => { }).RunAsync(fixture.Context, cancellation.Token);
-            Assert.True(build.ExitCode == 0, build.StandardError);
+            var sourceBuild = await ToolingCompositionRoot.CreateApplicationComposition(
+                    fixture.Context.ProjectRoot,
+                    environmentDiagnosticPort: new FakeEnvironmentDiagnosticPort(),
+                    persistSourceAnalysisFailureEvidence: false)
+                .BuildCommand.RunAsync(fixture.Context, cancellation.Token);
+            Assert.True(sourceBuild.ExitCode == 0, sourceBuild.StandardError);
+            var sourceWorkbookBytes = File.ReadAllBytes(fixture.Context.TemplateDocumentPath);
+            var legacyStagedBuild = await CreateLegacyStagedBuildCommand(_ => { })
+                .RunAsync(fixture.Context, cancellation.Token);
+            Assert.True(legacyStagedBuild.ExitCode == 0, legacyStagedBuild.StandardError);
             var workbookBytes = File.ReadAllBytes(fixture.Context.BinDocumentPath);
-            var exporter = new RecordingModuleExporter();
-            var command = new ExportCommand(new WindowsExactFileSystemObjectOwnershipFactory(), exporter);
+            var explicitExporter = new RecordingModuleExporter(new ExcelComWorkbookModuleExporter());
+            var projectExporter = new RecordingModuleExporter(
+                new SourceWorkbookModuleExporter(new ExcelComSourceWorkbookAutomation()));
+            var command = new ExportCommand(new WindowsExactFileSystemObjectOwnershipFactory(),
+                explicitExporter, projectExporter);
             foreach (var explicitWorkbook in new[] { false, true })
             {
                 var destination = temp.CreateDirectory(explicitWorkbook ? "explicit-export" : "project-export");
@@ -1682,10 +2222,16 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 Assert.Contains(fixture.NonAsciiText, DecodeActiveCodePageFile(Path.Combine(destination, "UnicodeModule.bas"), activeCodePage));
                 Assert.NotEmpty(File.ReadAllBytes(Path.Combine(destination, "Dialog.frx")));
             }
-            Assert.Equal(2, exporter.Paths.Count);
-            Assert.All(exporter.Paths, path => Assert.False(Directory.Exists(path)));
+            Assert.Single(explicitExporter.Paths);
+            Assert.Single(projectExporter.Paths);
+            Assert.All(explicitExporter.Paths.Concat(projectExporter.Paths),
+                path => Assert.False(Directory.Exists(path)));
+            Assert.Equal(sourceWorkbookBytes, File.ReadAllBytes(fixture.Context.TemplateDocumentPath));
             Assert.Equal(workbookBytes, File.ReadAllBytes(fixture.Context.BinDocumentPath));
-            foreach (var source in fixture.CallerBytes) Assert.Equal(source.Value, File.ReadAllBytes(source.Key));
+            foreach (var source in fixture.CallerBytes.Where(source =>
+                         !source.Key.Equals(fixture.Context.TemplateDocumentPath,
+                             StringComparison.OrdinalIgnoreCase)))
+                Assert.Equal(source.Value, File.ReadAllBytes(source.Key));
         }
         finally
         {
@@ -1697,7 +2243,12 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
     private sealed class RecordingModuleExporter : IWorkbookModuleExporter
     {
         internal List<string> Paths { get; } = [];
-        private readonly ExcelComWorkbookModuleExporter inner = new();
+        private readonly IWorkbookModuleExporter inner;
+
+        internal RecordingModuleExporter(IWorkbookModuleExporter inner)
+        {
+            this.inner = inner;
+        }
         public Task ExportModulesAsync(string workbookPath, WorkbookExportStaging staging,
             WorkbookAutomationTimeouts timeouts, CancellationToken cancellationToken)
         {
@@ -1751,7 +2302,9 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             ]),
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
-    private static BuildCommand CreateOrdinaryBuildCommand(
+    // This deliberately constructs the retained staged-output materializer used by
+    // Test/snapshot compatibility checks; it is not the CLI's in-place project Build.
+    private static BuildCommand CreateLegacyStagedBuildCommand(
         Action<VbeImportSourceSet> sourceSetCreated,
         IWorkbookGenerationAutomation? automation = null,
         IWorkbookOutputTransactionFactory? transactionFactory = null)

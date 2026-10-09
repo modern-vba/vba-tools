@@ -101,8 +101,11 @@ internal sealed class VbaDevContractCommandFamily
                 {
                     ["build.sourceSnapshot"] = "2.0",
                     ["build.sourceSnapshotAnalysis"] = "1.0",
+                    ["build.sourceWorkbook"] = "1.0",
+                    ["export.sourceWorkbook"] = "1.0",
                     ["test.sourceSnapshot"] = "2.0",
                     ["invocation.stdinCancellation"] = "1.0",
+                    ["invocation.stdinWorkbookConfirmation"] = "1.0",
                     ["sourceSnapshot.activeWindowsCodePage"] = "1.0",
                     ["projectCreation.pathValidation"] = "1.0",
                     ["hostEvent.list"] = "1.0"

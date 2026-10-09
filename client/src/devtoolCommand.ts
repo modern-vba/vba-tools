@@ -29,6 +29,7 @@ export interface StartedVbaDevProcess {
   onClose?(listener: (exitCode: number | null, signal: string | null) => void): void;
   onError?(listener: (error: Error) => void): void;
   requestCancellation?(): Promise<void>;
+  respondToWorkbookConfirmation?(requestId: string, approved: boolean): Promise<void>;
   kill(): void;
 }
 
@@ -49,6 +50,7 @@ export interface VbaDevCommandRunOptions {
   cancellationToken?: CommandCancellationToken | undefined;
   startProcess?: StartVbaDevProcess | undefined;
   processRole?: 'vba-dev' | 'vba-debug-adapter' | undefined;
+  confirmWorkbookChanges?: ((message: string) => Promise<boolean>) | undefined;
 }
 
 export interface VbaDevCommandRunResult {
@@ -109,6 +111,44 @@ export function runCompanionCommand(
   let forceKillTimer: NodeJS.Timeout | undefined;
   let forceKillRequested = false;
   let settled = false;
+  let confirmationBuffer = '';
+  const confirmationRequests = new Set<string>();
+
+  const observeWorkbookConfirmation = (value: string): void => {
+    if (options.confirmWorkbookChanges === undefined || options.args[0] !== 'build' ||
+        options.args.includes('--source-snapshot')) return;
+    confirmationBuffer += value;
+    let newline: number;
+    while ((newline = confirmationBuffer.indexOf('\n')) >= 0) {
+      const line = confirmationBuffer.slice(0, newline);
+      confirmationBuffer = confirmationBuffer.slice(newline + 1);
+      let request: unknown;
+      try { request = JSON.parse(line); } catch { continue; }
+      if (typeof request !== 'object' || request === null) continue;
+      const frame = request as Record<string, unknown>;
+      if (frame.type !== 'workbookConfirmation' || frame.schemaVersion !== '1.0' ||
+          typeof frame.requestId !== 'string' || !/^[a-f0-9]{32}$/.test(frame.requestId) ||
+          typeof frame.message !== 'string' || frame.message.length === 0 ||
+          confirmationRequests.has(frame.requestId)) continue;
+      const requestId = frame.requestId;
+      const message = frame.message;
+      confirmationRequests.add(requestId);
+      void Promise.resolve().then(async () => {
+        if (settled || cancellationRequested) return;
+        const approved = await options.confirmWorkbookChanges!(message);
+        if (settled || cancellationRequested) return;
+        if (child.respondToWorkbookConfirmation === undefined) {
+          throw new Error('The workbook confirmation transport is unavailable.');
+        }
+        await child.respondToWorkbookConfirmation(requestId, approved === true);
+      }).catch((error: unknown) => {
+        options.outputChannel.appendLine('Workbook confirmation failed: ' +
+          (error instanceof Error ? error.message : String(error)));
+        requestChildCancellation();
+      });
+    }
+    if (confirmationBuffer.length > 65_536) confirmationBuffer = '';
+  };
 
   const scheduleForceKill = (): void => {
     const delay = options.forceKillAfterCancellationMilliseconds;
@@ -200,6 +240,7 @@ export function runCompanionCommand(
   child.onStderr((value) => {
     stderr += value;
     options.outputChannel.append(value);
+    observeWorkbookConfirmation(value);
   });
 
   let cancellationSubscription: CancellationDisposable | undefined;
@@ -395,6 +436,15 @@ function startNodeProcess(
     onError: (listener) => {
       child.once('error', listener);
     },
+    respondToWorkbookConfirmation: (requestId, approved) => new Promise<void>((resolve, reject) => {
+      if (child.stdin === null || child.stdin.destroyed) {
+        reject(new Error('The companion process standard input is unavailable.'));
+        return;
+      }
+      child.stdin.write(`confirm:${requestId}:${approved ? 'yes' : 'no'}\n`, 'utf8', error => {
+        if (error) reject(error); else resolve();
+      });
+    }),
     ...(cancellationTransport === 'stdin-v1'
       ? {
           requestCancellation: () => child.stdin === null

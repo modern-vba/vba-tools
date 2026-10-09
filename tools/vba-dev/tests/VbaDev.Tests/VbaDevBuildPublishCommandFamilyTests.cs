@@ -50,7 +50,7 @@ public sealed class VbaDevBuildPublishCommandFamilyTests
         Assert.NotNull(family.BuildCommand.Action);
         Assert.NotNull(family.PublishCommand.Action);
         Assert.Equal(
-            ["--project", "--document", "--source-snapshot", "--output"],
+            ["--project", "--document", "--source-snapshot", "--output", "--interactive"],
             family.BuildCommand.Options.Select(option => option.Name));
         Assert.Equal(
             ["--project", "--document"],
@@ -62,6 +62,7 @@ public sealed class VbaDevBuildPublishCommandFamilyTests
         Assert.Same(family.BuildDocumentOption, family.BuildCommand.Options[1]);
         Assert.Same(family.BuildSourceSnapshotOption, family.BuildCommand.Options[2]);
         Assert.Same(family.BuildOutputOption, family.BuildCommand.Options[3]);
+        Assert.Same(family.BuildInteractiveOption, family.BuildCommand.Options[4]);
         Assert.Same(family.PublishProjectOption, family.PublishCommand.Options[0]);
         Assert.Same(family.PublishDocumentOption, family.PublishCommand.Options[1]);
         Assert.Equal(["-d"], family.BuildDocumentOption.Aliases);
@@ -91,6 +92,15 @@ public sealed class VbaDevBuildPublishCommandFamilyTests
             family.BuildIntentBinding.GetRequiredIntent(persistentParse));
         Assert.Equal("project", persistentIntent.ProjectRoot);
         Assert.Equal("Book1", persistentIntent.DocumentName);
+        Assert.True(persistentParse.GetValue(family.BuildInteractiveOption));
+
+        var nonInteractiveParse = ParseSuccessfully(
+            root,
+            router,
+            ["build", "--project", "project", "--document", "Book1", "--interactive", "false"]);
+        Assert.IsType<VbaDevBuildCommandIntent.PersistentBuild>(
+            family.BuildIntentBinding.GetRequiredIntent(nonInteractiveParse));
+        Assert.False(nonInteractiveParse.GetValue(family.BuildInteractiveOption));
 
         var snapshotParse = ParseSuccessfully(
             root,
@@ -132,7 +142,7 @@ public sealed class VbaDevBuildPublishCommandFamilyTests
     }
 
     [Theory]
-    [InlineData("build --", new[] { "--project", "--document", "--source-snapshot", "--output" })]
+    [InlineData("build --", new[] { "--project", "--document", "--source-snapshot", "--output", "--interactive" })]
     [InlineData("publish --", new[] { "--project", "--document" })]
     public void FamilyOptionsParticipateInStaticCompletion(
         string commandLine,

@@ -22,9 +22,10 @@ public sealed class CallByNameParamArrayWindowsExcelIntegrationTests
         var sourceDirectory = Directory.CreateDirectory(
             Path.Combine(temp.Path, "src")).FullName;
         var templatePath = Path.Combine(temp.Path, "Template.xlsm");
-        var outputPath = Path.Combine(temp.Path, "bin", "CallByNameParamArray.xlsm");
+        var legacyOutputPath = Path.Combine(temp.Path, "bin", "CallByNameParamArray.xlsm");
         var initialProcesses = CaptureExcelProcessIds();
         CreateEmptyMacroEnabledWorkbook(templatePath);
+        var initialTemplateBytes = File.ReadAllBytes(templatePath);
         File.WriteAllText(
             Path.Combine(sourceDirectory, "CallByNameCaller.bas"),
             """
@@ -74,8 +75,13 @@ public sealed class CallByNameParamArrayWindowsExcelIntegrationTests
                 ["build", "--project", temp.Path, "--document", "CallByNameParamArray"],
                 cancellation.Token);
 
-            Assert.True(File.Exists(outputPath));
-            Assert.NotEqual(0, new FileInfo(outputPath).Length);
+            Assert.True(File.Exists(templatePath));
+            Assert.NotEqual(0, new FileInfo(templatePath).Length);
+            Assert.False(initialTemplateBytes.AsSpan().SequenceEqual(File.ReadAllBytes(templatePath)));
+            using var savedWorkbook = ZipFile.OpenRead(templatePath);
+            Assert.NotNull(savedWorkbook.GetEntry("xl/vbaProject.bin"));
+            Assert.False(File.Exists(legacyOutputPath));
+            Assert.False(Directory.Exists(Path.GetDirectoryName(legacyOutputPath)!));
         }
         finally
         {

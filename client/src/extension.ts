@@ -1208,6 +1208,8 @@ async function runWorkbookBackedProjectCommandWithProgress(
         diagnosticReporter: toolDiagnosticReporter,
         showWarningMessage: (message, ...items) =>
           window.showWarningMessage(message, ...items),
+        confirmWorkbookChanges: async (message) =>
+          await window.showWarningMessage(message, { modal: true }, 'Import and Save') === 'Import and Save',
         showErrorMessage: (message) => window.showErrorMessage(message),
         reportCancellationProgress: (message) => progress.report({ message }),
         cancellationToken: token

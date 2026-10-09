@@ -23,11 +23,31 @@ the accompanying positive `activeWindowsCodePage` value captured from `GetACP`.
 Managed callers can require `invocation.stdinCancellation` version `1.0` before
 opting into the hidden `--cancellation-transport stdin-v1` control channel. In
 that mode only, exact BOM-less UTF-8 `cancel\n` requests cooperative command
-cancellation; ordinary terminal invocations do not read standard input.
+cancellation. Ordinary terminal Build reads standard input only when dirty
+workbook confirmation is required; other ordinary invocations do not read it.
 Consumers of built-in UserForm Event catalogs can require `hostEvent.list`
 version `1.0` before invoking `host-event list --format json`.
 
-For ordinary `build`, `publish`, and `build --source-snapshot ... --output ...`,
+In-place Build/project Export callers must additionally require
+`build.sourceWorkbook: 1.0` or `export.sourceWorkbook: 1.0`, respectively.
+The unchanged command output schema alone does not distinguish an older
+bin-workbook provider from the source-workbook behavior.
+
+Managed source-workbook Build callers require
+`invocation.stdinWorkbookConfirmation: 1.0` before using the existing hidden
+`--cancellation-transport stdin-v1` channel for confirmation. One multiplexed
+reader accepts the unchanged `cancel\n` cancellation frame and confirmation
+frames `confirm:<requestId>:yes\n` or `confirm:<requestId>:no\n`. The provider
+requests consent through a newline-terminated JSON stderr record with
+`type: "workbookConfirmation"`, `schemaVersion: "1.0"`, a 32-lowercase-hex
+`requestId`, and `message`. Consumers validate the schema and match the exact
+request instead of parsing terminal prompt text. VS Code offers `Import and
+Save` or cancellation for ordinary Build and sends only that answer; it does
+not replay the command. Source-workbook Build uses cooperative cancellation
+and bounded workbook operations, not a caller's force-kill shortcut. Publish
+and paired snapshot-output Build keep their existing invocation policy.
+
+For `publish` and `build --source-snapshot ... --output ...`,
 exit `130` means cancellation won before output commitment and both owned Excel
 process release and STA dispatcher retirement were proved. Unproved process
 release or dispatcher retirement returns `1`, even when cancellation was also
@@ -36,14 +56,19 @@ failures with their stage diagnostics. Saving private staging is not output
 commitment: an earlier failure preserves the previous output. Cancellation
 after atomic output replacement preserves committed success. All three paths
 use the same terminal evidence; command-specific output and warnings remain
-unchanged.
+unchanged. Ordinary source-workbook Build has a different durable boundary:
+`Workbook.Save`, not atomic output replacement. See [build](#build) for its
+pre-save recovery and saved/unknown outcome contract.
 
-Manifest-selected and explicit `export` use this same terminal evidence and
+Explicit `export` uses this same terminal evidence and
 precedence: pre-commit cancellation with both release proofs is `130`; unproved
 process release or STA retirement is `1` even during cancellation. Stage
 diagnostics survive nested failures. Destination validation and recovery retain
 their existing behavior, and cancellation observed after destination commitment
-cannot undo the completed export.
+cannot undo the completed export. Project Export can borrow an exact open
+source workbook; releasing its automation handles never requires closing or
+terminating that user's Excel process. Both Export modes keep the destination
+transaction and its completed-output cancellation boundary.
 
 ## PowerShell completion
 
@@ -73,7 +98,7 @@ script after moving or replacing that executable.
 | `reference list` | document or available-mode environment fallback | List configured, stored-selection, or available VBA project references. |
 | `reference remove` | document | Remove VBA project references from the selected document manifest. |
 | `host-event list` | environment | Inspect the built-in UserForm Event catalog from one generated blank workbook. |
-| `build` | document | Build the selected document into bin output. |
+| `build` | document | Import saved source into the selected source workbook and save it in place. |
 | `test` | document | Run VBA unit tests for the selected document. |
 | `publish` | document | Publish the selected document. |
 | `export` | document/path | Export modules from a workbook into source. |
@@ -148,18 +173,22 @@ leaves remain unchanged. `VbaDevCommandGrammar` composes these families plus hel
 version, and cancellation; it declares no leaf and creates no dependency on
 another product.
 
-Every non-debug Excel or VBIDE automation path delegates process launch,
+Invocation-owned generation and inspection paths delegate process launch,
 private-desktop ownership, STA dispatch, deadlines, cleanup, and release proof
 to the same sealed `AutomationExcelProcessRuntime`. It creates each owned Excel
 process suspended on a unique invocation-scoped private Windows desktop.
 Exact-PID observation starts before primary-thread resume, native object-model
 binding is restricted to that desktop, and the desktop remains owned until the
-complete Job process tree exits. This contract covers project creation, build,
-every test mode, publish, import, export, Host Event discovery, reference probes,
-and active Doctor probes. It has no command switch, best-effort mode, or
+complete Job process tree exits. This contract covers project creation, snapshot
+Build, legacy Test modes, Publish, standalone Import, explicit Export, Host Event
+discovery, reference probes, and active Doctor probes. It has no command switch, best-effort mode, or
 caller-desktop fallback. A blocked prompt remains private and becomes a bounded
 failure with available PID, HWND, desktop, class, title, and lifecycle-phase
-evidence.
+evidence. Ordinary Build and project Export instead use the source-workbook
+boundary: they borrow an exact existing workbook/session when available, or
+open the source file hidden with command-owned cleanup. Borrowing grants no
+authority to hide, close, quit, or force-terminate the user's session. This is
+not a fallback for the private-desktop generation path.
 
 Interactive debugging is deliberately different. Its preparatory
 `vba-dev build` uses the private automation path, then the separate debug
@@ -196,7 +225,7 @@ Commands:
   completions    Generate shell completion setup.
   reference      Add VBA project references to the selected document manifest.
   host-event     Inspect built-in UserForm Events for the current environment.
-  build          Build the selected document into bin output.
+  build          Import saved source into the selected source workbook and save it in place.
   test           Run VBA unit tests for the selected document.
   publish        Publish the selected document.
   export         Export modules from a workbook into source.
@@ -410,7 +439,7 @@ responsibilities.
 ```text
 vba-dev build
 
-Build the selected document into bin output.
+Import saved source into the selected source workbook and save it in place.
 
 Usage:
   vba-dev build [options]
@@ -420,11 +449,34 @@ Options:
   --document <name>, -d <name>   Document name from the project manifest.
   --source-snapshot <dir>        Complete caller-owned source snapshot directory.
   --output <workbook>, -o <workbook>  Caller-owned workbook output path for snapshot builds.
+  --interactive <true|false>    Allow dirty-workbook terminal confirmation (default true).
 ```
 
-`build` creates the bin workbook from the source template, normalizes
-manifest-defined VBA project references, recursively imports source files, and
-writes the selected document's bin output. Present installed CommonModules are
+Ordinary `build` updates the exact source workbook selected by `templatePath`,
+conventionally `src/<document_name>/<document_name>.xlsm`. It normalizes
+manifest-defined VBA project references, recursively imports saved source
+files, and saves that workbook in place. It does not generate a project bin
+copy. CLI and Command Palette Build use disk files only; dirty source-editor
+buffers remain unsaved and are not included automatically.
+
+If the exact source workbook is already open, Build reuses it and its Excel
+process, preserves its displayed window, saves after importing, and leaves it
+open. A basename or arbitrary active workbook does not establish identity.
+If closed, Build opens the source file hidden, processes it, and closes its
+command-owned workbook afterward. Unrelated workbooks and Excel processes are
+untouched.
+
+An already-open dirty workbook requires explicit consent before replacement.
+The warning covers replacement of VBE-direct code and saving of other unsaved
+workbook edits. Direct CLI Build uses a terminal `[y/N]` prompt, never a GUI
+dialog, with refusal as the default. `--interactive true` is the default;
+`--interactive false` refuses with an error when consent is needed, without
+waiting or mutating the workbook. Interaction mode is not inferred from
+terminal, redirected input, or CI state. EOF or a nonaffirmative response is
+not consent. A clean workbook needs no dirty-workbook prompt. VS Code supplies
+its accepted confirmation UI through its managed invocation path.
+
+Present installed CommonModules are
 imported in stored manifest order, including test-only and orphaned entries,
 followed by project-local sources in case-insensitive, extension-including
 exported-filename order. Build does not resolve CommonModules dependencies or
@@ -441,7 +493,7 @@ strict decoder; BOM-less source uses only the fixed ACP, including UTF-8 when
 ACP is 65001. There is no BOM-less UTF-8 probe. On another ACP, UTF-8 source
 needs a BOM or author-controlled conversion to that ACP. Malformed or unsupported
 BOMs, invalid bytes, inexact byte round trips, and non-lossless VBE projection
-fail before Excel starts and preserve the previous output.
+fail before destructive workbook work and preserve the source workbook.
 
 Preflight, import, and verification use the same captured Unicode, identity,
 encoding provenance, and sidecar bytes without reopening authoring files.
@@ -476,8 +528,8 @@ Existing parser recovery, suppression, modeled indeterminacy and conditional
 alternatives retain their behavior. Warning and information diagnostics do not
 become errors, and an unresolved static inference is not a new compiler error.
 
-Build captures the whole source-template package for analysis and successful
-generation. Read-only inspection of an owned copy supplies the actual VBA project
+Build captures the saved source-workbook package for semantic analysis.
+Read-only inspection of an owned copy supplies the actual VBA project
 name and installed reference identities; it never imports, normalizes or saves.
 Already installed references use their observed GUID and version, including the
 Excel workbook's VBA runtime, rather than an unrelated newer registered version.
@@ -503,8 +555,8 @@ project-wide failures stop continuation, retain earlier findings, and report
 the stopping reason. An unreadable or otherwise unprocessed required source
 makes analysis incomplete. Any error or incomplete analysis returns a nonzero
 result before workbook generation, with no success receipt or replacement
-artifact. Source and template bytes and the previous completed bin output
-remain unchanged. Cancellation follows the existing cancellation path rather
+artifact. Source files and the source workbook remain unchanged. Cancellation
+follows the existing cancellation path rather
 than becoming a source-processing failure. Final successful import order remains
 separate from diagnostic encounter order.
 
@@ -539,14 +591,64 @@ Standalone Import/Export, `test --no-build`, and Doctor's raw admission and
 Build/Publish readiness profiles retain their existing scope. Source editing
 and native VBE compilation remain separate.
 
-Before the generation session starts, build stages every selected source, requires its authoritative exported module identity, and reports all case-insensitive source conflicts. Required semantic evidence can use an earlier owned read-only Excel inspection. In the disposable generation workbook it checks the actual project, retained-component, and active-reference namespaces, removes replaceable components, normalizes references, then checks the prepared protected and VBE-adopted reference identities before import. After imported components are verified, it re-enumerates the actual project, retained-component, and active-reference authority. A gap or conflict introduced by import fails before save or output commitment and preserves the source template and previous output. Build-before-test uses this same profile and preflight.
+Before destructive source-workbook work, Build stages the admitted sources,
+requires their authoritative module identities, and reports case-insensitive
+source conflicts. It checks the selected workbook's actual project, retained
+document-component, and reference authority before replacement and repeats
+the prepared authority checks after reference normalization and after import
+verification. Required semantic evidence can use an earlier owned read-only
+inspection; an open workbook's live authority is not replaced by a basename or
+an assumed template identity. A gap or conflict prevents saving. This required
+live VBE/authority verification precedes native Save; ordinary Build does not
+add a saved-package reopen/hash gate.
 
-After the owned Excel process has been released, the saved staging workbook must
-be readable and non-empty before the destination is replaced. This is not an
-Excel reopen, workbook-format validation, or compile check. Failure or
-cancellation before commitment preserves the previous output. VbaDev does not
-lock, compare-and-swap, retry, or roll back concurrent external destination
-changes; keep the destination closed while the command runs.
+Only source-workbook Build uses a flat VBE import mirror in the stable shared
+temporary parent `vba-dev-vbe-import/source-workbook-build`. Its source and
+sidecar filenames have an invocation-specific GUID prefix. Only parser-proven
+UserForm designer resource filenames are rewritten to the prefixed `.frx`
+basename; component names, code, unrelated literals, authoring files and binary
+sidecar bytes remain unchanged. Cleanup removes only proved invocation-owned
+files after automation handles are released and the STA dispatcher retires.
+The shared parent is never a deletion target, and a borrowed Excel process
+need not exit. Unproved release or file ownership retains the affected files
+with manual-cleanup guidance. Publish, explicit Import, and legacy Test/snapshot
+generation retain their existing owned-directory and process-release policy.
+
+For a pre-existing workbook, Build captures its replaceable standard/class
+modules, UserForms and paired `.frx` data, and references before flushing code.
+If this capture fails, replacement does not start. Workbook-owned document
+modules such as `ThisWorkbook` and worksheets are not replaced. On replacement
+failure or cancellation before Save starts, it attempts to restore captured
+code/reference state, leaves the existing workbook open, and does not save it.
+Recovery has an independent ten-minute total deadline alongside existing
+per-COM-operation limits; no further recovery mutation is requested after expiry.
+Build re-exports restored modules and UserForms, then compares exact source and
+paired `.frx` bytes, module inventory and reference priority against the capture.
+A mismatch is incomplete recovery, not success. A newly opened hidden workbook
+is closed without saving on that path. Recovery failure retains its materials
+and reports partial state and manual recovery guidance. Restoration is not
+rollback of the workbook's cells, arbitrary VBA side effects, or unrelated user
+activity.
+
+Save has three observable states: not started, unknown, and confirmed saved.
+Confirmation requires native Save to return with the selected workbook still
+marked saved and bound to its selected path; this is not a separate package
+reopen/hash verification.
+Once required live verification and native Save finish, late cancellation does
+not override success. A later step or cleanup failure reports that saving
+completed but identifies the failed step. When Save was attempted but its
+outcome cannot be confirmed, the error reports an unknown save outcome. The
+command neither claims byte-for-byte workbook rollback nor automatically undoes
+a completed Save. It does not force-close or terminate a borrowed Excel session.
+
+Publish, public snapshot-output Build, and legacy Test generation retain their
+disposable workbook, saved-staging validation, released-owned-process, and
+atomic output-replacement contract. Saved staging is not their commitment
+boundary. Those paths do not acquire in-place source-workbook semantics from
+ordinary Build.
+
+See [ADR 0061](../../docs/adr/0061-build-and-export-the-source-workbook-in-place.md)
+for the source-workbook/session boundary and staged compatibility decision.
 
 Supplying `--source-snapshot` and `--output` (or `-o`) together instead builds
 from that complete recursive source inventory without reading the persistent
@@ -581,8 +683,9 @@ Options:
   --procedure <name>             Run one test procedure. Requires --module.
 ```
 
-`test` builds before running tests by default. The private-desktop build process
-exits before a distinct private-desktop execution process starts. `--no-build`
+`test` currently generates legacy bin output before running tests by default;
+it does not invoke ordinary source-workbook Build. The private-desktop build
+process exits before a distinct private-desktop execution process starts. `--no-build`
 starts only the execution process. The default output format is `text`. Use
 `--format ndjson` for machine-readable newline-delimited JSON. Supplied
 `--project`, `--document`, and `--source-snapshot` values must be nonempty.
@@ -708,15 +811,39 @@ Options:
   --to <dir>                     Directory to export to; defaults to the selected document source set, or the current directory with --from.
 ```
 
-Without `--from`, `export` is project-aware: it reads the selected document's manifest-resolved bin workbook and writes to the selected document source set unless `--to` names another destination. With `--from`, export is explicit-workbook mode: it does not resolve `vba-project.json`, rejects `--project` and `--document`, and writes to the current directory when `--to` is omitted.
+Without `--from`, `export` is project-aware: it reads the selected document's
+manifest-resolved source workbook (`templatePath`) and writes to its source set
+unless `--to` names another destination. An exact already-open workbook supplies
+its live VBA, including unsaved VBE code, without workbook Save or closure of
+the pre-existing session. A closed workbook supplies saved contents through a
+bounded command-owned hidden session. With `--from`, Export retains its
+explicit-workbook mode: it does not resolve `vba-project.json`, rejects
+`--project` and `--document`, and writes to the current directory when `--to` is
+omitted. Standalone Import and explicit Export do not acquire borrowed-session
+or in-place Build semantics from project Export.
 
 Cleanup is enabled when the destination is manifest-owned or when `--to` is supplied. Cleanup-enabled export records existing `.bas`, `.cls`, and `.frm` relative paths, exports the workbook to a temporary directory first, and leaves the destination untouched if workbook export fails. After a successful temporary export, it recursively deletes existing `.bas`, `.cls`, `.frm`, and `.frx` files only; empty directories and unrelated files remain. Exported file names that match previous source files are restored to those previous relative paths, new exported file names are placed at the destination root, and exported form `.frx` files are written beside their `.frm`.
 
 When cleanup is not enabled, export still stages the complete workbook export before applying a recoverable overlay. It overwrites file paths it writes, but it does not delete unrelated files or displaced `.frx` files elsewhere in the destination.
 
-Both modes remove only invocation-owned staging after Excel's process release is proved. If the destination has been committed but staging cannot be conclusively removed, export keeps exit code `0` and its normal success output, and writes a `Warning:` to stderr with stable absolute retained paths. The committed destination is not rolled back. Inspect those paths and remove only obsolete staging after confirming Excel has exited; rerunning export is not necessary to recover a completed destination. Successful staging cleanup emits no warning.
+Both modes remove only invocation-owned staging after its producer has released
+the relevant automation handles and owned resources. A borrowed workbook is
+left open; its process exit is neither required nor authorized. If the
+destination has been committed but staging cannot be conclusively removed,
+Export keeps exit code `0` and normal success output, and writes a `Warning:`
+with stable absolute retained paths. The committed destination is not rolled
+back. Inspect those paths before removing obsolete staging; rerunning Export
+is not necessary to recover a completed destination. Successful staging cleanup
+emits no warning.
 
-Before destination commitment, retained staging is reported with the original failure or cancellation. Unproved Excel-process release is exit code `1`, retains all dependent staging, and never becomes success with a housekeeping warning. Existing destination recovery/protection failures retain their existing failure and recovery requirements.
+Project Export retains destination-overwrite and stale-source-deletion consent:
+the CLI command itself is explicit consent, and VS Code keeps its pre-launch
+confirmation. It does not add a mandatory dirty-destination-editor stop or
+automatically save, discard, or reload source-editor buffers. A later editor
+save can conflict with or overwrite exported files; review disk changes and
+unsaved editor contents before saving.
+
+Before destination commitment, retained staging is reported with the original failure or cancellation. Unproved owned Excel-process release is exit code `1`, retains all dependent staging, and never becomes success with a housekeeping warning. A borrowed user's process is not required to exit. Existing destination recovery/protection failures retain their existing failure and recovery requirements.
 
 ### import
 
@@ -941,8 +1068,8 @@ Example:
 | `documents` | Document definitions keyed by document name. |
 | `documents.<document>.kind` | Document kind. Currently only `excel` is supported. |
 | `documents.<document>.sourcePath` | Recursive DocumentSourceSet directory containing the template workbook and exported VBA source. `.bas`, `.cls`, and `.frm` file identity is flat by exported file name. |
-| `documents.<document>.templatePath` | Source template workbook used by `build` and `publish`. |
-| `documents.<document>.binPath` | Workbook generated by `build` and used by default by `test` and `export`. |
+| `documents.<document>.templatePath` | Source workbook updated in place by ordinary Build and read by project Export; also the copied template for Publish and snapshot generation. |
+| `documents.<document>.binPath` | Legacy generated workbook used by current ordinary/no-build Test paths; not ordinary Build or project Export output. Retained during the staged migration. |
 | `documents.<document>.publishPath` | Workbook generated by `publish`. |
 | `documents.<document>.commonModules[]` | Installed CommonModules entries for the document. |
 | `documents.<document>.commonModules[].name` | Extensionless CommonModuleName resolved through the CommonModules manifest. |
@@ -963,9 +1090,13 @@ Manifest mutation commands transiently own the sibling marker `vba-project.json.
 
 Workbook open and save timeouts are project-level manifest defaults. `vba-dev`
 does not expose per-invocation command-line options for these two values.
-Build and publish use a dedicated hidden Excel process on an invocation-scoped
-private desktop with a 30-second startup deadline, a 60-second deadline for each
+Publish, snapshot Build, and legacy Test generation use a dedicated hidden Excel
+process on an invocation-scoped private desktop with a 30-second startup
+deadline, a 60-second deadline for each
 reference attempt, a 30-second deadline for each module import, and a 5-second
 cooperative cleanup grace period. They preserve an existing completed output on
 failure or cancellation and atomically replace only the selected output after
-the staged workbook and owned process have completed successfully.
+the staged workbook and owned process have completed successfully. Ordinary
+Build instead follows the source-workbook Save and lifetime rules described
+above, and project Export borrows an exact open source workbook without saving
+or closing it.

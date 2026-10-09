@@ -7,11 +7,12 @@ using VbaDev.Domain;
 namespace VbaDev.App.Build;
 
 /// <summary>
-/// Builds a workbook-backed document from its template and full document source set.
+/// Builds a workbook-backed document from saved source files into its source workbook.
 /// </summary>
 public sealed class BuildCommand
 {
     private readonly WorkbookOutputCommand outputCommand;
+    private readonly SourceWorkbookBuildCommand? sourceWorkbookBuildCommand;
     private readonly BuildSourceSnapshotCaptureFactory snapshotCaptureFactory;
     private readonly BuildSourceSnapshotOutputSafetyValidator snapshotOutputSafetyValidator;
 
@@ -26,7 +27,21 @@ public sealed class BuildCommand
         : this(
             outputCommand,
             new BuildSourceSnapshotCaptureFactory(ownershipFactory),
-            new BuildSourceSnapshotOutputSafetyValidator(pathIdentityResolver))
+            new BuildSourceSnapshotOutputSafetyValidator(pathIdentityResolver),
+            null)
+    {
+    }
+
+    internal BuildCommand(
+        WorkbookOutputCommand outputCommand,
+        IFileSystemPathIdentityResolver pathIdentityResolver,
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
+        SourceWorkbookBuildCommand sourceWorkbookBuildCommand)
+        : this(
+            outputCommand,
+            new BuildSourceSnapshotCaptureFactory(ownershipFactory),
+            new BuildSourceSnapshotOutputSafetyValidator(pathIdentityResolver),
+            sourceWorkbookBuildCommand)
     {
     }
 
@@ -34,27 +49,47 @@ public sealed class BuildCommand
         WorkbookOutputCommand outputCommand,
         BuildSourceSnapshotCaptureFactory snapshotCaptureFactory,
         BuildSourceSnapshotOutputSafetyValidator snapshotOutputSafetyValidator)
+        : this(outputCommand, snapshotCaptureFactory, snapshotOutputSafetyValidator, null)
+    {
+    }
+
+    private BuildCommand(
+        WorkbookOutputCommand outputCommand,
+        BuildSourceSnapshotCaptureFactory snapshotCaptureFactory,
+        BuildSourceSnapshotOutputSafetyValidator snapshotOutputSafetyValidator,
+        SourceWorkbookBuildCommand? sourceWorkbookBuildCommand)
     {
         this.outputCommand = outputCommand;
+        this.sourceWorkbookBuildCommand = sourceWorkbookBuildCommand;
         this.snapshotCaptureFactory = snapshotCaptureFactory;
         this.snapshotOutputSafetyValidator = snapshotOutputSafetyValidator;
     }
 
     /// <summary>
-    /// Generates the document's bin workbook and imports all build source files.
+    /// Imports saved build sources into the selected source workbook and saves it in place.
     /// </summary>
     /// <param name="context">The resolved project and document context.</param>
     /// <returns>The command result describing the generated workbook or any user-facing failure.</returns>
     public CommandResult Run(ResolvedProjectContext context)
-        => outputCommand.RunBuild(context);
+        => RunAsync(context, CancellationToken.None).GetAwaiter().GetResult();
 
     /// <summary>
-    /// Generates the document's bin workbook with cooperative invocation cancellation.
+    /// Builds the selected source workbook with cooperative invocation cancellation.
     /// </summary>
     public Task<CommandResult> RunAsync(
         ResolvedProjectContext context,
         CancellationToken cancellationToken)
-        => outputCommand.RunBuildAsync(context, cancellationToken);
+        => RunAsync(context, null, cancellationToken);
+
+    /// <summary>Builds the source workbook, requesting consent for already-open unsaved changes.</summary>
+    public Task<CommandResult> RunAsync(
+        ResolvedProjectContext context,
+        Func<string, CancellationToken, Task<bool>>? confirmUnsavedChanges,
+        CancellationToken cancellationToken)
+        => sourceWorkbookBuildCommand is null
+            ? outputCommand.RunBuildAsync(context, cancellationToken)
+            : outputCommand.RunSourceBuildAsync(context, sourceWorkbookBuildCommand,
+                confirmUnsavedChanges, cancellationToken);
 
     /// <summary>
     /// Generates a caller-selected workbook from a complete caller-owned source snapshot.

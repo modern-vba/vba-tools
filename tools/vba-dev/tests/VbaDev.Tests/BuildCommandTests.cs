@@ -1,6 +1,7 @@
 using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Runtime.InteropServices;
 using VbaDev.App.Build;
 using VbaDev.App.Projects;
@@ -59,6 +60,7 @@ public sealed class BuildCommandTests
             ToolingCompositionRoot.CreateApplicationComposition(
                 root,
                 workbookGenerationAutomation: automation,
+                sourceWorkbookAutomation: new SourceWorkbookTestAutomation(automation),
                 projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty));
         using var standardOutput = new StringWriter();
         using var standardError = new StringWriter();
@@ -69,24 +71,24 @@ public sealed class BuildCommandTests
             standardError,
             CancellationToken.None);
 
-        Assert.Equal(0, exitCode);
+        Assert.True(exitCode == 0, standardError.ToString());
         Assert.Empty(standardError.ToString());
-        var expectedBin = Path.Combine(root, "bin", "SecondBook.xlsm");
+        var expectedSourceWorkbook = Path.Combine(root, "src", "SecondBook", "SecondBook.xlsm");
         Assert.Equal(
-            $"Built {expectedBin}{Environment.NewLine}" +
+            $"Built {expectedSourceWorkbook}{Environment.NewLine}" +
             $"Imported 1 source files.{Environment.NewLine}",
             standardOutput.ToString());
-        Assert.True(File.Exists(expectedBin));
-        Assert.Equal("template:SecondBook", File.ReadAllText(expectedBin, Encoding.UTF8));
+        Assert.True(File.Exists(expectedSourceWorkbook));
+        Assert.Equal("template:SecondBook", File.ReadAllText(expectedSourceWorkbook, Encoding.UTF8));
         Assert.Single(automation.OpenedWorkbooks);
-        Assert.NotEqual(expectedBin, automation.OpenedWorkbooks[0]);
-        Assert.Contains(Path.Combine(root, "bin"), automation.OpenedWorkbooks[0], StringComparison.Ordinal);
+        Assert.Equal(expectedSourceWorkbook, automation.OpenedWorkbooks[0]);
+        Assert.False(Directory.Exists(Path.Combine(root, "bin")));
         Assert.Equal(
             [
                 "remove:Standard1",
                 "remove:Class1",
                 "remove:Form1",
-                "import:Local.bas",
+                SourceWorkbookImportEvent(automation, "Local.bas"),
                 "save"
             ],
             automation.Events);
@@ -1033,11 +1035,11 @@ public sealed class BuildCommandTests
         Assert.Equal(0, result.ExitCode);
         Assert.Equal(
             [
-                "import:Base.bas",
-                "import:Feature.bas",
-                "import:Alpha.bas",
-                "import:Dialog.frm",
-                "import:Zeta.cls",
+                SourceWorkbookImportEvent(automation, "Base.bas"),
+                SourceWorkbookImportEvent(automation, "Feature.bas"),
+                SourceWorkbookImportEvent(automation, "Alpha.bas"),
+                SourceWorkbookImportEvent(automation, "Dialog.frm"),
+                SourceWorkbookImportEvent(automation, "Zeta.cls"),
                 "save"
             ],
             automation.Events);
@@ -1059,7 +1061,7 @@ public sealed class BuildCommandTests
         var result = application.Run(["build"]);
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Equal(["import:Local.bas", "save"], automation.Events);
+        Assert.Equal([SourceWorkbookImportEvent(automation, "Local.bas"), "save"], automation.Events);
     }
 
     [Fact]
@@ -1122,11 +1124,12 @@ public sealed class BuildCommandTests
         Assert.Equal(0, result.ExitCode);
         var importedForm = Assert.Single(automation.ImportedSources);
         Assert.Equal(VbaSourceKind.Form, importedForm.Kind);
-        Assert.Equal("Dialog.frm", importedForm.FileName);
+        AssertSourceWorkbookImport(importedForm, "Dialog.frm");
         Assert.NotEqual(Path.Combine(root, "src", "Book1", "Dialog.frm"), importedForm.SourcePath);
         Assert.NotNull(importedForm.BinaryPath);
         Assert.Equal(Path.GetDirectoryName(importedForm.SourcePath), Path.GetDirectoryName(importedForm.BinaryPath));
-        Assert.Equal("Dialog.frx", Path.GetFileName(importedForm.BinaryPath));
+        Assert.Equal(Path.ChangeExtension(importedForm.FileName, ".frx"),
+            Path.GetFileName(importedForm.BinaryPath));
         Assert.False(File.Exists(importedForm.SourcePath));
         Assert.False(File.Exists(importedForm.BinaryPath));
         Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(frxPath));
@@ -1142,7 +1145,8 @@ public sealed class BuildCommandTests
         new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
         var automation = new FakeWorkbookGenerationAutomation(new WorkbookModule("Standard1", WorkbookModuleKind.StandardModule));
-        automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true, NamespaceName: "UnlistedLibrary"));
+        automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true,
+            NamespaceName: "UnlistedLibrary", Guid: "{55555555-1111-2222-3333-444444444444}", Major: 1, Minor: 0));
         automation.AdoptedReferenceNamespaces["Microsoft Scripting Runtime"] = "Scripting";
         var resolver = new FakeVbaProjectReferenceResolver(
             new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0));
@@ -1159,7 +1163,7 @@ public sealed class BuildCommandTests
                 "remove:Standard1",
                 "remove-ref:Unlisted Library",
                 "add-ref:Microsoft Scripting Runtime",
-                "import:Local.bas",
+                SourceWorkbookImportEvent(automation, "Local.bas"),
                 "save"
             ],
             automation.Events);
@@ -1177,7 +1181,8 @@ public sealed class BuildCommandTests
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
         var automation = new FakeWorkbookGenerationAutomation(new WorkbookModule("Standard1", WorkbookModuleKind.StandardModule));
         automation.References.Add(new WorkbookReference("OLE Automation", IsRemovable: false, NamespaceName: "stdole"));
-        automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true, NamespaceName: "UnlistedLibrary"));
+        automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true,
+            NamespaceName: "UnlistedLibrary", Guid: "{55555555-1111-2222-3333-444444444444}", Major: 1, Minor: 0));
         automation.AdoptedReferenceNamespaces["Microsoft Scripting Runtime"] = "Scripting";
         var resolver = new FakeVbaProjectReferenceResolver(
             new ResolvedVbaProjectReference("OLE Automation", "{00020430-0000-0000-C000-000000000046}", 1, 0),
@@ -1368,25 +1373,24 @@ public sealed class BuildCommandTests
     }
 
     [Fact]
-    public void BuildReportsLockedTargetWithoutOpeningTargetWorkbook()
+    public void BuildReportsLockedSourceWorkbookBeforeOpeningExcel()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
-        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
-        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
-        File.WriteAllText(binPath, "locked-bin", Encoding.UTF8);
-        using var lockStream = new FileStream(binPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        var sourceWorkbook = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        using var lockStream = new FileStream(sourceWorkbook, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
         var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(root, workbookGenerationAutomation: automation);
 
         var result = application.Run(["build"]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("Target workbook is locked or unavailable", result.StandardError, StringComparison.Ordinal);
-        Assert.DoesNotContain(binPath, automation.OpenedWorkbooks);
-        Assert.Single(automation.OpenedWorkbooks);
+        Assert.Contains(sourceWorkbook, result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(automation.OpenedWorkbooks);
+        Assert.Empty(automation.Events);
+        Assert.False(Directory.Exists(Path.Combine(root, "bin")));
     }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -1404,6 +1408,29 @@ public sealed class BuildCommandTests
         public void Save(string projectRoot, ProjectManifest manifest)
             => throw new InvalidOperationException(
                 "Grammar failures must not save project state.");
+    }
+
+    internal static string SourceWorkbookImportEvent(
+        FakeWorkbookGenerationAutomation automation,
+        string authoringFileName)
+    {
+        var source = Assert.Single(automation.ImportedSources,
+            source => Path.GetFileName(source.DiagnosticSourcePath) == authoringFileName);
+        AssertSourceWorkbookImport(source, authoringFileName);
+        return $"import:{source.FileName}";
+    }
+
+    internal static void AssertSourceWorkbookImport(
+        VbeImportSourceFile source,
+        string authoringFileName)
+    {
+        Assert.Equal(authoringFileName, Path.GetFileName(source.DiagnosticSourcePath));
+        Assert.Equal(Path.GetFileNameWithoutExtension(authoringFileName),
+            source.ImportVerification.ComponentName);
+        Assert.Matches($"^[a-f0-9]{{32}}_{Regex.Escape(authoringFileName)}$", source.FileName);
+        Assert.Equal(Path.Combine(Path.GetTempPath(), "vba-dev-vbe-import", "source-workbook-build"),
+            Path.GetDirectoryName(source.SourcePath));
+        Assert.NotEqual(source.DiagnosticSourcePath, source.SourcePath);
     }
 
     private static void CreateWorkbookSource(string root, string documentName, params (string FileName, string Content)[] sources)

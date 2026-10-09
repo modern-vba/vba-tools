@@ -155,7 +155,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
     }
 
     [Fact]
-    public void ApplicationCompositionUsesTheGenerationContract()
+    public void ApplicationCompositionRoutesSourceBuildThroughInjectedAutomation()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -181,8 +181,11 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
 
         Assert.Equal(0, result.ExitCode);
         Assert.Equal(1, automation.RunCalls);
-        Assert.Equal(["import:Feature.bas", "save"], automation.Events);
-        Assert.True(File.Exists(Path.Combine(root, "bin", "Book1.xlsm")));
+        var importedSource = Assert.Single(automation.ImportedSources);
+        BuildCommandTests.AssertSourceWorkbookImport(importedSource, "Feature.bas");
+        Assert.Equal([$"import:{importedSource.FileName}", "save"], automation.Events);
+        Assert.True(File.Exists(Path.Combine(sourceDirectory, "Book1.xlsm")));
+        Assert.False(File.Exists(Path.Combine(root, "bin", "Book1.xlsm")));
     }
 
     [Fact]
@@ -1390,6 +1393,8 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
 
         public List<string> Events { get; } = [];
 
+        public List<VbeImportSourceFile> ImportedSources { get; } = [];
+
         public async Task<TResult> RunAsync<TResult>(
             string workbookPath,
             WorkbookAutomationTimeouts timeouts,
@@ -1398,12 +1403,14 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         {
             RunCalls++;
             return await operation(
-                new RecordingWorkbookGenerationSession(Events),
+                new RecordingWorkbookGenerationSession(Events, ImportedSources),
                 cancellationToken);
         }
     }
 
-    private sealed class RecordingWorkbookGenerationSession(List<string> events)
+    private sealed class RecordingWorkbookGenerationSession(
+        List<string> events,
+        List<VbeImportSourceFile> importedSources)
         : IWorkbookGenerationSession
     {
         public Task<string> GetProjectNameAsync(CancellationToken cancellationToken)
@@ -1432,6 +1439,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             VbeImportSourceFile sourceFile,
             CancellationToken cancellationToken)
         {
+            importedSources.Add(sourceFile);
             events.Add($"import:{sourceFile.FileName}");
             return Task.CompletedTask;
         }

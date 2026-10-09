@@ -18,9 +18,27 @@ public sealed class CapturedWorkbookTemplate
 
     public static CapturedWorkbookTemplate Capture(string sourcePath, CancellationToken cancellationToken = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
         var path = Path.GetFullPath(sourcePath);
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        return new(path, ReadBytes(path, FileShare.Read, cancellationToken));
+    }
+
+    internal static CapturedWorkbookTemplate CaptureSavedOpenSource(
+        string sourcePath, CancellationToken cancellationToken)
+    {
+        var path = Path.GetFullPath(sourcePath);
+        const FileShare share = FileShare.ReadWrite | FileShare.Delete;
+        var first = ReadBytes(path, share, cancellationToken);
+        var second = ReadBytes(path, share, cancellationToken);
+        if (!first.AsSpan().SequenceEqual(second))
+            throw new IOException(
+                $"The saved source workbook changed during Build admission: {path}. Save it and retry Build.");
+        return new(path, second);
+    }
+
+    private static byte[] ReadBytes(string path, FileShare share, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, share);
         if (stream.Length > VbaProjectPackageMetadataReader.MaximumPackageLength)
         {
             throw new InvalidOperationException($"The source-template package exceeds the supported size: {path}");
@@ -28,7 +46,7 @@ public sealed class CapturedWorkbookTemplate
         var captured = new byte[checked((int)stream.Length)];
         stream.ReadExactly(captured);
         cancellationToken.ThrowIfCancellationRequested();
-        return new(path, captured);
+        return captured;
     }
 
     internal VbaProjectPackageMetadataReadResult ReadMetadata(CancellationToken cancellationToken)

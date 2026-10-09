@@ -1010,6 +1010,44 @@ test('Packaged VbaDev contract requires stdin cancellation 1.0', () => {
   );
 });
 
+for (const feature of [
+  'build.sourceWorkbook',
+  'export.sourceWorkbook',
+  'invocation.stdinWorkbookConfirmation'
+]) {
+  test(`Packaged VbaDev contract rejects a provider missing ${feature} before command use`, async () => {
+    const extensionRoot = path.resolve(__dirname, '..', '..');
+    const contract = loadRequiredVbaDevContract(extensionRoot);
+    assert.equal(contract.featureVersions?.[feature], '1.0');
+    const featureVersions = { ...contract.featureVersions };
+    delete featureVersions[feature];
+    const commands = Object.fromEntries(Object.entries(contract.commandSchemaVersions)
+      .map(([command, outputSchemaVersion]) => [command, { outputSchemaVersion }]));
+    const calls: Array<readonly string[]> = [];
+
+    await assert.rejects(() => resolveCompatibleVbaDev({
+      extensionRoot,
+      configuredPath: path.join('D:', 'tools', 'older-vba-dev.exe'),
+      requiredContract: contract,
+      runProcess: async (_file, args) => {
+        calls.push(args);
+        return {
+          stdout: JSON.stringify({
+            toolVersion: '0.1.0', contractVersion: contract.contractVersion,
+            featureVersions, activeWindowsCodePage: 65001, commands
+          }),
+          stderr: ''
+        };
+      }
+    }), error => {
+      assert.ok(error instanceof VbaDevCompatibilityError);
+      assert.ok(error.message.includes(`does not report required feature '${feature}'`));
+      return true;
+    });
+    assert.deepEqual(calls, [['capabilities', '--format', 'json']]);
+  });
+}
+
 test('Packaged Build contract requires source-analysis 2.0 and rejects an older provider', async () => {
   const extensionRoot = path.resolve(__dirname, '..', '..');
   const contract = loadRequiredVbaDevContract(extensionRoot);

@@ -38,6 +38,8 @@ internal sealed class VbaDevBuildPublishCommandFamily
 
     internal Option<string> BuildOutputOption { get; private set; } = null!;
 
+    internal Option<bool> BuildInteractiveOption { get; private set; } = null!;
+
     internal VbaDevGrammarIntentBinding<VbaDevBuildCommandIntent> BuildIntentBinding { get; private set; }
         = null!;
 
@@ -73,7 +75,7 @@ internal sealed class VbaDevBuildPublishCommandFamily
         BuildCommand = VbaDevCommandGrammar.AddCapabilityCommand(
             rootCommand,
             "build",
-            "Build the selected document into bin output.",
+            "Import saved sources into the selected source workbook and save it in place.",
             "build",
             "3.0",
             capabilityRegistrations);
@@ -91,6 +93,12 @@ internal sealed class VbaDevBuildPublishCommandFamily
             aliases: "-o");
         BuildCommand.Add(BuildSourceSnapshotOption);
         BuildCommand.Add(BuildOutputOption);
+        BuildInteractiveOption = new Option<bool>("--interactive")
+        {
+            Description = "Allow terminal confirmation for unsaved workbook changes (default true); false refuses without prompting.",
+            DefaultValueFactory = _ => true
+        };
+        BuildCommand.Add(BuildInteractiveOption);
         grammarFailureRules.RequireNonEmpty(BuildSourceSnapshotOption);
         grammarFailureRules.RequireNonEmpty(BuildOutputOption);
         grammarFailureRules.AllOrNone(
@@ -172,7 +180,11 @@ internal sealed class VbaDevBuildPublishCommandFamily
                     composition,
                     persistentBuild.ProjectRoot,
                     persistentBuild.DocumentName,
-                    composition.BuildCommand.RunAsync,
+                    (context, operationCancellationToken) => composition.BuildCommand.RunAsync(
+                        context,
+                        parseResult.GetValue(BuildInteractiveOption)
+                            ? VbaDevWorkbookConfirmationInput.ConfirmAsync : null,
+                        operationCancellationToken),
                     cancellationToken),
             VbaDevBuildCommandIntent.SourceSnapshotBuild sourceSnapshotBuild =>
                 VbaDevCommandGrammar.ResolveDocumentContextAsync(

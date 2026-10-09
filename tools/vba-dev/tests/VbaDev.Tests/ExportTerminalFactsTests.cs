@@ -103,7 +103,9 @@ public sealed class ExportTerminalFactsTests
             + Environment.NewLine;
         if (category == "process-release")
         {
-            expectedError += $"Export staging was retained because owned Excel process release could not be proved: {stagingPath}{Environment.NewLine}";
+            expectedError += explicitWorkbook
+                ? $"Export staging was retained because owned Excel process release could not be proved: {stagingPath}{Environment.NewLine}"
+                : $"Export staging was retained because source-workbook automation release could not be proved: {stagingPath}{Environment.NewLine}";
             Assert.True(Directory.Exists(stagingPath));
             Directory.Delete(stagingPath, recursive: true);
         }
@@ -234,7 +236,7 @@ public sealed class ExportTerminalFactsTests
     {
         new JsonProjectManifestStore().Save(temp.Path,
             ProjectManifest.CreateDefault("Project", "Book1", temp.Path, null));
-        var workbook = Path.Combine(temp.CreateDirectory("bin"), "Book1.xlsm");
+        var workbook = Path.Combine(temp.CreateDirectory("src/Book1"), "Book1.xlsm");
         File.WriteAllText(workbook, "workbook");
         var destination = temp.CreateDirectory("src/Book1");
         File.WriteAllText(Path.Combine(destination, "Module1.bas"), "old module");

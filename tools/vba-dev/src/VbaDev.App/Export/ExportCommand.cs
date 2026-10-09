@@ -12,6 +12,7 @@ namespace VbaDev.App.Export;
 public sealed class ExportCommand
 {
     private readonly IWorkbookModuleExporter workbookModuleExporter;
+    private readonly IWorkbookModuleExporter projectWorkbookModuleExporter;
     private readonly IExactFileSystemObjectOwnershipFactory ownershipFactory;
     private readonly RecoverableExportDestinationTransaction destinationTransaction;
 
@@ -33,10 +34,21 @@ public sealed class ExportCommand
         IExactFileSystemObjectOwnershipFactory ownershipFactory,
         IWorkbookModuleExporter workbookModuleExporter,
         IExportDestinationFileOperations destinationFileOperations)
+        : this(ownershipFactory, workbookModuleExporter, workbookModuleExporter, destinationFileOperations)
+    {
+    }
+
+    internal ExportCommand(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
+        IWorkbookModuleExporter workbookModuleExporter,
+        IWorkbookModuleExporter projectWorkbookModuleExporter,
+        IExportDestinationFileOperations? destinationFileOperations = null)
     {
         this.ownershipFactory = ownershipFactory;
         this.workbookModuleExporter = workbookModuleExporter;
-        destinationTransaction = new RecoverableExportDestinationTransaction(destinationFileOperations);
+        this.projectWorkbookModuleExporter = projectWorkbookModuleExporter;
+        destinationTransaction = new RecoverableExportDestinationTransaction(
+            destinationFileOperations ?? new ExportDestinationFileOperations());
     }
 
     /// <summary>
@@ -64,7 +76,7 @@ public sealed class ExportCommand
     {
         return await RunWithTerminalFactsAsync(async () =>
         {
-            var sourceWorkbookPath = context.BinDocumentPath;
+            var sourceWorkbookPath = context.TemplateDocumentPath;
             var destinationDirectory = request.DestinationDirectory is null
                 ? context.DocumentSourceSetPath
                 : ResolvePath(request.WorkingDirectory, request.DestinationDirectory);
@@ -78,6 +90,8 @@ public sealed class ExportCommand
                     sourceWorkbookPath,
                     destinationDirectory,
                     cleanDestination,
+                    projectWorkbookModuleExporter,
+                    sourceWorkbookMode: true,
                     automationTimeouts,
                     cancellationToken)
                 .ConfigureAwait(false);
@@ -116,6 +130,8 @@ public sealed class ExportCommand
                     sourceWorkbookPath,
                     destinationDirectory,
                     cleanDestination,
+                    workbookModuleExporter,
+                    sourceWorkbookMode: false,
                     WorkbookAutomationTimeouts.Default,
                     cancellationToken)
                 .ConfigureAwait(false);
@@ -126,6 +142,8 @@ public sealed class ExportCommand
         string sourceWorkbookPath,
         string destinationDirectory,
         bool cleanDestination,
+        IWorkbookModuleExporter exporter,
+        bool sourceWorkbookMode,
         WorkbookAutomationTimeouts automationTimeouts,
         CancellationToken cancellationToken)
     {
@@ -143,6 +161,8 @@ public sealed class ExportCommand
                 sourceWorkbookPath,
                 destinationDirectory,
                 cleanDestination,
+                exporter,
+                sourceWorkbookMode,
                 automationTimeouts,
                 cancellationToken)
             .ConfigureAwait(false);
@@ -155,6 +175,8 @@ public sealed class ExportCommand
         string sourceWorkbookPath,
         string destinationDirectory,
         bool cleanDestination,
+        IWorkbookModuleExporter exporter,
+        bool sourceWorkbookMode,
         WorkbookAutomationTimeouts automationTimeouts,
         CancellationToken cancellationToken)
     {
@@ -163,7 +185,7 @@ public sealed class ExportCommand
         var additionalEvidence = string.Empty;
         try
         {
-            await workbookModuleExporter.ExportModulesAsync(sourceWorkbookPath, staging,
+            await exporter.ExportModulesAsync(sourceWorkbookPath, staging,
                 automationTimeouts, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception error) { failure = error; }
@@ -173,7 +195,9 @@ public sealed class ExportCommand
             var facts = WorkbookAutomationTerminalFacts.Analyze(failure);
             if (!facts.ProcessReleaseProven)
                 throw new ExportScratchFailureException(failure,
-                    $"Export staging was retained because owned Excel process release could not be proved: {staging.Path}{Environment.NewLine}");
+                    sourceWorkbookMode
+                        ? $"Export staging was retained because source-workbook automation release could not be proved: {staging.Path}{Environment.NewLine}"
+                        : $"Export staging was retained because owned Excel process release could not be proved: {staging.Path}{Environment.NewLine}");
         }
 
         try { staging.CompleteProduction(); }
@@ -195,7 +219,9 @@ public sealed class ExportCommand
 
         var cleanup = staging.Cleanup();
         var cleanupText = cleanup.Status == InvocationScratchCleanupStatus.Removed ? string.Empty
-            : $"Export staging could not be removed ({cleanup.Status}). Retained absolute paths: {string.Join(", ", cleanup.RetainedPaths)}. Inspect these paths and remove only obsolete staging after confirming Excel has exited.{Environment.NewLine}";
+            : sourceWorkbookMode
+                ? $"Export staging could not be removed ({cleanup.Status}). Retained absolute paths: {string.Join(", ", cleanup.RetainedPaths)}. Inspect these paths and remove only obsolete staging after confirming source-workbook automation is no longer writing to them.{Environment.NewLine}"
+                : $"Export staging could not be removed ({cleanup.Status}). Retained absolute paths: {string.Join(", ", cleanup.RetainedPaths)}. Inspect these paths and remove only obsolete staging after confirming Excel has exited.{Environment.NewLine}";
         if (failure is not null)
         {
             if (additionalEvidence.Length > 0 || cleanupText.Length > 0)

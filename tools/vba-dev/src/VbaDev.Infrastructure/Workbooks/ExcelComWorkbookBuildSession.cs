@@ -16,6 +16,8 @@ internal sealed class ExcelComWorkbookBuildSession :
 
     private const int TypeLibNotRegistered = unchecked((int)0x8002801D);
     private readonly ExcelComWorkbookSession session;
+    private readonly Action? beforeNativeSave;
+    private readonly Action? afterNativeSave;
     private readonly List<(VbeImportVerification Expected, string ImportedComponentName)>
         pendingImportVerifications = [];
 
@@ -23,9 +25,14 @@ internal sealed class ExcelComWorkbookBuildSession :
     /// Initializes a build session over an Excel application and workbook COM object.
     /// </summary>
     /// <param name="session">The Excel COM workbook session.</param>
-    public ExcelComWorkbookBuildSession(ExcelComWorkbookSession session)
+    public ExcelComWorkbookBuildSession(
+        ExcelComWorkbookSession session,
+        Action? beforeNativeSave = null,
+        Action? afterNativeSave = null)
     {
         this.session = session;
+        this.beforeNativeSave = beforeNativeSave;
+        this.afterNativeSave = afterNativeSave;
     }
 
     /// <summary>
@@ -717,8 +724,18 @@ internal sealed class ExcelComWorkbookBuildSession :
     public void Save()
     {
         dynamic workbook = session.WorkbookObject;
+        beforeNativeSave?.Invoke();
         workbook.Save();
+        afterNativeSave?.Invoke();
     }
+
+    internal bool IsSaved()
+    {
+        dynamic workbook = session.WorkbookObject;
+        return (bool)workbook.Saved;
+    }
+
+    internal void ReleaseBorrowed() => session.ReleaseBorrowed();
 
     public IReadOnlyList<WorkbookTestResultRow> RunTests(WorkbookTestSelector selector)
         => ExcelComWorkbookTestRunner.RunTests(session, selector);

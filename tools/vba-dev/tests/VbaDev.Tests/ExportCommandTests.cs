@@ -21,6 +21,7 @@ public sealed class ExportCommandTests
         var sourceSet = CreateDocumentSourceSet(root, "Book1");
         CreateDocumentSourceSet(root, "SecondBook", ("Other.bas", "Attribute VB_Name = \"Other\""));
         var binPath = CreateWorkbook(root, "bin", "Book1");
+        var sourceWorkbookPath = Path.Combine(sourceSet, "Book1.xlsm");
         WriteText(Path.Combine(sourceSet, "modules", "Module1.bas"), "'#ExcludePublish\nold");
         WriteText(Path.Combine(sourceSet, "old", "Old.cls"), "old");
         WriteText(Path.Combine(sourceSet, "forms", "Dialog.frm"), "old");
@@ -39,11 +40,12 @@ public sealed class ExportCommandTests
 
         Assert.Equal(0, result.ExitCode);
         Assert.Equal(
-            $"Exported {binPath} to {sourceSet}{Environment.NewLine}",
+            $"Exported {sourceWorkbookPath} to {sourceSet}{Environment.NewLine}",
             result.StandardOutput);
         Assert.Empty(result.StandardError);
         var call = Assert.Single(exporter.Calls);
-        Assert.Equal(binPath, call.WorkbookPath);
+        Assert.Equal(sourceWorkbookPath, call.WorkbookPath);
+        Assert.True(File.Exists(binPath));
         Assert.NotEqual(sourceSet, call.DestinationDirectory);
         Assert.False(File.Exists(Path.Combine(sourceSet, "old", "Old.cls")));
         Assert.False(File.Exists(Path.Combine(sourceSet, "Dialog.frx")));
@@ -58,6 +60,39 @@ public sealed class ExportCommandTests
         Assert.True(File.Exists(Path.Combine(sourceSet, "forms", "Dialog.frm")));
         Assert.Equal("frx", File.ReadAllText(Path.Combine(sourceSet, "forms", "Dialog.frx"), Encoding.UTF8));
         Assert.Equal("VERSION 1.0 CLASS", File.ReadAllText(Path.Combine(sourceSet, "NewModule.cls"), Encoding.UTF8));
+    }
+
+    [Fact]
+    public async Task ProjectExportUsesSourceExporterButExplicitExportKeepsLegacyExporter()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var sourceSet = CreateDocumentSourceSet(root, "Book1");
+        var context = new ProjectContextResolver(new JsonProjectManifestStore())
+            .Resolve(new ProjectResolutionRequest(root, null, root));
+        var explicitWorkbook = Path.Combine(root, "external.xlsm");
+        File.WriteAllText(explicitWorkbook, "external", Encoding.UTF8);
+        var legacyExporter = new FakeWorkbookModuleExporter(("Legacy.bas", "legacy"));
+        var sourceExporter = new FakeWorkbookModuleExporter(("Source.bas", "source"));
+        var command = new ExportCommand(
+            new VbaDev.Infrastructure.FileSystem.WindowsExactFileSystemObjectOwnershipFactory(),
+            legacyExporter,
+            sourceExporter);
+
+        var projectResult = await command.RunAsync(
+            context,
+            new ProjectExportCommandRequest(null, root),
+            CancellationToken.None);
+        var explicitResult = await command.RunExplicitAsync(
+            new ExplicitWorkbookExportCommandRequest(explicitWorkbook, null, root),
+            CancellationToken.None);
+
+        Assert.Equal(0, projectResult.ExitCode);
+        Assert.Equal(0, explicitResult.ExitCode);
+        Assert.Equal(context.TemplateDocumentPath, Assert.Single(sourceExporter.Calls).WorkbookPath);
+        Assert.Equal(explicitWorkbook, Assert.Single(legacyExporter.Calls).WorkbookPath);
+        Assert.True(File.Exists(Path.Combine(sourceSet, "Source.bas")));
     }
 
     [Fact]
@@ -348,7 +383,7 @@ public sealed class ExportCommandTests
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
-        CreateDocumentSourceSet(root, "Book1");
+        var sourceSet = CreateDocumentSourceSet(root, "Book1");
         var binPath = CreateWorkbook(root, "bin", "Book1");
         var explicitDestination = temp.CreateDirectory("explicit-export");
         File.WriteAllText(Path.Combine(explicitDestination, "Old.bas"), "old", Encoding.UTF8);
@@ -362,7 +397,8 @@ public sealed class ExportCommandTests
 
         Assert.Equal(0, result.ExitCode);
         var call = Assert.Single(exporter.Calls);
-        Assert.Equal(binPath, call.WorkbookPath);
+        Assert.Equal(Path.Combine(sourceSet, "Book1.xlsm"), call.WorkbookPath);
+        Assert.True(File.Exists(binPath));
         Assert.NotEqual(explicitDestination, call.DestinationDirectory);
         Assert.False(File.Exists(Path.Combine(explicitDestination, "Old.bas")));
         Assert.False(File.Exists(Path.Combine(explicitDestination, "nested", "Old.frm")));
@@ -393,7 +429,8 @@ public sealed class ExportCommandTests
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("export failed", result.StandardError, StringComparison.Ordinal);
         var call = Assert.Single(exporter.Calls);
-        Assert.Equal(binPath, call.WorkbookPath);
+        Assert.Equal(Path.Combine(sourceSet, "Book1.xlsm"), call.WorkbookPath);
+        Assert.True(File.Exists(binPath));
         Assert.NotEqual(sourceSet, call.DestinationDirectory);
         Assert.Equal("old", File.ReadAllText(Path.Combine(sourceSet, "modules", "Old.bas"), Encoding.UTF8));
         Assert.True(File.Exists(Path.Combine(sourceSet, "forms", "Old.frx")));

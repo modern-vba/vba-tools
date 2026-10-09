@@ -17,6 +17,7 @@ import './commandPaletteTargetAdapter.test';
 import './projectManifestMutation.test';
 import './projectManifestMutationVscodeAdapter.test';
 import './devtoolCommand.test';
+import './workbookConfirmation.test';
 import './devtoolRuntime.test';
 import './workspaceTrust.test';
 import './companionLanguageServerLifecycle.test';

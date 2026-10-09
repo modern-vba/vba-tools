@@ -763,7 +763,8 @@ internal sealed class AutomationExcelProcessRuntime
         IWorkbookBuildSession session,
         string workbookName,
         WorkbookAutomationTimeouts timeouts) :
-        IWorkbookGenerationSession
+        IWorkbookGenerationSession,
+        IWorkbookGenerationSavedStateReader
     {
         public WorkbookAutomationStage? LastStage => execution.LastStage;
 
@@ -878,6 +879,13 @@ internal sealed class AutomationExcelProcessRuntime
                 timeouts.WorkbookSave,
                 cancellationToken,
                 session.Save);
+
+        public Task<bool> IsSavedAsync(CancellationToken cancellationToken)
+            => ExecuteAsync(
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.ModuleInspection),
+                timeouts.ModuleImport,
+                cancellationToken,
+                () => ((ExcelComWorkbookBuildSession)session).IsSaved());
 
         public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
             WorkbookTestSelector selector,
