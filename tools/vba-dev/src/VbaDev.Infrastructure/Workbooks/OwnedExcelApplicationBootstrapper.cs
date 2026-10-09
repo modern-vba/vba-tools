@@ -714,6 +714,27 @@ internal sealed class WindowsExcelNativeObjectModelBinder : IExcelNativeObjectMo
     private static readonly Guid IDispatchId =
         new("00020400-0000-0000-C000-000000000046");
 
+    internal object? TryBindApplicationOnCallerDesktopOnce(int processId)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
+        foreach (var topLevelWindow in FindTopLevelWindows(processId))
+        {
+            var nativeObjectWindow = FindDescendantWindow(topLevelWindow, "EXCEL7");
+            if (nativeObjectWindow == nint.Zero)
+            {
+                continue;
+            }
+
+            var application = TryBindApplication(nativeObjectWindow, processId);
+            if (application is not null)
+            {
+                return application;
+            }
+        }
+
+        return null;
+    }
+
     internal object BindApplicationOnCallerDesktopForUnisolatedControl(
         int processId,
         Func<bool> hasProcessExited)

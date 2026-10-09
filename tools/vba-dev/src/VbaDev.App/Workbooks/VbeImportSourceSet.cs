@@ -27,6 +27,9 @@ public sealed class VbeImportSourceSetFactory
     internal VbeImportSourceSet Create(AdmittedVbaSourceSet admission)
         => NotifyCreated(VbeImportSourceSet.Create(ownershipFactory, admission));
 
+    internal VbeImportSourceSet CreateForSourceWorkbookBuild(AdmittedVbaSourceSet admission)
+        => NotifyCreated(VbeImportSourceSet.CreateFlatForSourceWorkbookBuild(ownershipFactory, admission));
+
     private VbeImportSourceSet NotifyCreated(VbeImportSourceSet sourceSet)
     {
         try
@@ -62,6 +65,7 @@ public sealed class VbeImportSourceSet : IDisposable
         throwOnInvalidBytes: true);
     private readonly ExactFileSystemObjectOwnership ownership;
     private readonly InvocationScratch scratch;
+    private readonly bool usesStableParent;
     private bool disposed;
 
     private VbeImportSourceSet(
@@ -70,10 +74,12 @@ public sealed class VbeImportSourceSet : IDisposable
         string stagingPath,
         IReadOnlyList<VbeImportSourceFile> sourceFiles,
         int activeCodePage,
-        AdmittedVbaSourceSet admission)
+        AdmittedVbaSourceSet admission,
+        bool usesStableParent = false)
     {
         this.ownership = ownership;
         this.scratch = scratch;
+        this.usesStableParent = usesStableParent;
         StagingPath = stagingPath;
         SourceFiles = sourceFiles;
         ActiveCodePage = activeCodePage;
@@ -81,7 +87,8 @@ public sealed class VbeImportSourceSet : IDisposable
     }
 
     /// <summary>
-    /// Gets the invocation-private staging directory.
+    /// Gets the directory containing the VBE-facing source files. For source-workbook
+    /// Build this is a stable shared parent, not an invocation-owned cleanup target.
     /// </summary>
     public string StagingPath { get; }
 
@@ -190,6 +197,99 @@ public sealed class VbeImportSourceSet : IDisposable
         }
     }
 
+    /// <summary>
+    /// Stages source-workbook Build files directly in a stable parent because VBIDE may
+    /// retain a directory handle for the lifetime of an already-open Excel process.
+    /// Only exact, invocation-created file receipts are registered for cleanup.
+    /// </summary>
+    internal static VbeImportSourceSet CreateFlatForSourceWorkbookBuild(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
+        AdmittedVbaSourceSet admission)
+    {
+        ArgumentNullException.ThrowIfNull(admission);
+        var activeEncoding = CreateStrictActiveEncoding(admission.ActiveCodePage);
+        var stableParent = Path.Combine(Path.GetTempPath(), "vba-dev-vbe-import", "source-workbook-build");
+        Directory.CreateDirectory(stableParent);
+        var ownership = ownershipFactory.Open();
+        var scratch = new InvocationScratch(ownership);
+        var transferred = false;
+        try
+        {
+            var prefix = Guid.NewGuid().ToString("N") + "_";
+            var stagedSources = new List<VbeImportSourceFile>(admission.Sources.Length);
+            foreach (var source in admission.Sources)
+            {
+                var stagedBaseName = prefix + Path.GetFileNameWithoutExtension(source.FileName);
+                var importBytes = EncodeForVbe(
+                    RewriteFormResourceBasenames(source, stagedBaseName),
+                    activeEncoding,
+                    admission.ActiveCodePage,
+                    source.DiagnosticSourcePath);
+                var stagedSourcePath = CopyExact(prefix + source.FileName, importBytes);
+                string? stagedBinaryPath = null;
+                if (source.BinaryBytes is { } binaryBytes)
+                {
+                    stagedBinaryPath = CopyExact(
+                        stagedBaseName + ".frx",
+                        binaryBytes.AsSpan());
+                }
+
+                stagedSources.Add(new VbeImportSourceFile(
+                    stagedSourcePath,
+                    source.Kind,
+                    stagedBinaryPath,
+                    new VbeImportVerification(
+                        source.ModuleIdentityAuthority.Name ?? source.Projection.ModuleName,
+                        source.Kind,
+                        source.Projection.CodeModuleLines,
+                        source.OriginalEncoding),
+                    source.DiagnosticSourcePath,
+                    source.ModuleIdentityAuthority));
+            }
+
+            var sourceSet = new VbeImportSourceSet(
+                ownership,
+                scratch,
+                stableParent,
+                stagedSources.AsReadOnly(),
+                admission.ActiveCodePage,
+                admission,
+                usesStableParent: true);
+            transferred = true;
+            return sourceSet;
+        }
+        catch (Exception stagingError)
+        {
+            var cleanup = scratch.Cleanup();
+            if (cleanup.Status != InvocationScratchCleanupStatus.Removed)
+            {
+                throw new InvalidOperationException(
+                    $"{stagingError.Message} {DescribeCleanup(cleanup, usesStableParent: true)}", stagingError);
+            }
+
+            throw;
+        }
+        finally
+        {
+            if (!transferred) ownership.Dispose();
+        }
+
+        string CopyExact(string fileName, ReadOnlySpan<byte> bytes)
+        {
+            try
+            {
+                var receipt = ownership.CreateOnlyFile(stableParent, fileName, bytes);
+                scratch.Register(receipt);
+                return receipt.Route;
+            }
+            catch (ExactFileSystemObjectOwnership.FileCreationCleanupException error)
+            {
+                if (error.RetainedReceipt is not null) scratch.Register(error.RetainedReceipt);
+                throw;
+            }
+        }
+    }
+
     /// <inheritdoc />
     public void Dispose()
     {
@@ -199,7 +299,7 @@ public sealed class VbeImportSourceSet : IDisposable
         try { CleanupEvidence = cleanup = scratch.Cleanup(); }
         finally { ownership.Dispose(); }
         if (cleanup.Status != InvocationScratchCleanupStatus.Removed)
-            throw new InvalidOperationException(DescribeCleanup(cleanup));
+            throw new InvalidOperationException(DescribeCleanup(cleanup, usesStableParent));
     }
 
     internal void RetainWithoutCleanup()
@@ -209,8 +309,53 @@ public sealed class VbeImportSourceSet : IDisposable
         ownership.Dispose();
     }
 
-    private static string DescribeCleanup(InvocationScratchCleanupEvidence cleanup)
-        => $"The VBE import staging directory could not be removed ({cleanup.Status}). Retained paths: {string.Join(", ", cleanup.RetainedPaths)}";
+    private static string DescribeCleanup(InvocationScratchCleanupEvidence cleanup, bool usesStableParent = false)
+        => usesStableParent
+            ? $"The invocation-owned VBE import files could not be removed ({cleanup.Status}). Retained paths: {string.Join(", ", cleanup.RetainedPaths)}"
+            : $"The VBE import staging directory could not be removed ({cleanup.Status}). Retained paths: {string.Join(", ", cleanup.RetainedPaths)}";
+
+    private static string RewriteFormResourceBasenames(AdmittedVbaSource source, string stagedBaseName)
+    {
+        if (source.Kind != VbaSourceKind.Form) return source.Text;
+        var designer = source.Syntax.Module.FormDesignerBlock;
+        if (designer is null) return source.Text;
+        if (designer.EvidenceProblems.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"The UserForm designer has incomplete resource evidence: {source.DiagnosticSourcePath}");
+        }
+
+        if (designer.ResourceReferences.Count == 0) return source.Text;
+        if (source.BinaryBytes is null)
+        {
+            throw new InvalidOperationException(
+                $"The UserForm resource sidecar is missing: {source.DiagnosticSourcePath}");
+        }
+
+        var originalSidecarName = Path.GetFileNameWithoutExtension(source.FileName) + ".frx";
+        var stagedSidecarName = stagedBaseName + ".frx";
+        var rewritten = new StringBuilder(source.Text);
+        var nextStart = source.Text.Length;
+        foreach (var reference in designer.ResourceReferences
+                     .OrderByDescending(reference => reference.FileNameRange.Start.Offset))
+        {
+            var start = reference.FileNameRange.Start.Offset;
+            var end = reference.FileNameRange.End.Offset;
+            if (!reference.FileName.Equals(originalSidecarName, StringComparison.OrdinalIgnoreCase)
+                || start < 0 || end < start || end > nextStart
+                || !source.Text.AsSpan(start, end - start).SequenceEqual(reference.FileName.AsSpan()))
+            {
+                throw new InvalidOperationException(
+                    $"The UserForm resource reference cannot be mirrored safely: {source.DiagnosticSourcePath}");
+            }
+
+            rewritten.Remove(start, end - start);
+            rewritten.Insert(start, stagedSidecarName);
+            nextStart = start;
+        }
+
+        return rewritten.ToString();
+    }
 
     private static byte[] EncodeForVbe(
         string text,

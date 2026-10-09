@@ -130,8 +130,27 @@ internal sealed class WorkbookMaterializer
             cancellationToken).ConfigureAwait(false);
     }
 
+    internal async Task<PreparedSourceWorkbookBuild> PrepareSourceWorkbookBuildAsync(
+        ResolvedProjectContext context,
+        CancellationToken cancellationToken)
+    {
+        var plan = await CreateAnalyzedProjectPlanAsync(
+            new WorkbookMaterializationIntent.ProjectBuild(context), cancellationToken,
+            sourceWorkbookInPlace: true).ConfigureAwait(false);
+        var prepared = CreateImportSourceSetAndReleaseInput(
+            null, plan.SourceInput, cancellationToken,
+            forSourceWorkbookBuild: true);
+        return new PreparedSourceWorkbookBuild(
+            prepared.SourceSet,
+            prepared.Preflight,
+            prepared.SourceSet.Admission,
+            plan.SemanticInputs,
+            plan.Timeouts);
+    }
+
     private async Task<WorkbookMaterializationPlan> CreateAnalyzedProjectPlanAsync(
-        WorkbookMaterializationIntent intent, CancellationToken cancellationToken)
+        WorkbookMaterializationIntent intent, CancellationToken cancellationToken,
+        bool sourceWorkbookInPlace = false)
     {
         var (context, targetPath, operationName) = intent switch
         {
@@ -145,7 +164,9 @@ internal sealed class WorkbookMaterializer
         {
             var provider = semanticInputProvider
                 ?? throw new InvalidOperationException($"A required project semantic input provider was not configured for {operationName}.");
-            template = CapturedWorkbookTemplate.Capture(context.TemplateDocumentPath, token);
+            template = sourceWorkbookInPlace
+                ? CapturedWorkbookTemplate.CaptureSavedOpenSource(context.TemplateDocumentPath, token)
+                : CapturedWorkbookTemplate.Capture(context.TemplateDocumentPath, token);
             inputs = await provider.AcquireAsync(context, template, sources, token).ConfigureAwait(false);
             return inputs;
         }
@@ -653,7 +674,7 @@ internal sealed class WorkbookMaterializer
             directory ?? Path.Combine(Path.GetTempPath(), $"vba-dev-doctor-{Guid.NewGuid():N}"),
             Path.GetFileName(templateWorkbookPath), createDirectory: true);
 
-    private static void VerifyAnalyzedProjectIdentity(VbaProjectSemanticInputs? inputs, string actualName)
+    internal static void VerifyAnalyzedProjectIdentity(VbaProjectSemanticInputs? inputs, string actualName)
     {
         if (inputs?.ProjectNamespaces?.ContainingProjectName is { } expectedName
             && !expectedName.Equals(actualName, StringComparison.OrdinalIgnoreCase))
@@ -662,7 +683,7 @@ internal sealed class WorkbookMaterializer
         }
     }
 
-    private static void VerifyAnalyzedReferences(VbaProjectSemanticInputs? inputs, IReadOnlyList<WorkbookReference> references)
+    internal static void VerifyAnalyzedReferences(VbaProjectSemanticInputs? inputs, IReadOnlyList<WorkbookReference> references)
     {
         if (inputs is null) return;
         foreach (var (name, expected) in inputs.ReferenceCatalogIdentities)
@@ -948,7 +969,8 @@ internal sealed class WorkbookMaterializer
     private PreparedImportSource CreateImportSourceSetAndReleaseInput(
         string? templateWorkbookPath,
         IAdmittedWorkbookGenerationSourceInput sourceInput,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool forSourceWorkbookBuild = false)
     {
         VbeImportSourceSet? importSourceSet = null;
         WorkbookMaterializationNamePreflightReport? sourcePreflight = null;
@@ -962,7 +984,9 @@ internal sealed class WorkbookMaterializer
             {
                 throw new BuildCommandException($"Template workbook was not found: {templateWorkbookPath}");
             }
-            importSourceSet = importSourceSetFactory.Create(sourceInput.Admission);
+            importSourceSet = forSourceWorkbookBuild
+                ? importSourceSetFactory.CreateForSourceWorkbookBuild(sourceInput.Admission)
+                : importSourceSetFactory.Create(sourceInput.Admission);
             sourcePreflight = namePreflight.InspectSourcePhase(importSourceSet.SourceFiles);
             if (sourcePreflight.HasFailures)
             {
@@ -1062,3 +1086,10 @@ internal sealed class WorkbookMaterializer
         }
     }
 }
+
+internal sealed record PreparedSourceWorkbookBuild(
+    VbeImportSourceSet SourceSet,
+    WorkbookMaterializationNamePreflightReport SourcePreflight,
+    AdmittedVbaSourceSet SourceAdmission,
+    VbaProjectSemanticInputs? SemanticInputs,
+    WorkbookAutomationTimeouts Timeouts);

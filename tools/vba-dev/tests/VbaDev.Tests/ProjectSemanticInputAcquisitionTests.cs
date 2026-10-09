@@ -73,6 +73,7 @@ public sealed class ProjectSemanticInputAcquisitionTests
             () => throw new InvalidOperationException("Non-C2R and resource-qualified paths must not read Click-to-Run evidence."));
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
             workbookProjectIdentityProbe: probe, workbookGenerationAutomation: generation,
+            sourceWorkbookAutomation: new SourceWorkbookTestAutomation(generation),
             typeLibRegistryCatalogReader: new RegistryReader(new(true, [StandardRegistration()], [], null)),
             typeLibCatalogMetadataReader: metadata,
             officeClickToRunTypeLibEvidenceReader: clickToRun));
@@ -138,6 +139,7 @@ public sealed class ProjectSemanticInputAcquisitionTests
             () => throw new InvalidOperationException("Exact ordinary registry success must not read Click-to-Run evidence."));
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
             workbookProjectIdentityProbe: probe, workbookGenerationAutomation: generation,
+            sourceWorkbookAutomation: new SourceWorkbookTestAutomation(generation),
             typeLibRegistryCatalogReader: registry, typeLibCatalogMetadataReader: metadata,
             officeClickToRunTypeLibEvidenceReader: clickToRun));
 
@@ -149,7 +151,9 @@ public sealed class ProjectSemanticInputAcquisitionTests
             Assert.Single(metadata.Identities));
         Assert.Equal(0, clickToRun.Reads);
         Assert.Equal(1, generation.SaveCalls);
-        Assert.Equal(template, File.ReadAllBytes(Path.Combine(root, "bin", "Book1.xlsm")));
+        Assert.Equal(template, File.ReadAllBytes(templatePath));
+        Assert.Equal(Path.GetFullPath(templatePath), Assert.Single(generation.OpenedWorkbooks));
+        Assert.False(Directory.Exists(Path.Combine(root, "bin")));
     }
 
     [Theory]
@@ -216,6 +220,7 @@ public sealed class ProjectSemanticInputAcquisitionTests
         generation.References.Add(new(referenceName, false, referenceNamespace, guid, 2, 2));
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
             workbookProjectIdentityProbe: probe, workbookGenerationAutomation: generation,
+            sourceWorkbookAutomation: new SourceWorkbookTestAutomation(generation),
             typeLibRegistryCatalogReader: registry, typeLibCatalogMetadataReader: metadata,
             officeClickToRunTypeLibEvidenceReader: evidence));
 
@@ -234,7 +239,12 @@ public sealed class ProjectSemanticInputAcquisitionTests
         Assert.Equal(1, generation.SaveCalls);
         Assert.Equal(template, File.ReadAllBytes(sourceSnapshot
             ? snapshotOutputPath
-            : Path.Combine(root, "bin", "Book1.xlsm")));
+            : templatePath));
+        if (!sourceSnapshot)
+        {
+            Assert.Equal(Path.GetFullPath(templatePath), Assert.Single(generation.OpenedWorkbooks));
+            Assert.False(Directory.Exists(Path.Combine(root, "bin")));
+        }
         Assert.Equal(snapshotSourceBytes, File.ReadAllBytes(snapshotSourcePath));
     }
 
@@ -266,6 +276,7 @@ public sealed class ProjectSemanticInputAcquisitionTests
         var generation = new FakeWorkbookGenerationAutomation();
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
             workbookProjectIdentityProbe: probe, workbookGenerationAutomation: generation,
+            sourceWorkbookAutomation: new SourceWorkbookTestAutomation(generation),
             typeLibRegistryCatalogReader: new RegistryReader(new(true, [], [], null)),
             typeLibCatalogMetadataReader: metadata, officeClickToRunTypeLibEvidenceReader: evidence));
 
@@ -324,6 +335,7 @@ public sealed class ProjectSemanticInputAcquisitionTests
         var generation = new FakeWorkbookGenerationAutomation();
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
             workbookProjectIdentityProbe: probe, workbookGenerationAutomation: generation,
+            sourceWorkbookAutomation: new SourceWorkbookTestAutomation(generation),
             typeLibRegistryCatalogReader: new RegistryReader(new(true, [], [], null)),
             typeLibCatalogMetadataReader: metadata, officeClickToRunTypeLibEvidenceReader: evidence));
 
@@ -371,6 +383,7 @@ public sealed class ProjectSemanticInputAcquisitionTests
         var generation = new FakeWorkbookGenerationAutomation();
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
             workbookProjectIdentityProbe: probe, workbookGenerationAutomation: generation,
+            sourceWorkbookAutomation: new SourceWorkbookTestAutomation(generation),
             typeLibRegistryCatalogReader: new RegistryReader(new(true, [], [], null)),
             typeLibCatalogMetadataReader: metadata, officeClickToRunTypeLibEvidenceReader: evidence));
 
@@ -425,8 +438,10 @@ public sealed class ProjectSemanticInputAcquisitionTests
             PathError = new IOException("The Office virtualized path is unreadable.")
         };
         var clickToRun = new OfficeClickToRunEvidenceReader(OfficeClickToRunTypeLibEvidenceSnapshot.Empty);
+        var generation = new FakeWorkbookGenerationAutomation();
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
-            workbookProjectIdentityProbe: probe, workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
+            workbookProjectIdentityProbe: probe, workbookGenerationAutomation: generation,
+            sourceWorkbookAutomation: new SourceWorkbookTestAutomation(generation),
             typeLibRegistryCatalogReader: new RegistryReader(new(true, registrations, [], null)),
             typeLibCatalogMetadataReader: metadata,
             officeClickToRunTypeLibEvidenceReader: clickToRun));
@@ -482,7 +497,8 @@ public sealed class ProjectSemanticInputAcquisitionTests
             OfficeClickToRunTypeLibEvidenceSnapshot.Empty,
             () => throw new InvalidOperationException("Readable observed or exact registered metadata must not read Click-to-Run evidence."));
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
-            workbookGenerationAutomation: generation, typeLibRegistryCatalogReader: registry,
+            workbookGenerationAutomation: generation,
+            sourceWorkbookAutomation: new SourceWorkbookTestAutomation(generation), typeLibRegistryCatalogReader: registry,
             typeLibCatalogMetadataReader: metadata,
             workbookProjectIdentityProbe: probe,
             officeClickToRunTypeLibEvidenceReader: clickToRun));
@@ -497,7 +513,8 @@ public sealed class ProjectSemanticInputAcquisitionTests
         Assert.Equal(0, clickToRun.Reads);
         Assert.Equal(1, generation.SaveCalls);
         Assert.Equal(template, File.ReadAllBytes(templatePath));
-        Assert.Equal(template, File.ReadAllBytes(Path.Combine(root, "bin", "Book1.xlsm")));
+        Assert.Equal(Path.GetFullPath(templatePath), Assert.Single(generation.OpenedWorkbooks));
+        Assert.False(Directory.Exists(Path.Combine(root, "bin")));
     }
 
     [Fact]
@@ -522,7 +539,8 @@ public sealed class ProjectSemanticInputAcquisitionTests
         var generation = new FakeWorkbookGenerationAutomation { ProjectName = "ContainingProject" };
         generation.References.Add(new(standard, false, "VBA", guid, 4, 2));
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
-            workbookProjectIdentityProbe: IdentityProbe.Accepted, workbookGenerationAutomation: generation, typeLibRegistryCatalogReader: registry,
+            workbookProjectIdentityProbe: IdentityProbe.Accepted, workbookGenerationAutomation: generation,
+            sourceWorkbookAutomation: new SourceWorkbookTestAutomation(generation), typeLibRegistryCatalogReader: registry,
             typeLibCatalogMetadataReader: new MetadataReader(new("VBA", [], "VBA")), hostEventCatalogAutomation: host));
 
         var result = await commandLine.RunAsync(["build"]);
@@ -531,8 +549,9 @@ public sealed class ProjectSemanticInputAcquisitionTests
         Assert.Equal(0, host.Reads);
         Assert.Equal(2, generation.ImportedSources.Count);
         Assert.Equal(1, generation.SaveCalls);
-        Assert.Equal(template, File.ReadAllBytes(Path.Combine(root, "bin", "Book1.xlsm")));
         Assert.Equal(template, File.ReadAllBytes(templatePath));
+        Assert.Equal(Path.GetFullPath(templatePath), Assert.Single(generation.OpenedWorkbooks));
+        Assert.False(Directory.Exists(Path.Combine(root, "bin")));
     }
 
     [Theory]
@@ -571,7 +590,8 @@ public sealed class ProjectSemanticInputAcquisitionTests
         var metadata = new MetadataReader(new("VBA", [], "VBA"));
         var generation = new FakeWorkbookGenerationAutomation();
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
-            workbookProjectIdentityProbe: IdentityProbe.Accepted, workbookGenerationAutomation: generation, typeLibRegistryCatalogReader: registry,
+            workbookProjectIdentityProbe: IdentityProbe.Accepted, workbookGenerationAutomation: generation,
+            sourceWorkbookAutomation: new SourceWorkbookTestAutomation(generation), typeLibRegistryCatalogReader: registry,
             typeLibCatalogMetadataReader: metadata, vbaProjectReferenceAmbiguityProbe: probe, hostEventCatalogAutomation: host));
 
         var result = await commandLine.RunAsync(["build"], cancellation.Token);
@@ -591,8 +611,10 @@ public sealed class ProjectSemanticInputAcquisitionTests
         foreach (var (path, bytes) in originalFiles) Assert.Equal(bytes, File.ReadAllBytes(path));
     }
 
-    [Fact]
-    public async Task DefaultBuildResolvesAmbiguityAgainstTheAlreadyCapturedTemplate()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BuildUsesCapturedAmbiguityInputsButOrdinaryBuildStillRequiresTheSourceWorkbook(bool sourceSnapshot)
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -603,6 +625,10 @@ public sealed class ProjectSemanticInputAcquisitionTests
         File.WriteAllBytes(templatePath, template);
         File.WriteAllText(Path.Combine(sourceDirectory, "Caller.bas"),
             "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\nEnd Sub\n", new UTF8Encoding(false));
+        var snapshotPath = temp.CreateDirectory("snapshot");
+        File.Copy(Path.Combine(sourceDirectory, "Caller.bas"), Path.Combine(snapshotPath, "Caller.bas"));
+        var outputPath = Path.Combine(temp.CreateDirectory("output"), "Book1.xlsm");
+        File.WriteAllText(outputPath, "previous output", new UTF8Encoding(false));
         const string standard = "Requested Runtime";
         const string acceptedGuid = "000204ef-0000-0000-c000-000000000046";
         var registry = new RegistryReader(new TypeLibRegistryCatalog(true,
@@ -623,15 +649,31 @@ public sealed class ProjectSemanticInputAcquisitionTests
         automation.References.Add(new(VbaProjectReferenceCatalogSet.StandardLibraryReferenceName, false, "VBA", acceptedGuid, 4, 2));
         automation.References.Add(new(standard, true, "VBA", acceptedGuid, 4, 2));
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
-            workbookProjectIdentityProbe: IdentityProbe.Accepted, workbookGenerationAutomation: automation, typeLibRegistryCatalogReader: registry,
+            workbookProjectIdentityProbe: IdentityProbe.Accepted, workbookGenerationAutomation: automation,
+            sourceWorkbookAutomation: new SourceWorkbookTestAutomation(automation), typeLibRegistryCatalogReader: registry,
             typeLibCatalogMetadataReader: new MetadataReader(new("VBA", [], "VBA")), vbaProjectReferenceAmbiguityProbe: probe));
 
-        var result = await commandLine.RunAsync(["build"]);
+        var result = await commandLine.RunAsync(sourceSnapshot
+            ? ["build", "--source-snapshot", snapshotPath, "--output", outputPath]
+            : ["build"]);
 
-        Assert.True(result.ExitCode == 0, $"Probe calls: {probe.Reads}; registry reads: {registry.Reads}. {result.StandardError}");
+        Assert.True(result.ExitCode == (sourceSnapshot ? 0 : 1),
+            $"Probe calls: {probe.Reads}; registry reads: {registry.Reads}. {result.StandardError}");
         Assert.Equal(1, probe.Reads);
         Assert.Equal(1, registry.Reads);
-        Assert.Equal(template, File.ReadAllBytes(Path.Combine(root, "bin", "Book1.xlsm")));
+        if (sourceSnapshot)
+        {
+            Assert.Equal(template, File.ReadAllBytes(outputPath));
+            Assert.Equal(1, automation.SaveCalls);
+        }
+        else
+        {
+            Assert.Contains(Path.GetFullPath(templatePath), result.StandardError, StringComparison.Ordinal);
+            Assert.Contains("source workbook was not found", result.StandardError, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("previous output", File.ReadAllText(outputPath));
+            Assert.Empty(automation.OpenedWorkbooks);
+            Assert.Equal(0, automation.SaveCalls);
+        }
         Assert.False(File.Exists(templatePath));
     }
 
@@ -654,7 +696,8 @@ public sealed class ProjectSemanticInputAcquisitionTests
             [new(standard, [new("000204ef-0000-0000-c000-000000000046", [new(4, 2, [new(0, [new("win64", "C:/runtime/VBE.dll")])])])])], [], null));
         var automation = new FakeWorkbookGenerationAutomation { ProjectName = "DifferentProject" };
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
-            workbookProjectIdentityProbe: IdentityProbe.Accepted, workbookGenerationAutomation: automation, typeLibRegistryCatalogReader: registry,
+            workbookProjectIdentityProbe: IdentityProbe.Accepted, workbookGenerationAutomation: automation,
+            sourceWorkbookAutomation: new SourceWorkbookTestAutomation(automation), typeLibRegistryCatalogReader: registry,
             typeLibCatalogMetadataReader: new MetadataReader(new("VBA", [], "VBA"))));
 
         var result = await commandLine.RunAsync(["build"]);
@@ -693,7 +736,8 @@ public sealed class ProjectSemanticInputAcquisitionTests
             [new(new("UserForm", "Initialize"), new([], "Initializes the form."), true, true)])));
         var automation = new FakeWorkbookGenerationAutomation();
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
-            workbookProjectIdentityProbe: IdentityProbe.Accepted, workbookGenerationAutomation: automation, typeLibRegistryCatalogReader: registry,
+            workbookProjectIdentityProbe: IdentityProbe.Accepted, workbookGenerationAutomation: automation,
+            sourceWorkbookAutomation: new SourceWorkbookTestAutomation(automation), typeLibRegistryCatalogReader: registry,
             typeLibCatalogMetadataReader: metadata, hostEventCatalogAutomation: host));
 
         var result = await commandLine.RunAsync(["build"]);
@@ -749,7 +793,8 @@ public sealed class ProjectSemanticInputAcquisitionTests
         var outputPath = Path.Combine(temp.CreateDirectory("Project/bin"), "Book1.xlsm");
         File.WriteAllText(outputPath, "previous output", new UTF8Encoding(false));
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
-            workbookProjectIdentityProbe: IdentityProbe.Accepted, workbookGenerationAutomation: automation, typeLibRegistryCatalogReader: registry,
+            workbookProjectIdentityProbe: IdentityProbe.Accepted, workbookGenerationAutomation: automation,
+            sourceWorkbookAutomation: new SourceWorkbookTestAutomation(automation), typeLibRegistryCatalogReader: registry,
             typeLibCatalogMetadataReader: metadata));
 
         var result = await commandLine.RunAsync(["build"]);
@@ -758,11 +803,11 @@ public sealed class ProjectSemanticInputAcquisitionTests
         Assert.Equal(1, registry.Reads);
         Assert.Equal(new VbaProjectReferenceCatalogIdentity(standard, guid, 4, 2, 0, "C:/runtime/VBE.dll"),
             Assert.Single(metadata.Identities));
-        Assert.Single(automation.OpenedWorkbooks);
+        Assert.Equal(Path.GetFullPath(templatePath), Assert.Single(automation.OpenedWorkbooks));
         if (scenario == "accepted")
         {
             Assert.Equal(1, automation.SaveCalls);
-            Assert.Equal(template, File.ReadAllBytes(outputPath));
+            Assert.Equal(template, File.ReadAllBytes(templatePath));
         }
         else
         {
@@ -770,6 +815,7 @@ public sealed class ProjectSemanticInputAcquisitionTests
             Assert.Equal(0, automation.SaveCalls);
             Assert.Equal("previous output", File.ReadAllText(outputPath));
         }
+        Assert.Equal("previous output", File.ReadAllText(outputPath));
         Assert.Equal(template, File.ReadAllBytes(templatePath));
     }
 
@@ -791,7 +837,8 @@ public sealed class ProjectSemanticInputAcquisitionTests
         var originals = new[] { templatePath, sourcePath, outputPath }.ToDictionary(path => path, File.ReadAllBytes);
         var automation = new FakeWorkbookGenerationAutomation();
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(
-            root, workbookProjectIdentityProbe: IdentityProbe.Accepted, workbookGenerationAutomation: automation, vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver()));
+            root, workbookProjectIdentityProbe: IdentityProbe.Accepted, workbookGenerationAutomation: automation,
+            sourceWorkbookAutomation: new SourceWorkbookTestAutomation(automation), vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver()));
 
         var result = await commandLine.RunAsync(["build"]);
 

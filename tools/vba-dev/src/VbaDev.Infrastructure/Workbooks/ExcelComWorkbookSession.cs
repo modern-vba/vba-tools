@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
@@ -52,16 +53,19 @@ internal sealed class ExcelComWorkbookSession
     private const int MsoAutomationSecurityLow = 1;
 
     private readonly OwnedExcelTerminationController? terminationController;
+    private readonly int? borrowedProcessId;
     private bool disposed;
 
     private ExcelComWorkbookSession(
         object excelObject,
         object workbookObject,
-        OwnedExcelTerminationController? terminationController)
+        OwnedExcelTerminationController? terminationController,
+        int? borrowedProcessId = null)
     {
         ExcelObject = excelObject;
         WorkbookObject = workbookObject;
         this.terminationController = terminationController;
+        this.borrowedProcessId = borrowedProcessId;
     }
 
     /// <summary>
@@ -74,9 +78,42 @@ internal sealed class ExcelComWorkbookSession
     /// </summary>
     public object WorkbookObject { get; }
 
+    /// <summary>Views a user-owned open workbook without acquiring Close/Quit authority.</summary>
+    internal static ExcelComWorkbookSession Borrow(object excelObject, object workbookObject, int processId)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
+        return new(excelObject, workbookObject, terminationController: null, borrowedProcessId: processId);
+    }
+
+    internal void ReleaseBorrowed()
+    {
+        if (disposed) return;
+        disposed = true;
+        try { ComObjectReleaser.Release(WorkbookObject); }
+        finally { ComObjectReleaser.Release(ExcelObject); }
+    }
+
     internal IReadOnlyList<string> CaptureLoadedModulePaths()
-        => terminationController?.CaptureLoadedModulePaths()
-            ?? throw new InvalidOperationException("The workbook has no owned process for library-path inspection.");
+    {
+        if (terminationController is not null) return terminationController.CaptureLoadedModulePaths();
+        if (borrowedProcessId is not { } processId)
+            throw new InvalidOperationException("The workbook has no process for library-path inspection.");
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            if (process.HasExited)
+                throw new InvalidOperationException("The borrowed Excel process exited before its loaded libraries could be inspected.");
+            var paths = WindowsLoadedLibraryPaths.Capture(process);
+            if (process.HasExited)
+                throw new InvalidOperationException("The borrowed Excel process exited while its loaded libraries were inspected.");
+            return paths;
+        }
+        catch (ArgumentException error)
+        {
+            throw new InvalidOperationException(
+                "The borrowed Excel process exited before its loaded libraries could be inspected.", error);
+        }
+    }
 
     /// <summary>
     /// Starts a hidden Excel application and establishes exact process ownership before workbook open.

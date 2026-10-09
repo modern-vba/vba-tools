@@ -101,6 +101,7 @@ public sealed class VbaDevCommandLine
                 "stdin-v1",
                 StringComparison.Ordinal))
         {
+            using var confirmationInput = new VbaDevWorkbookConfirmationInput(standardInput, standardError);
             return await parseResult
                 .InvokeAsync(configuration, cancellationToken)
                 .ConfigureAwait(false);
@@ -109,9 +110,12 @@ public sealed class VbaDevCommandLine
         using var invocationCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken);
         using var monitorCancellation = new CancellationTokenSource();
+        using var managedConfirmationInput = new VbaDevWorkbookConfirmationInput(
+            standardInput, standardError, managed: true);
         var monitor = ObserveStdinCancellationAsync(
             standardInput,
             invocationCancellation,
+            managedConfirmationInput,
             monitorCancellation.Token);
         try
         {
@@ -137,11 +141,11 @@ public sealed class VbaDevCommandLine
     private static async Task ObserveStdinCancellationAsync(
         Stream standardInput,
         CancellationTokenSource invocationCancellation,
+        VbaDevWorkbookConfirmationInput confirmationInput,
         CancellationToken monitorCancellation)
     {
-        ReadOnlyMemory<byte> expectedPayload = "cancel"u8.ToArray();
         var buffer = new byte[64];
-        var matchedBytes = 0;
+        var frame = new System.Text.StringBuilder(96);
         var discardingFrame = false;
         var monitorStopped = Task.Delay(Timeout.InfiniteTimeSpan, monitorCancellation);
         try
@@ -177,26 +181,27 @@ public sealed class VbaDevCommandLine
                 {
                     if (value == (byte)'\n')
                     {
-                        if (!discardingFrame && matchedBytes == expectedPayload.Length)
+                        if (!discardingFrame)
                         {
-                            invocationCancellation.Cancel();
+                            var text = frame.ToString();
+                            if (text == "cancel") invocationCancellation.Cancel();
+                            else confirmationInput.ObserveFrame(text);
                         }
 
-                        matchedBytes = 0;
+                        frame.Clear();
                         discardingFrame = false;
                         continue;
                     }
 
                     if (
                         discardingFrame ||
-                        matchedBytes >= expectedPayload.Length ||
-                        value != expectedPayload.Span[matchedBytes])
+                        frame.Length >= 96 || value > 0x7f)
                     {
                         discardingFrame = true;
                         continue;
                     }
 
-                    matchedBytes++;
+                    frame.Append((char)value);
                 }
 
                 await Task.Yield();
@@ -208,6 +213,10 @@ public sealed class VbaDevCommandLine
         catch
         {
             // Invalid or unavailable transport input does not replace command outcome authority.
+        }
+        finally
+        {
+            confirmationInput.CompleteInput();
         }
     }
 }

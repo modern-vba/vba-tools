@@ -32,6 +32,19 @@ internal sealed class WorkbookOutputCommand
         => (await RunBuildCoreAsync(context, cancellationToken)
             .ConfigureAwait(false)).CommandResult;
 
+    internal Task<CommandResult> RunSourceBuildAsync(
+        ResolvedProjectContext context,
+        SourceWorkbookBuildCommand sourceBuild,
+        Func<string, CancellationToken, Task<bool>>? confirmUnsavedChanges,
+        CancellationToken cancellationToken)
+        => RunCommandAsync(
+            context,
+            operationName: "build",
+            displayName: "Build",
+            completedVerb: "Built",
+            () => sourceBuild.MaterializeAsync(context, confirmUnsavedChanges, cancellationToken),
+            cancellationToken);
+
     internal async Task<TestWorkbookBuildCommandResult> RunTestBuildIntentAsync(
         ResolvedProjectContext context,
         CancellationToken cancellationToken)

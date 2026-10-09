@@ -52,8 +52,8 @@ Doctor checks remain command results rather than grammar failures.
   Export, CommonModules, and VBA project reference operations.
 - Open an integrated terminal with `vba-dev` on `PATH` for direct CLI workflows
   such as project creation.
-- Keep `vba-project.json` as the manifest for templates, source folders, generated
-  workbooks, publish output, CommonModules, references, and command defaults.
+- Keep `vba-project.json` as the manifest for source workbooks, source folders,
+  legacy test output, publish output, CommonModules, references, and command defaults.
 
 ---
 
@@ -169,9 +169,10 @@ Copy-Item C:\path\to\existing.xlsm .\example_book\src\example_book\example_book.
 vba-dev export --from .\example_book\src\example_book\example_book.xlsm --to .\example_book\src\example_book
 ```
 
-The copied workbook becomes the source template used by `vba-dev build` and
-`vba-dev publish`, so it should contain the sheets, workbook settings, and other
-non-VBA workbook content you want to preserve. The `--to` path should be the
+The copied workbook becomes the source workbook updated in place by ordinary
+`vba-dev build` and the template copied by `vba-dev publish`, so it should contain
+the sheets, workbook settings, and other non-VBA content you want to preserve.
+The `--to` path should be the
 document source folder defined by `vba-project.json`. Close the source workbook
 before copying or exporting. After export, review the generated source files,
 add any required external references with `vba-dev reference add`, and run
@@ -184,7 +185,7 @@ files and then open a VBA file.
 
 For build, test, publish, export, CommonModules, reference commands, and Test
 Explorer integration, open a workspace containing a `vba-project.json` manifest. The
-manifest defines the source folder, template workbook, generated workbook,
+manifest defines the source folder, source workbook, legacy test output,
 publish workbook, references, and CommonModules entries for each document.
 
 ### 6 - Run Doctor
@@ -301,7 +302,8 @@ vba-dev test --module Test_Sample
 vba-dev test --module Test_Sample --procedure Test_Target_Condition_ExpectedResult
 ```
 
-`vba-dev test` builds the selected document before running tests by default. Use
+`vba-dev test` currently generates a legacy bin workbook before running tests;
+it does not invoke ordinary source-workbook Build. Use
 `--no-build` only when you intentionally want to rerun tests against the
 existing bin workbook. `--procedure` requires `--module`, and
 `--source-snapshot` cannot be combined with `--no-build`. Explicit output
@@ -317,7 +319,7 @@ nonempty.
 | --- | --- |
 | `VBA Tools: Doctor` | Check project automation, then independently check VBE debugging prerequisites. |
 | `VBA Tools: Open vba-dev Terminal` | Open a VS Code terminal with the resolved `vba-dev` command on `PATH`. |
-| `VBA Tools: Build` | Generate the selected workbook document from template and source. |
+| `VBA Tools: Build` | Import saved VBA source into the selected source workbook and save it in place. |
 | `VBA Tools: Test` | Build, then run VBA unit tests for the selected workbook document. |
 | `VBA Tools: Publish` | Generate the publish workbook for the selected document. |
 | `VBA Tools: Export` | Export VBA modules from the selected workbook into source. |
@@ -419,25 +421,48 @@ vba-dev new excel -o <project-dir> -n <project-name>
 
 ### Build
 
-`VBA Tools: Build` creates the configured bin workbook from the template
-workbook, applies manifest-defined references, imports exported source files,
-and writes the generated workbook output.
+`VBA Tools: Build` and ordinary `vba-dev build` update the workbook selected by
+the document's `templatePath`, conventionally
+`src/<document_name>/<document_name>.xlsm`. They apply manifest-defined
+references, import saved exported source files, and save that source workbook
+in place. They do not create a bin workbook. Dirty source-editor buffers are
+neither saved nor included; save the source files yourself when you want those
+edits in an ordinary Build.
+
+If that exact source workbook is already open, Build reuses its Excel process,
+preserves its displayed window, saves after import, and leaves it open. An
+unrelated active workbook or a workbook with the same basename is not a match.
+If it is closed, Build opens the file hidden, processes it, and closes its
+command-owned workbook afterward. Other workbooks and Excel sessions are not
+closed or terminated.
+
+A dirty, already-open workbook needs explicit confirmation before code is
+replaced. The warning explains that VBE-direct edits are replaced and that
+Build saves other unsaved workbook edits, including cell changes. Cancelling
+leaves the workbook unchanged. A clean workbook needs no such warning.
+VS Code provides its command confirmation; direct CLI Build uses a terminal
+`[y/N]` prompt, with cancellation as the default. Use `--interactive false` for
+automation: if consent is needed, the command fails without prompting or
+changing the workbook. `--interactive true` is the default; terminal,
+redirection, and CI detection do not select it automatically, and EOF is not
+consent.
 
 Before generation, an ordinary Build checks all saved source files in the
 selected document, including files that are not open in VS Code. The shared
 parser and semantic analyzer use the same rules as the language server for
 declarations, call arguments and ByRef types, arrays, Implements, WithEvents,
 Event handlers, RaiseEvent targets and module namespace conflicts. Analysis and
-successful import consume the same captured source and template; changes after
-capture apply to a later invocation.
+successful import consume the same captured source; changes after capture apply
+to a later invocation. Saved-package semantic evidence and the actual live
+workbook authority are checked separately before replacement.
 
 Build collects recoverable findings across the selected files. Known source
 read, strict-decode, and form-sidecar read failures retain their affected source
 and allow independent files to be inspected. A failure that prevents further
 analysis retains earlier findings and reports the stopping reason and incomplete
-status. Any error or incomplete analysis stops Build before workbook generation,
-leaving source files, the template, and the previous completed bin workbook
-unchanged. Failed required reference, host Event or project identity discovery
+status. Any error or incomplete analysis stops Build before workbook mutation,
+leaving source files and the source workbook unchanged. Failed required
+reference, host Event or project identity discovery
 also makes analysis incomplete, even when no source error can be proved.
 Late binding and other modeled static uncertainty retain their existing behavior.
 
@@ -473,24 +498,37 @@ project can set positive whole-second overrides through
 `commandDefaults.excelAutomation.workbookSaveTimeoutSeconds` in
 `vba-project.json`; these values have no per-invocation CLI options.
 
-Build and publish run in a dedicated hidden Excel process on an
-invocation-scoped private Windows desktop and stage their selected output beside
-its destination. Excel startup is observed by exact PID before its primary
-thread resumes; the process is never moved to or rediscovered on the interactive
-desktop, and there is no visibility fallback. Excel startup uses a 30-second
-deadline, each reference attempt 60 seconds, each module import 30 seconds, and
-cooperative cleanup 5 seconds. The prior completed output remains in place until
-reference normalization, import, verification, save, and owned-process cleanup
-have completed; only then is the selected target replaced atomically.
+Before destructive replacement in an already-open workbook, Build captures its
+replaceable standard/class modules, UserForms with their `.frx` data, and
+reference state. Failed capture starts no replacement. Excel-owned document
+modules such as `ThisWorkbook` and worksheets remain outside the replacement
+scope. Import verification and repeated live project/reference/component
+authority checks still precede saving; they are not native compile checks or a
+separate reopen/hash check of the saved workbook package.
 
-After imported components are verified, VBA Tools re-inspects the staged
-workbook's current project, retained-component, and active-reference names. An
-authority gap or conflict introduced by import fails before save and leaves the
-completed target unchanged. After Excel releases the staged workbook, VBA Tools
-also requires the saved staging file to be readable and non-empty before
-replacement. It does not reopen the workbook, compile the VBA project, retry the
-operation, or coordinate concurrent destination changes. Keep the destination
-workbook closed until the command finishes.
+Ordinary Build uses unique invocation-owned import files in a stable shared
+temporary folder. After workbook automation is proved released, it cleans only
+those owned files, never the shared folder or another invocation's files. This
+does not require closing a borrowed Excel session. Other generation routes keep
+their existing temporary-directory cleanup policy.
+
+If replacement fails or is cancelled before saving starts, Build attempts to
+restore that captured code/reference state and leaves the pre-existing workbook
+open without saving. Recovery has an independent ten-minute total deadline,
+alongside the existing per-operation COM limits; no further recovery mutation
+is requested after that deadline. Build re-exports restored modules and UserForms to
+compare their exact source and `.frx` bytes, module inventory and reference
+priority with the pre-Build capture. A newly opened hidden Build workbook is
+closed without saving on that path. Incomplete restoration keeps recovery
+material and reports the partial state, its path, and manual recovery guidance.
+This is not a whole-workbook rollback and does not undo arbitrary VBA side
+effects.
+
+Once required live verification and native Save finish normally, a late
+cancellation does not turn success into cancellation. A later step or cleanup
+failure explicitly reports that the workbook was saved but that step failed.
+If Excel's Save outcome cannot be confirmed, the command reports it as unknown;
+it does not claim that nothing changed or automatically undo a completed Save.
 
 From the `vba-dev` terminal, run:
 
@@ -498,9 +536,12 @@ From the `vba-dev` terminal, run:
 vba-dev build
 ```
 
-Use build when you want a generated workbook for manual inspection or when a
-project has no unit tests. Close the target workbook before building so Excel
-can replace the generated output.
+Use Build when you want the source workbook to contain the saved exported VBA
+for manual inspection or execution. `build --source-snapshot <dir> --output
+<workbook>` remains a separate caller-owned-output capability, not an in-place
+Build. Publish and the current legacy Test/debug generation paths retain their
+staged-copy lifecycle; their separate migrations do not change this Build
+contract.
 
 Build captures the selected source files and form
 sidecars once. A supported UTF-8, UTF-16 LE, or UTF-16 BE BOM identifies the
@@ -508,8 +549,8 @@ source encoding; files without a BOM use only the active Windows ANSI code page
 captured for that build. To use UTF-8 on a machine whose active code page is not
 65001, save the source with a UTF-8 BOM or convert it to that machine's active
 code page. All decoded text must still round-trip losslessly through the VBE's
-active code page. Invalid input fails before Excel starts and leaves the prior
-build output unchanged; build never rewrites source bytes to convert them.
+active code page. Invalid input fails before destructive workbook work and
+leaves the source workbook unchanged; Build never rewrites source bytes to convert them.
 Changes made after capture apply to a later build. These rules also apply to
 the build stage of `vba-dev test` and to source snapshots used by debugging and
 editor tests.
@@ -524,6 +565,9 @@ still be representable in the VBE's active code page.
 
 Update VBA Tools and its bundled tools together. A separately configured
 `vba-dev` or debug adapter must support the same snapshot v2 requirements.
+Ordinary Build and project Export also require a companion that advertises
+their source-workbook behavior; an older bin-workbook provider is not silently
+used for those commands.
 Snapshot test and debug startup check both tools before capturing source or
 creating temporary workbooks. An incompatible adapter override fails without
 fallback; an incompatible `vba-dev` override keeps the existing warning and
@@ -636,8 +680,9 @@ From the `vba-dev` terminal, run:
 vba-dev publish
 ```
 
-Publish is the command for producing the distributable workbook. It uses the
-same materialization safeguards as Build while retaining its separate
+Publish is the command for producing the distributable workbook. It retains
+its dedicated hidden private-desktop Excel process, staged copy, verified
+owned-process cleanup, and atomic output replacement, as well as its separate
 publishable-source selection and exclusion profile. It writes to the document's
 publish output and omits CommonModules recorded with `testOnly: true` plus
 project-local files marked with `'#ExcludePublish`. Build and publish do not
@@ -676,13 +721,17 @@ dirty-editor snapshot policy or claim native VBE compile verification.
 
 ### Export
 
-`VBA Tools: Export` pulls modules from the selected workbook into the configured
-source folder. It is an explicit command, not a live save-time sync. Before a
+`VBA Tools: Export` and project-aware `vba-dev export` pull modules from the
+manifest-selected source workbook (`templatePath`) into the configured source
+folder. If that exact workbook is already open, Export reads its live VBA,
+including unsaved VBE edits, without saving it or closing its Excel session.
+If closed, Export reads its saved contents through bounded command-owned
+resources. It is an explicit command, not a live save-time sync. Before a
 cleanup-enabled export, VS Code shows the resolved absolute destination and
 warns that existing source may be overwritten and stale `.bas`, `.cls`, `.frm`,
 and `.frx` files will be deleted. Canceling that confirmation does not invoke
 the export process. Proceeding uses the ordinary VBA Tools Output, progress
-cancellation, workbook-lock reporting, and owned Excel lifecycle.
+cancellation, and workbook-access reporting.
 
 The `vba-dev export` CLI remains non-interactive for automation. Invoking a
 project export, or supplying an explicit `--to` destination, is consent to its
@@ -695,15 +744,20 @@ source template or unrelated files.
 
 If apply fails, `vba-dev` restores the previous destination. If that rollback
 cannot be completed, it retains the recovery area and reports its absolute path
-and manual recovery steps. An explicit `export --from <workbook>` without
+and manual recovery steps. Export does not automatically save, discard, or
+reload dirty source-editor buffers, and does not add a mandatory dirty-editor
+stop. A later editor save can conflict with or overwrite the exported disk
+files; review those buffers and disk changes before saving them. An explicit
+`export --from <workbook>` without
 `--to` instead writes to the current directory without stale-file cleanup and
 does not require confirmation.
 
 ### CommonModules and References
 
 CommonModules commands edit and update manifest-listed common module entries.
-Reference commands edit desired VBA project references in `vba-project.json`; build
-and publish apply those references to generated workbooks.
+Reference commands edit desired VBA project references in `vba-project.json`;
+ordinary Build applies them to the source workbook, while Publish applies them
+to its generated copy.
 
 ---
 
@@ -989,7 +1043,8 @@ cannot influence executable selection.
 | A companion process terminates abnormally | Review VBA Tools Output for the executable, capability-inspection attempt, and exit status. Only a side-effect-free startup capability probe may be attempted once more in a fresh process. Build, import, publish, test, save, and debug execution are not replayed after a crash; check their output and workbook state before starting another command. A recovered probe does not prove the underlying host problem is fixed. |
 | Workbook commands fail before opening Excel | Run `VBA Tools: Doctor`, review the `Project automation` section, and confirm that the workspace contains `vba-project.json`. |
 | Build, publish, or build-before-test reports an unexpected source-analysis exception | Preserve the JSON file named by `Source-analysis failure evidence saved` in VBA Tools Output. Reports are local under `%LOCALAPPDATA%\VbaTools\Diagnostics\source-analysis` (newest 20 retained). See the [failure investigation guide](https://github.com/modern-vba/vba-tools/blob/main/docs/source-analysis-failure-evidence.md). A successful retry does not establish that the cause is fixed. |
-| Excel or a dialog appears during build, test, publish, import, export, project creation, Host Event discovery, reference probing, or project Doctor | This is an automation-isolation failure, not expected behavior. Preserve the VBA Tools Output failure, including any PID, HWND, desktop, class, title, and phase evidence, and report it. The command does not fall back to visible Excel. |
+| An already-open source workbook stays visible during ordinary Build or project Export | This is expected: the exact existing workbook is reused without changing its displayed window or closing the user's session. Build saves after import; Export does not save. |
+| Excel or a dialog appears during snapshot Build, legacy Test, Publish, standalone Import, explicit Export, project creation, Host Event discovery, reference probing, or project Doctor | This is an automation-isolation failure, not expected behavior. Preserve the VBA Tools Output failure, including any PID, HWND, desktop, class, title, and phase evidence, and report it. Those command-owned paths do not fall back to visible Excel. |
 | F5 cannot establish VBE debugging | Run `VBA Tools: Doctor` and review the `VBE debugging` checks and remediation in the VBA Tools output channel. |
 | Excel becomes visible after F5 | This is expected only after the hidden preparatory build has finished: the separately owned debug Excel/VBE session must be visible for breakpoints, code panes, prompts, and interactive execution. |
 | VBE Doctor reports an adapter infrastructure failure | Check the executable path and compatibility details in the VBA Tools output channel. If `vbaTools.debugAdapter.path` is set, correct or clear the explicit path; invalid overrides intentionally do not fall back. |

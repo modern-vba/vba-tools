@@ -185,7 +185,7 @@ public sealed class VbaDevCommandGrammarTests
                 ["--available", "--document", "--format", "--no-resolve", "--project"],
             ["reference remove"] = ["--document", "--format", "--project"],
             ["host-event list"] = ["--format"],
-            ["build"] = ["--document", "--output", "--project", "--source-snapshot"],
+            ["build"] = ["--document", "--interactive", "--output", "--project", "--source-snapshot"],
             ["test"] =
             [
                 "--document",
@@ -207,6 +207,7 @@ public sealed class VbaDevCommandGrammarTests
         var expectedFlags = new HashSet<string>(StringComparer.Ordinal)
         {
             "common-module add --force",
+            "build --interactive",
             "reference list --available",
             "reference list --no-resolve",
             "test --no-build"

@@ -59,6 +59,97 @@ public sealed class ExcelComWorkbookModuleExporterTests
         Assert.Equal(VbaDev.App.FileSystem.InvocationScratchCleanupStatus.Removed, staging.Cleanup().Status);
     }
 
+    [Fact]
+    public async Task SourceWorkbookExportUsesLiveSessionWithoutSavingIt()
+    {
+        using var temp = TempDirectory.Create();
+        var workbookPath = Path.Combine(temp.Path, "Book1.xlsm");
+        File.WriteAllText(workbookPath, "saved workbook");
+        using var staging = VbaDev.App.Export.WorkbookExportStaging.Create(
+            new VbaDev.Infrastructure.FileSystem.WindowsExactFileSystemObjectOwnershipFactory());
+        var session = new ExportRecordingSourceWorkbookSession([
+            new WorkbookModule("ThisWorkbook", WorkbookModuleKind.Document),
+            new WorkbookModule("LiveModule", WorkbookModuleKind.StandardModule)
+        ]);
+        var automation = new ExportRecordingSourceWorkbookAutomation(session);
+
+        await new SourceWorkbookModuleExporter(automation).ExportModulesAsync(
+            workbookPath, staging, WorkbookAutomationTimeouts.Default, CancellationToken.None);
+        staging.CompleteProduction();
+
+        Assert.Equal(workbookPath, automation.WorkbookPath);
+        Assert.Equal("LiveModule", File.ReadAllText(Path.Combine(staging.Path, "LiveModule.bas")));
+        Assert.False(File.Exists(Path.Combine(staging.Path, "ThisWorkbook.cls")));
+        Assert.Equal("saved workbook", File.ReadAllText(workbookPath));
+        Assert.Equal(0, session.SaveCalls);
+        Assert.Equal(VbaDev.App.FileSystem.InvocationScratchCleanupStatus.Removed, staging.Cleanup().Status);
+    }
+
+    private sealed class ExportRecordingSourceWorkbookAutomation(
+        ISourceWorkbookSession session) : ISourceWorkbookAutomation
+    {
+        public string? WorkbookPath { get; private set; }
+
+        public Task<TResult> RunAsync<TResult>(
+            string workbookPath,
+            WorkbookAutomationTimeouts timeouts,
+            Func<ISourceWorkbookSession, CancellationToken, Task<TResult>> operation,
+            CancellationToken cancellationToken)
+        {
+            WorkbookPath = workbookPath;
+            return operation(session, cancellationToken);
+        }
+    }
+
+    private sealed class ExportRecordingSourceWorkbookSession(
+        IReadOnlyList<WorkbookModule> modules) : ISourceWorkbookSession
+    {
+        public bool WasAlreadyOpen => true;
+
+        public SourceWorkbookSaveState SaveState => SourceWorkbookSaveState.NotStarted;
+
+        public int SaveCalls { get; private set; }
+
+        public Task<bool> IsSavedAsync(CancellationToken cancellationToken) => Task.FromResult(false);
+
+        public Task<string> GetProjectNameAsync(CancellationToken cancellationToken)
+            => Task.FromResult("VbaProject");
+
+        public Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(CancellationToken cancellationToken)
+            => Task.FromResult(modules);
+
+        public Task ExportModuleAsync(string moduleName, string destinationPath, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            File.WriteAllText(destinationPath, moduleName);
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<WorkbookReference>> GetReferencesAsync(CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task<bool> RemoveReferenceAsync(string referenceName, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task AddReferenceAsync(ResolvedVbaProjectReference reference, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task RemoveModuleAsync(string moduleName, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task ImportModuleAsync(VbeImportSourceFile sourceFile, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task<VbeImportVerificationReport> VerifyAsync(CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task SaveAsync(CancellationToken cancellationToken)
+        {
+            SaveCalls++;
+            return Task.CompletedTask;
+        }
+    }
+
     private sealed class ExportRecordingWorkbookGenerationAutomation(
         IWorkbookGenerationSession session) : IWorkbookGenerationAutomation
     {

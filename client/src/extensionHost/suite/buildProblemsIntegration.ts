@@ -3,7 +3,7 @@ import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import {
   ConfigurationTarget,
@@ -305,6 +305,19 @@ async function runOutputProblemsIntegrationTests(command: 'build' | 'publish'): 
     if (command === 'publish') assert.deepEqual(await readFile(excludedPath), excludedBytes);
     assert.deepEqual(await readFile(templatePath), templateBytes);
     await writeFile(zPath, correctedLater, 'ascii');
+    const dirtySourceDocument = command === 'build'
+      ? await workspace.openTextDocument(aUri)
+      : undefined;
+    if (dirtySourceDocument !== undefined) {
+      const unsavedEdit = new WorkspaceEdit();
+      unsavedEdit.replace(aUri, new Range(dirtySourceDocument.positionAt(0),
+        dirtySourceDocument.positionAt(dirtySourceDocument.getText().length)), invalidFirst);
+      assert.equal(await workspace.applyEdit(unsavedEdit), true);
+      assert.equal(dirtySourceDocument.isDirty, true);
+      assert.deepEqual(await readFile(aPath), Buffer.from(correctedFirst, 'ascii'));
+    }
+    // Ordinary Build must use the valid saved source, not save or analyze this
+    // deliberately invalid editor buffer. Publish keeps its existing scenario.
     const third = await runWorkbookBackedProjectCommand(options);
     assert.ok(third);
     assert.equal(third.exitCode, 0, output.join(''));
@@ -313,10 +326,22 @@ async function runOutputProblemsIntegrationTests(command: 'build' | 'publish'): 
     assert.deepEqual(toolCollection.get(aUri) ?? [], []);
     assert.deepEqual(toolCollection.get(callerUri) ?? [], []);
     assert.deepEqual((otherCollection.get(aUri) ?? []).map(diagnosticFact), [diagnosticFact(foreign)]);
-    assert.notDeepEqual(await readFile(outputPath), priorOutputBytes);
-    assert.equal((await readFile(outputPath)).subarray(0, 2).toString('ascii'), 'PK');
-    if (command === 'publish') assert.deepEqual(await readFile(excludedPath), excludedBytes);
-    assert.deepEqual(await readFile(templatePath), templateBytes);
+    if (command === 'build') {
+      assert.deepEqual(await readFile(outputPath), priorOutputBytes);
+      assert.deepEqual(await readdir(path.dirname(outputPath)), ['Book1.xlsm']);
+      const savedSourceWorkbook = await readFile(templatePath);
+      assert.notDeepEqual(savedSourceWorkbook, templateBytes);
+      assert.equal(savedSourceWorkbook.subarray(0, 2).toString('ascii'), 'PK');
+      assert.ok(dirtySourceDocument);
+      assert.equal(dirtySourceDocument.isDirty, true);
+      assert.equal(dirtySourceDocument.getText(), invalidFirst);
+      assert.deepEqual(await readFile(aPath), Buffer.from(correctedFirst, 'ascii'));
+    } else {
+      assert.notDeepEqual(await readFile(outputPath), priorOutputBytes);
+      assert.equal((await readFile(outputPath)).subarray(0, 2).toString('ascii'), 'PK');
+      assert.deepEqual(await readFile(excludedPath), excludedBytes);
+      assert.deepEqual(await readFile(templatePath), templateBytes);
+    }
     assert.deepEqual(await readFile(callerPath), Buffer.from(correctedCaller, 'ascii'));
     assert.deepEqual(await readFile(targetPath), Buffer.from(targetSource, 'ascii'));
     assert.equal(await readFile(manifestPath, 'utf8'), manifestText);
@@ -325,7 +350,9 @@ async function runOutputProblemsIntegrationTests(command: 'build' | 'publish'): 
       `${caption} failed. See the VBA Tools output for details.`
     ]);
     assert.deepEqual(warnings, []);
-    console.log(`PASS real ${caption} preserves semantic related navigation and artifacts, accepts Dictionary inputs, and clears Problems after successful generation`);
+    console.log(command === 'build'
+      ? 'PASS real Build preserves semantic related navigation and failed-build artifacts, saves only the source workbook from saved sources without touching the dirty editor or legacy bin, accepts Dictionary inputs, and clears Problems'
+      : 'PASS real Publish preserves semantic related navigation and artifacts, accepts Dictionary inputs, and clears Problems after successful generation');
   } finally {
     toolCollection.dispose();
     otherCollection.dispose();

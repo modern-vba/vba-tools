@@ -3,6 +3,7 @@ using VbaDev.App.Build;
 using VbaDev.App.CommonModules;
 using VbaDev.App.Diagnostics;
 using VbaDev.App.Export;
+using VbaDev.App.FileSystem;
 using VbaDev.App.HostEvents;
 using VbaDev.App.Import;
 using VbaDev.App.Projects;
@@ -38,14 +39,18 @@ public static class ToolingCompositionRoot
     /// <param name="environmentDiagnosticPort">The optional environment diagnostics adapter.</param>
     /// <param name="initialWorkbookCreator">The optional initial workbook creator adapter.</param>
     /// <param name="workbookGenerationAutomation">The optional workbook generation automation adapter.</param>
+    /// <param name="sourceWorkbookAutomation">The optional source-workbook automation adapter.</param>
     /// <param name="workbookTestRunner">The optional workbook test runner adapter.</param>
     /// <param name="workbookModuleExporter">The optional workbook module exporter adapter.</param>
+    /// <param name="projectWorkbookModuleExporter">The optional project-source workbook exporter adapter.</param>
     /// <param name="vbaProjectReferenceResolver">The optional VBA project reference resolver adapter.</param>
     /// <param name="projectManifestStore">The optional project manifest persistence adapter.</param>
     /// <param name="exportDestinationFileOperations">The optional recoverable export filesystem adapter.</param>
     /// <param name="projectManifestMutationCoordinator">The optional rebased manifest mutation boundary.</param>
     /// <param name="projectManifestMutationLeaseProvider">The optional shared project mutation lease provider.</param>
     /// <param name="persistSourceAnalysisFailureEvidence">Whether to retain local failure evidence; tests can disable persistence.</param>
+    /// <param name="sourceWorkbookRecoveryBudget">The optional finite overall budget for borrowed-workbook recovery.</param>
+    /// <param name="sourceWorkbookRecoveryOwnershipFactory">The optional ownership adapter for source Build recovery staging.</param>
     /// <returns>The composed services consumed by a command-line host.</returns>
     public static ToolingApplicationComposition CreateApplicationComposition(
         string workingDirectory,
@@ -67,7 +72,11 @@ public static class ToolingCompositionRoot
         ITypeLibCatalogMetadataReader? typeLibCatalogMetadataReader = null,
         IOfficeClickToRunTypeLibEvidenceReader? officeClickToRunTypeLibEvidenceReader = null,
         IWorkbookProjectIdentityProbe? workbookProjectIdentityProbe = null,
-        bool persistSourceAnalysisFailureEvidence = true)
+        bool persistSourceAnalysisFailureEvidence = true,
+        ISourceWorkbookAutomation? sourceWorkbookAutomation = null,
+        IWorkbookModuleExporter? projectWorkbookModuleExporter = null,
+        TimeSpan? sourceWorkbookRecoveryBudget = null,
+        IExactFileSystemObjectOwnershipFactory? sourceWorkbookRecoveryOwnershipFactory = null)
     {
         var ownershipFactory = new WindowsExactFileSystemObjectOwnershipFactory();
         var pathIdentityResolver = new FileSystemPathIdentityResolver();
@@ -110,12 +119,14 @@ public static class ToolingCompositionRoot
             projectContextResolver,
             referencePlanner);
         var generationAutomation = workbookGenerationAutomation ?? new ExcelComWorkbookGenerationAutomation();
+        var sourceAutomation = sourceWorkbookAutomation ?? new ExcelComSourceWorkbookAutomation();
         var hostEventAutomation = hostEventCatalogAutomation ?? new ExcelComHostEventCatalogAutomation();
         var sourceAdmission = new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get);
+        var referenceNormalizer = new WorkbookReferenceNormalizer(referencePlanner);
         var materializer = new WorkbookMaterializer(ownershipFactory,
             sourceAdmission,
             generationAutomation,
-            new WorkbookReferenceNormalizer(referencePlanner),
+            referenceNormalizer,
             new WorkbookOutputTransactionFactory(ownershipFactory),
             new VbeImportSourceSetFactory(ownershipFactory),
             semanticInputProvider: projectSemanticInputProvider ?? new ProjectSemanticInputProvider(
@@ -152,7 +163,10 @@ public static class ToolingCompositionRoot
             pathIdentityResolver);
         var workbookOutputCommand = new WorkbookOutputCommand(materializer,
             persistSourceAnalysisFailureEvidence ? new SourceAnalysisEvidenceStore().Save : null);
-        var buildCommand = new BuildCommand(workbookOutputCommand, pathIdentityResolver, ownershipFactory);
+        var buildCommand = new BuildCommand(workbookOutputCommand, pathIdentityResolver,
+            ownershipFactory, new SourceWorkbookBuildCommand(materializer, sourceAutomation,
+                referenceNormalizer, sourceWorkbookRecoveryOwnershipFactory ?? ownershipFactory,
+                sourceWorkbookRecoveryBudget));
         var publishCommand = new PublishCommand(workbookOutputCommand);
         var testCommand = new TestCommand(
             buildCommand,
@@ -163,6 +177,8 @@ public static class ToolingCompositionRoot
             ownershipFactory);
         var exportCommand = new ExportCommand(ownershipFactory,
             workbookModuleExporter ?? new ExcelComWorkbookModuleExporter(),
+            projectWorkbookModuleExporter ?? workbookModuleExporter
+                ?? new SourceWorkbookModuleExporter(sourceAutomation),
             exportDestinationFileOperations ?? new ExportDestinationFileOperations());
         var importCommand = new ImportCommand(
             materializer,

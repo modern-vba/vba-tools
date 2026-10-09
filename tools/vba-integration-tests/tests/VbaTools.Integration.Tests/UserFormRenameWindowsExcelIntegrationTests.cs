@@ -80,8 +80,9 @@ public sealed class UserFormRenameWindowsExcelIntegrationTests
         }
 
         var templatePath = Path.Combine(temp.Path, "Template.xlsm");
-        var targetPath = Path.Combine(temp.Path, "bin", "RenamedForm.xlsm");
+        var legacyOutputPath = Path.Combine(temp.Path, "bin", "RenamedForm.xlsm");
         CreateEmptyMacroEnabledWorkbook(templatePath);
+        var initialTemplateBytes = File.ReadAllBytes(templatePath);
         File.WriteAllText(
             Path.Combine(temp.Path, "vba-project.json"),
             """
@@ -108,8 +109,11 @@ public sealed class UserFormRenameWindowsExcelIntegrationTests
             ["build", "--project", temp.Path, "--document", "RenamedForm"],
             cancellation.Token);
 
+        Assert.False(initialTemplateBytes.AsSpan().SequenceEqual(File.ReadAllBytes(templatePath)));
+        Assert.False(File.Exists(legacyOutputPath));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(legacyOutputPath)!));
         await UseOwnedExcelWorkbookAsync(
-            targetPath,
+            templatePath,
             session =>
             {
                 object? projectObject = null;
@@ -119,6 +123,7 @@ public sealed class UserFormRenameWindowsExcelIntegrationTests
                 try
                 {
                     dynamic workbook = session.WorkbookObject;
+                    Assert.True((bool)workbook.Saved);
                     projectObject = workbook.VBProject;
                     dynamic project = projectObject;
                     componentsObject = project.VBComponents;
@@ -155,7 +160,7 @@ public sealed class UserFormRenameWindowsExcelIntegrationTests
         Directory.CreateDirectory(exportRoot);
         await PrebuiltTools.RunVbaDevAsync(
             vbaDevPath,
-            ["export", "--from", targetPath, "--to", exportRoot],
+            ["export", "--from", templatePath, "--to", exportRoot],
             cancellation.Token);
         var exportedFormPath = Path.Combine(exportRoot, "DialogView.frm");
         var exportedSidecarPath = Path.Combine(exportRoot, "DialogView.frx");

@@ -588,7 +588,11 @@ public sealed class WorkbookOutputFailureTests
 
         Assert.Equal(0, result.ExitCode);
         Assert.Empty(result.StandardError);
-        Assert.Equal(["import:Runtime.bas", "save"], automation.Events);
+        Assert.Equal(
+            [commandName == "build"
+                ? BuildCommandTests.SourceWorkbookImportEvent(automation, "Runtime.bas")
+                : "import:Runtime.bas", "save"],
+            automation.Events);
     }
 
     [Theory]

@@ -41,6 +41,7 @@ export interface VbaDevInvocationRuntimeOptions {
   reportCancellationProgress?: ((message: string) => void) | undefined;
   requiredContract?: RequiredVbaDevContract | undefined;
   isWorkspaceTrusted?: (() => boolean) | undefined;
+  confirmWorkbookChanges?: ((message: string) => Promise<boolean>) | undefined;
 }
 
 export interface VbaDevCommandRuntimeOptions extends VbaDevInvocationRuntimeOptions {
@@ -198,7 +199,9 @@ export async function runResolvedVbaDevCommandInvocation(
 ): Promise<VbaDevCommandRunResult> {
   const result = await runVbaDevCommand({
     executablePath: resolution.executablePath,
-    args: withStdinCancellationTransport(args, resolution.capabilities),
+    args: withStdinCancellationTransport(
+      withWorkbookInteraction(args, resolution.capabilities, options), resolution.capabilities),
+    confirmWorkbookChanges: options.confirmWorkbookChanges,
     outputChannel: options.outputChannel,
     revealOutput: options.revealOutput,
     reportCancellationProgress: options.reportCancellationProgress,
@@ -254,7 +257,8 @@ export async function runResolvedVbaDevProjectCommandInvocation(
   }
   const result = await runVbaDevCommand({
     executablePath,
-    args: withStdinCancellationTransport(args, capabilities),
+    args: withStdinCancellationTransport(withWorkbookInteraction(args, capabilities, options), capabilities),
+    confirmWorkbookChanges: options.confirmWorkbookChanges,
     outputChannel: options.outputChannel,
     revealOutput: options.revealOutput,
     reportCancellationProgress: options.reportCancellationProgress,
@@ -336,6 +340,17 @@ function supportsStdinCancellation(capabilities: VbaDevCapabilities): boolean {
   return capabilities.featureVersions?.['invocation.stdinCancellation'] === '1.0';
 }
 
+function withWorkbookInteraction(
+  args: readonly string[],
+  capabilities: VbaDevCapabilities,
+  options: VbaDevInvocationRuntimeOptions
+): readonly string[] {
+  if (args[0] !== 'build' || args.includes('--source-snapshot') ||
+      capabilities.featureVersions?.['invocation.stdinWorkbookConfirmation'] !== '1.0' ||
+      args.includes('--interactive')) return args;
+  return [...args, '--interactive', options.confirmWorkbookChanges === undefined ? 'false' : 'true'];
+}
+
 function forceKillDelayForManagedCommand(
   args: readonly string[],
   capabilities: VbaDevCapabilities,
@@ -343,7 +358,9 @@ function forceKillDelayForManagedCommand(
 ): number | undefined {
   if (
     !supportsStdinCancellation(capabilities) ||
-    isCallerForceKillExemptCommand(args)
+    isCallerForceKillExemptCommand(args) ||
+    (args[0] === 'build' && !args.includes('--source-snapshot') &&
+      capabilities.featureVersions?.['build.sourceWorkbook'] === '1.0')
   ) {
     return undefined;
   }

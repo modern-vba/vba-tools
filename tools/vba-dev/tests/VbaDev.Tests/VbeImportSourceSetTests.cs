@@ -13,6 +13,77 @@ public sealed class VbeImportSourceSetTests
     }
 
     [Fact]
+    public void SourceWorkbookBuildOwnsOnlyGuidPrefixedFilesInAStableParent()
+    {
+        using var temp = TempDirectory.Create();
+        var sourcePath = Path.Combine(temp.Path, "Module1.bas");
+        const string sourceText = "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n";
+        File.WriteAllText(sourcePath, sourceText, new UTF8Encoding(false));
+        var admission = new VbaSourceAdmission(() => 65001)
+            .AdmitProjectBuild(temp.Path, [], CancellationToken.None);
+        var factory = new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory());
+        string parentPath;
+        string stagedPath;
+
+        using (var sourceSet = factory.CreateForSourceWorkbookBuild(admission))
+        {
+            parentPath = sourceSet.StagingPath;
+            stagedPath = Assert.Single(sourceSet.SourceFiles).SourcePath;
+            Assert.Equal(parentPath, Path.GetDirectoryName(stagedPath));
+            Assert.NotEqual("Module1.bas", Path.GetFileName(stagedPath));
+            Assert.EndsWith("_Module1.bas", Path.GetFileName(stagedPath), StringComparison.Ordinal);
+            Assert.Equal(sourceText, File.ReadAllText(stagedPath));
+            Assert.Equal("Module1", Assert.Single(sourceSet.SourceFiles).ImportVerification.ComponentName);
+        }
+
+        Assert.True(Directory.Exists(parentPath));
+        Assert.False(File.Exists(stagedPath));
+        Assert.Equal(sourceText, File.ReadAllText(sourcePath));
+    }
+
+    [Fact]
+    public void SourceWorkbookBuildRewritesOnlyParsedFormResourceBasenamesInTheMirror()
+    {
+        using var temp = TempDirectory.Create();
+        var formPath = Path.Combine(temp.Path, "Dialog.frm");
+        var sidecarPath = Path.Combine(temp.Path, "Dialog.frx");
+        const string formText =
+            "VERSION 5.00\r\nBegin VB.Form Dialog\r\n" +
+            "  Caption = \"Dialog.frx\"\r\n" +
+            "  Picture = \"Dialog.frx\":0000\r\n" +
+            "End\r\nAttribute VB_Name = \"Dialog\"\r\n" +
+            "Option Explicit\r\nPublic Const Note As String = \"Dialog.frx\"\r\n";
+        byte[] binary = [0, 1, 2, 3];
+        File.WriteAllText(formPath, formText, new UTF8Encoding(false));
+        File.WriteAllBytes(sidecarPath, binary);
+        var admission = new VbaSourceAdmission(() => 65001)
+            .AdmitProjectBuild(temp.Path, [], CancellationToken.None);
+        var factory = new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory());
+        string stagedFormPath;
+        string stagedSidecarPath;
+
+        using (var sourceSet = factory.CreateForSourceWorkbookBuild(admission))
+        {
+            var staged = Assert.Single(sourceSet.SourceFiles);
+            stagedFormPath = staged.SourcePath;
+            stagedSidecarPath = Assert.IsType<string>(staged.BinaryPath);
+            var stagedBaseName = Path.GetFileName(stagedSidecarPath);
+            Assert.Equal(Path.GetFileNameWithoutExtension(stagedFormPath),
+                Path.GetFileNameWithoutExtension(stagedSidecarPath));
+            Assert.Contains($"Picture = \"{stagedBaseName}\":0000", File.ReadAllText(stagedFormPath));
+            Assert.Contains("Caption = \"Dialog.frx\"", File.ReadAllText(stagedFormPath));
+            Assert.Contains("Public Const Note As String = \"Dialog.frx\"", File.ReadAllText(stagedFormPath));
+            Assert.Equal("Dialog", staged.ImportVerification.ComponentName);
+            Assert.Equal(binary, File.ReadAllBytes(stagedSidecarPath));
+        }
+
+        Assert.False(File.Exists(stagedFormPath));
+        Assert.False(File.Exists(stagedSidecarPath));
+        Assert.Equal(formText, File.ReadAllText(formPath));
+        Assert.Equal(binary, File.ReadAllBytes(sidecarPath));
+    }
+
+    [Fact]
     public void DisposalPreservesChangedMirrorBytes()
     {
         using var temp = TempDirectory.Create();

@@ -147,6 +147,9 @@ public sealed class ExportScratchTests
             Assert.Equal("new module", File.ReadAllText(Path.Combine(destination, "Module1.bas")));
             Assert.Contains("Warning:", result.StandardError);
             Assert.Contains(staging, result.StandardError);
+            if (!explicitWorkbook)
+                Assert.DoesNotContain("Excel has exited", result.StandardError,
+                    StringComparison.OrdinalIgnoreCase);
             Assert.Equal("foreign content", File.ReadAllText(Path.Combine(staging, "foreign.txt")));
         }
         finally { if (Directory.Exists(staging)) Directory.Delete(staging, true); }
@@ -194,6 +197,7 @@ public sealed class ExportScratchTests
         var workbook = Path.Combine(temp.CreateDirectory("bin"), "Book1.xlsm");
         File.WriteAllText(workbook, "workbook");
         var destination = temp.CreateDirectory("src/Book1");
+        File.WriteAllText(Path.Combine(destination, "Book1.xlsm"), "source workbook");
         File.WriteAllText(Path.Combine(destination, "Module1.bas"), "old module");
         return (workbook, destination);
     }
