@@ -190,3 +190,128 @@ test('managed source Build without a UI callback explicitly refuses interactive 
   assert.deepEqual(startedArgs, ['build', '--project', 'C:\\Project', '--interactive', 'false',
     '--cancellation-transport', 'stdin-v1']);
 });
+
+test('managed source Test returns one declined workbook confirmation to the same invocation', async () => {
+  const requestId = '0123456789abcdef0123456789abcdef';
+  const warning = 'Replace live VBA and run tests without saving C:\\Project\\Book.xlsm?';
+  const prompts: string[] = [];
+  const replies: Array<{ id: string; approved: boolean }> = [];
+  const invocations: readonly string[][] = [];
+  const result = await runResolvedVbaDevProjectCommandInvocation({
+    extensionRoot: 'C:\\Extension',
+    outputChannel: { append: () => {}, appendLine: () => {}, show: () => {} },
+    confirmWorkbookChanges: async message => { prompts.push(message); return false; },
+    startProcess: (_file, args) => {
+      (invocations as string[][]).push([...args]);
+      return {
+        onStdout: () => {},
+        onStderr: listener => {
+          const frame = JSON.stringify({ type: 'workbookConfirmation', schemaVersion: '1.0', requestId, message: warning }) + '\n';
+          listener(frame.slice(0, 21));
+          listener(frame.slice(21));
+          listener(frame);
+        },
+        respondToWorkbookConfirmation: async (id, approved) => { replies.push({ id, approved }); },
+        onExit: listener => { setImmediate(() => listener(1, null)); },
+        kill: () => { throw new Error('Source Test must finish cooperative cleanup.'); }
+      };
+    }
+  }, 'vba-dev.exe', { projectRoot: 'C:\\Project', argsBeforeProject: ['test'] }, {
+    toolVersion: 'test', contractVersion: '1.0', commands: { test: { outputSchemaVersion: '1.2' } },
+    featureVersions: { 'test.sourceWorkbook': '1.0', 'invocation.stdinCancellation': '1.0',
+      'invocation.stdinWorkbookConfirmation': '1.0' }
+  });
+  assert.equal(result.exitCode, 1);
+  assert.equal(invocations.length, 1);
+  assert.deepEqual(prompts, [warning]);
+  assert.deepEqual(replies, [{ id: requestId, approved: false }]);
+  assert.deepEqual(invocations[0], ['test', '--project', 'C:\\Project', '--interactive', 'true',
+    '--cancellation-transport', 'stdin-v1']);
+});
+
+test('cancelled source snapshot Test waits for child cleanup without force killing it', async () => {
+  let cancel: (() => void) | undefined;
+  let close: ((code: number, signal: null) => void) | undefined;
+  let cancellationRequests = 0;
+  let kills = 0;
+  let completed = false;
+  const running = runResolvedVbaDevProjectCommandInvocation({
+    extensionRoot: 'C:\\Extension',
+    outputChannel: { append: () => {}, appendLine: () => {}, show: () => {} },
+    forceKillAfterCancellationMilliseconds: 0,
+    cancellationToken: { isCancellationRequested: false,
+      onCancellationRequested: listener => { cancel = listener; return { dispose: () => {} }; } },
+    startProcess: () => ({
+      onStdout: () => {}, onStderr: () => {}, onExit: () => {},
+      onClose: listener => { close = listener; },
+      requestCancellation: async () => { cancellationRequests++; },
+      kill: () => { kills++; }
+    })
+  }, 'vba-dev.exe', { projectRoot: 'C:\\Project', argsBeforeProject: ['test'],
+    argsAfterProject: ['--source-snapshot', 'C:\\Snapshot', '--format', 'ndjson'] }, {
+    toolVersion: 'test', contractVersion: '1.0', commands: { test: { outputSchemaVersion: '1.2' } },
+    featureVersions: { 'test.sourceWorkbook': '1.0', 'invocation.stdinCancellation': '1.0',
+      'invocation.stdinWorkbookConfirmation': '1.0' }
+  }).then(result => { completed = true; return result; });
+  cancel?.();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const observedKills = kills;
+  const completedBeforeClose = completed;
+  close?.(130, null);
+  const result = await running;
+  assert.equal(cancellationRequests, 1);
+  assert.equal(observedKills, 0);
+  assert.equal(completedBeforeClose, false);
+  assert.equal(result.cancelled, true);
+});
+
+test('explicitly noninteractive managed Test does not ask for or answer workbook consent', async () => {
+  let prompts = 0;
+  let replies = 0;
+  let invocation: readonly string[] = [];
+  const result = await runResolvedVbaDevProjectCommandInvocation({
+    extensionRoot: 'C:\\Extension',
+    outputChannel: { append: () => {}, appendLine: () => {}, show: () => {} },
+    confirmWorkbookChanges: async () => { prompts++; return true; },
+    startProcess: (_file, args) => {
+      invocation = args;
+      return {
+        onStdout: () => {}, onStderr: listener => listener(JSON.stringify({ type: 'workbookConfirmation',
+          schemaVersion: '1.0', requestId: '0123456789abcdef0123456789abcdef', message: 'Run current tests?' }) + '\n'),
+        onExit: listener => { setImmediate(() => listener(1, null)); },
+        respondToWorkbookConfirmation: async () => { replies++; }, kill: () => {}
+      };
+    }
+  }, 'vba-dev.exe', { projectRoot: 'C:\\Project', argsBeforeProject: ['test'],
+    argsAfterProject: ['--no-build', '--interactive', 'false'] }, {
+    toolVersion: 'test', contractVersion: '1.0', commands: { test: { outputSchemaVersion: '1.2' } },
+    featureVersions: { 'test.sourceWorkbook': '1.0', 'invocation.stdinCancellation': '1.0',
+      'invocation.stdinWorkbookConfirmation': '1.0' }
+  });
+  assert.equal(result.exitCode, 1);
+  assert.equal(prompts, 0);
+  assert.equal(replies, 0);
+  assert.equal(invocation.filter(argument => argument === '--interactive').length, 1);
+  assert.equal(invocation[invocation.indexOf('--interactive') + 1], 'false');
+});
+
+test('managed Test preserves an explicit equals-form noninteractive choice', async () => {
+  let invocation: readonly string[] = [];
+  await runResolvedVbaDevProjectCommandInvocation({
+    extensionRoot: 'C:\\Extension',
+    outputChannel: { append: () => {}, appendLine: () => {}, show: () => {} },
+    confirmWorkbookChanges: async () => true,
+    startProcess: (_file, args) => {
+      invocation = args;
+      return { onStdout: () => {}, onStderr: () => {},
+        onExit: listener => { setImmediate(() => listener(1, null)); }, kill: () => {} };
+    }
+  }, 'vba-dev.exe', { projectRoot: 'C:\\Project', argsBeforeProject: ['test'],
+    argsAfterProject: ['--no-build', '--interactive=false'] }, {
+    toolVersion: 'test', contractVersion: '1.0', commands: { test: { outputSchemaVersion: '1.2' } },
+    featureVersions: { 'test.sourceWorkbook': '1.0', 'invocation.stdinCancellation': '1.0',
+      'invocation.stdinWorkbookConfirmation': '1.0' }
+  });
+  assert.deepEqual(invocation, ['test', '--project', 'C:\\Project', '--no-build', '--interactive=false',
+    '--cancellation-transport', 'stdin-v1']);
+});

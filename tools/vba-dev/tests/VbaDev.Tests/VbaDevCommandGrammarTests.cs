@@ -203,6 +203,7 @@ public sealed class VbaDevCommandGrammarTests
             [
                 "--document",
                 "--format",
+                "--interactive",
                 "--module",
                 "--no-build",
                 "--procedure",
@@ -225,6 +226,7 @@ public sealed class VbaDevCommandGrammarTests
             "prepare-debug --interactive",
             "reference list --available",
             "reference list --no-resolve",
+            "test --interactive",
             "test --no-build"
         };
         var actual = EnumerateLeafPaths(graph.RootCommand)

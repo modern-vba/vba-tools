@@ -60,9 +60,12 @@ test('Test snapshot admission still requires the CLI Test snapshot feature', asy
     featureVersions: {
       'build.sourceSnapshot': '2.0',
       'build.sourceSnapshotAnalysis': '1.0',
+      'test.sourceWorkbook': '1.0',
+      'invocation.stdinCancellation': '1.0',
+      'invocation.stdinWorkbookConfirmation': '1.0',
       'sourceSnapshot.activeWindowsCodePage': '1.0'
     },
-    commands: {}
+    commands: { test: { outputSchemaVersion: '1.2' } }
   };
   const adapterCapabilities = {
     toolVersion: '0.1.1', contractVersion: '1.0', protocolVersion: '2.0',
@@ -83,7 +86,7 @@ test('Test snapshot admission still requires the CLI Test snapshot feature', asy
     extensionRoot: path.resolve('extension-root'),
     requiredContract: {
       contractVersion: '1.0', featureVersions: cliCapabilities.featureVersions,
-      commandSchemaVersions: {}
+      commandSchemaVersions: { test: '1.2' }
     },
     requiredDebugAdapterContract: adapterCapabilities,
     vbaDevResolver: { resolve: async () => ({
@@ -102,7 +105,9 @@ test('Test rejects an injected adapter that lacks the declared source-workbook d
     toolVersion: '0.1.1', contractVersion: '1.0', activeWindowsCodePage: 1252,
     featureVersions: {
       'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0',
-      'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0'
+      'test.sourceSnapshot': '2.0', 'test.sourceWorkbook': '1.0',
+      'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
+      'sourceSnapshot.activeWindowsCodePage': '1.0'
     },
     commands: { test: { outputSchemaVersion: '1.2' } }
   };
@@ -138,4 +143,35 @@ test('Test rejects an injected adapter that lacks the declared source-workbook d
     }) },
     capabilitiesProcess: async () => ({ stdout: JSON.stringify(cliCapabilities), stderr: '' })
   }), /Snapshot schema 2/);
+});
+
+test('Test snapshot admission rejects an old bin-semantic CLI despite unchanged result schemas', async () => {
+  const features = {
+    'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0',
+    'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0',
+    'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0'
+  };
+  const cli = { toolVersion: '0.1.1', contractVersion: '1.0', activeWindowsCodePage: 1252,
+    featureVersions: features, commands: { test: { outputSchemaVersion: '1.2' } } };
+  const adapter = {
+    toolVersion: '0.1.1', contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
+    sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
+    commandSchemaVersions: { doctor: '1.0' },
+    featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
+    requiredVbaDevFeatureVersions: {
+      'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '1.0',
+      'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
+      'sourceSnapshot.activeWindowsCodePage': '1.0'
+    }
+  };
+  await assert.rejects(resolveSnapshotProviders({
+    purpose: 'test', extensionRoot: path.resolve('extension-root'),
+    requiredContract: { contractVersion: '1.0', featureVersions: { ...features, 'test.sourceWorkbook': '1.0' },
+      commandSchemaVersions: { test: '1.2' } },
+    requiredDebugAdapterContract: adapter,
+    vbaDevResolver: { resolve: async () => ({ executablePath: path.resolve('vba-dev.exe'),
+      bundledPath: path.resolve('vba-dev.exe'), source: 'bundled', capabilities: cli }) },
+    vbaDebugAdapterResolver: { resolve: async () => ({ executablePath: path.resolve('vba-debug-adapter.exe'), capabilities: adapter }) },
+    capabilitiesProcess: async () => ({ stdout: JSON.stringify(cli), stderr: '' })
+  }), /test\.sourceWorkbook/);
 });

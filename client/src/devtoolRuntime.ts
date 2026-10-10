@@ -345,9 +345,11 @@ function withWorkbookInteraction(
   capabilities: VbaDevCapabilities,
   options: VbaDevInvocationRuntimeOptions
 ): readonly string[] {
-  if (args[0] !== 'build' || args.includes('--source-snapshot') ||
+  const usesSourceWorkbook = (args[0] === 'build' && !args.includes('--source-snapshot')) ||
+    (args[0] === 'test' && capabilities.featureVersions?.['test.sourceWorkbook'] === '1.0');
+  if (!usesSourceWorkbook ||
       capabilities.featureVersions?.['invocation.stdinWorkbookConfirmation'] !== '1.0' ||
-      args.includes('--interactive')) return args;
+      args.some(argument => argument === '--interactive' || argument.startsWith('--interactive='))) return args;
   return [...args, '--interactive', options.confirmWorkbookChanges === undefined ? 'false' : 'true'];
 }
 
@@ -359,6 +361,7 @@ function forceKillDelayForManagedCommand(
   if (
     !supportsStdinCancellation(capabilities) ||
     isCallerForceKillExemptCommand(args) ||
+    (args[0] === 'test' && capabilities.featureVersions?.['test.sourceWorkbook'] === '1.0') ||
     (args[0] === 'build' && !args.includes('--source-snapshot') &&
       capabilities.featureVersions?.['build.sourceWorkbook'] === '1.0')
   ) {

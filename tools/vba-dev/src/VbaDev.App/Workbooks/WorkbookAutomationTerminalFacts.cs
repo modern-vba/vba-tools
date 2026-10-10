@@ -34,7 +34,8 @@ internal enum WorkbookAutomationFailureCategory
     ProcessLoss,
     CleanupAfterProvedRelease,
     UnprovedProcessRelease,
-    UnprovedDispatcherRetirement
+    UnprovedDispatcherRetirement,
+    UnprovedComReferenceRelease
 }
 
 internal sealed record WorkbookAutomationFailure(
@@ -67,6 +68,8 @@ internal sealed class WorkbookAutomationTerminalFacts
             failure.Category == WorkbookAutomationFailureCategory.UnprovedProcessRelease);
         DispatcherRetired = !failures.Any(failure =>
             failure.Category == WorkbookAutomationFailureCategory.UnprovedDispatcherRetirement);
+        ComReferenceReleaseProven = !failures.Any(failure =>
+            failure.Category == WorkbookAutomationFailureCategory.UnprovedComReferenceRelease);
         HasUnprovedLifecycle = !ProcessReleaseProven || !DispatcherRetired;
         TypedCancellation = failures.FirstOrDefault(failure => failure.Error is WorkbookAutomationCanceledException);
         HasTrustedCancellationAuthority = TypedCancellation is not null || callerCancellationRequested;
@@ -88,7 +91,7 @@ internal sealed class WorkbookAutomationTerminalFacts
             && PrimaryFailure?.Category == WorkbookAutomationFailureCategory.Cancellation
             && !HasTrustedCancellationAuthority;
 
-        Disposition = HasUnprovedLifecycle
+        Disposition = HasUnprovedLifecycle || !ComReferenceReleaseProven
             ? WorkbookAutomationDisposition.Failed
             : !unknownFailures.IsEmpty || PrimaryFailure is null
                 ? null
@@ -112,6 +115,7 @@ internal sealed class WorkbookAutomationTerminalFacts
     internal bool IsUntrustedCancellation { get; }
     internal bool ProcessReleaseProven { get; }
     internal bool DispatcherRetired { get; }
+    internal bool ComReferenceReleaseProven { get; }
     internal bool HasUnprovedLifecycle { get; }
     internal WorkbookAutomationDisposition? Disposition { get; }
     internal bool IsRecognized => Disposition is not null;
@@ -121,11 +125,12 @@ internal sealed class WorkbookAutomationTerminalFacts
         {
             WorkbookAutomationFailureCategory.UnprovedProcessRelease => 0,
             WorkbookAutomationFailureCategory.UnprovedDispatcherRetirement => 1,
-            WorkbookAutomationFailureCategory.CleanupAfterProvedRelease => 2,
-            WorkbookAutomationFailureCategory.ProcessLoss => 3,
-            WorkbookAutomationFailureCategory.Timeout => 4,
-            WorkbookAutomationFailureCategory.ComFailure => 5,
-            WorkbookAutomationFailureCategory.Cancellation => 6,
+            WorkbookAutomationFailureCategory.UnprovedComReferenceRelease => 2,
+            WorkbookAutomationFailureCategory.CleanupAfterProvedRelease => 3,
+            WorkbookAutomationFailureCategory.ProcessLoss => 4,
+            WorkbookAutomationFailureCategory.Timeout => 5,
+            WorkbookAutomationFailureCategory.ComFailure => 6,
+            WorkbookAutomationFailureCategory.Cancellation => 7,
             _ => throw new ArgumentOutOfRangeException(nameof(category))
         };
 
@@ -170,6 +175,9 @@ internal sealed class WorkbookAutomationTerminalFacts
             var recognized = true;
             switch (current)
             {
+                case WorkbookAutomationComReferenceReleaseException:
+                    failures.Add(new(WorkbookAutomationFailureCategory.UnprovedComReferenceRelease, current, stage));
+                    break;
                 case WorkbookAutomationTimeoutException timeout:
                     failures.Add(new(WorkbookAutomationFailureCategory.Timeout, current, timeout.Stage));
                     break;

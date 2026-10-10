@@ -274,7 +274,8 @@ public sealed class BuildSourceAdmissionTests
         var runner = new FakeWorkbookTestRunner();
         var test = new TestCommand(build, runner, new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), temp.CreateDirectory("scratch"),
-                sourceCaptureFactory: new SnapshotSourceCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new VbaSourceAdmission(() => 1252))));
+                sourceCaptureFactory: new SnapshotSourceCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new VbaSourceAdmission(() => 1252))),
+            CreateSourceTestCommand(automation, runner, 1252, mirrorFactory: mirrorFactory));
 
         var result = await test.RunAsync(context,
             new TestCommandRequest("text", true, new(), TimeSpan.FromMinutes(1), context.DocumentSourceSetPath), CancellationToken.None);
@@ -284,8 +285,10 @@ public sealed class BuildSourceAdmissionTests
         Assert.Contains("' caf\u00c3\u00a9", imported.ImportVerification.CodeModuleLines);
         Assert.Equal("windows-1252", imported.ImportVerification.OriginalEncoding);
         Assert.Equal(bytes, File.ReadAllBytes(sourcePath));
-        Assert.Single(runner.Workbooks);
-        Assert.NotEqual(context.BinDocumentPath, runner.Workbooks[0]);
+        Assert.Equal([context.TemplateDocumentPath], runner.Workbooks);
+        Assert.Equal([context.TemplateDocumentPath], automation.OpenedWorkbooks);
+        Assert.Equal(0, automation.SaveCalls);
+        Assert.False(File.Exists(context.BinDocumentPath));
     }
 
     public static IEnumerable<object[]> SnapshotEncodingCases()
@@ -343,7 +346,8 @@ public sealed class BuildSourceAdmissionTests
         var runner = new FakeWorkbookTestRunner();
         var test = new TestCommand(build, runner, new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot,
-                sourceCaptureFactory: new SnapshotSourceCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), admission)));
+                sourceCaptureFactory: new SnapshotSourceCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), admission)),
+            CreateSourceTestCommand(automation, runner, activeCodePage, mirrorFactory: mirrorFactory));
 
         var result = command == "build"
             ? await build.RunSnapshotAsync(
@@ -377,6 +381,12 @@ public sealed class BuildSourceAdmissionTests
         {
             Assert.Equal(item.GetProperty("expectedEncoding").GetString(), Assert.Single(automation.ImportedSources).ImportVerification.OriginalEncoding);
             Assert.Equal(command == "test" ? 1 : 0, runner.Workbooks.Count);
+            if (command == "test")
+            {
+                Assert.Equal([context.TemplateDocumentPath], runner.Workbooks);
+                Assert.Equal([context.TemplateDocumentPath], automation.OpenedWorkbooks);
+                Assert.Equal(0, automation.SaveCalls);
+            }
         }
         Assert.Equal(command == "build" && !shouldFail ? "template-workbook" : "previous-output", File.ReadAllText(outputPath));
         Assert.Equal("persistent-bin", File.ReadAllText(context.BinDocumentPath));
@@ -404,7 +414,9 @@ public sealed class BuildSourceAdmissionTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory());
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+                new FileSystemPathIdentityResolver()),
+            CreateSourceTestCommand(automation, runner, 1252, admission));
 
         var result = await test.RunAsync(context, new TestCommandRequest("ndjson", true, new()), CancellationToken.None);
 
@@ -486,7 +498,9 @@ public sealed class BuildSourceAdmissionTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory());
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+                new FileSystemPathIdentityResolver()),
+            CreateSourceTestCommand(automation, runner, 65001, admission));
 
         var result = await test.RunAsync(
             context,
@@ -504,6 +518,9 @@ public sealed class BuildSourceAdmissionTests
         Assert.Equal(1, mutationCalls);
         Assert.Equal(1, activeCodePageCalls);
         Assert.Equal(1, sourceReadCalls);
+        Assert.Equal([context.TemplateDocumentPath], runner.Workbooks);
+        Assert.Equal([context.TemplateDocumentPath], automation.OpenedWorkbooks);
+        Assert.Equal(0, automation.SaveCalls);
         Assert.Equal(string.Empty, result.StandardError);
     }
 
@@ -535,7 +552,8 @@ public sealed class BuildSourceAdmissionTests
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot,
-                sourceCaptureFactory: new SnapshotSourceCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), admission)));
+                sourceCaptureFactory: new SnapshotSourceCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), admission)),
+            CreateSourceTestCommand(automation, runner, 1252));
 
         var result = await test.RunAsync(context,
             new TestCommandRequest("ndjson", true, new(), TimeSpan.FromMinutes(1), snapshotPath), CancellationToken.None);
@@ -552,6 +570,9 @@ public sealed class BuildSourceAdmissionTests
         Assert.Equal(1, acpCalls);
         Assert.Equal(1, readCalls);
         Assert.Contains("' caf\u00c3\u00a9", Assert.Single(automation.ImportedSources).ImportVerification.CodeModuleLines);
+        Assert.Equal([context.TemplateDocumentPath], runner.Workbooks);
+        Assert.Equal([context.TemplateDocumentPath], automation.OpenedWorkbooks);
+        Assert.Equal(0, automation.SaveCalls);
         Assert.False(File.Exists(sourcePath));
         Assert.False(File.Exists(context.BinDocumentPath));
         Assert.Empty(Directory.EnumerateFiles(context.DocumentSourceSetPath));
@@ -603,6 +624,25 @@ public sealed class BuildSourceAdmissionTests
         VbaSourceAdmission? admission = null,
         VbeImportSourceSetFactory? mirrorFactory = null)
         => new(CreateOutputCommand(automation, activeCodePage, admission, mirrorFactory), new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory());
+
+    private static SourceWorkbookTestCommand CreateSourceTestCommand(
+        FakeWorkbookGenerationAutomation automation,
+        FakeWorkbookTestRunner runner,
+        int activeCodePage,
+        VbaSourceAdmission? admission = null,
+        VbeImportSourceSetFactory? mirrorFactory = null)
+    {
+        var ownershipFactory = new WindowsExactFileSystemObjectOwnershipFactory();
+        var referenceNormalizer = new WorkbookReferenceNormalizer(
+            new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver()));
+        var materializer = new WorkbookMaterializer(ownershipFactory,
+            admission ?? new VbaSourceAdmission(() => activeCodePage), automation,
+            referenceNormalizer, new WorkbookOutputTransactionFactory(ownershipFactory),
+            mirrorFactory ?? new VbeImportSourceSetFactory(ownershipFactory),
+            semanticInputProvider: FakeProjectSemanticInputProvider.Empty);
+        return new SourceWorkbookTestCommand(materializer,
+            new SourceWorkbookTestAutomation(automation, runner), referenceNormalizer, ownershipFactory);
+    }
 
     private static WorkbookOutputCommand CreateOutputCommand(
         FakeWorkbookGenerationAutomation automation,

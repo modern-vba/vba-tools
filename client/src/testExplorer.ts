@@ -7,6 +7,7 @@ import {
   CompanionExecutableResolver,
   ProcessRunner,
   RequiredVbaDevContract,
+  VbaDevCompatibilityError,
   isReportedVbaDevResolutionFailure,
   noCompatibleVbaDevMessage
 } from './devtool';
@@ -19,7 +20,7 @@ import {
   runVbaDevProjectCommandInvocation
 } from './devtoolRuntime';
 import { parseProjectManifest } from './projectManifest';
-import { relativeWindowsDescendantPath, windowsPathKey } from './windowsPathIdentity';
+import { windowsPathKey } from './windowsPathIdentity';
 import {
   TestItemMetadata,
   TestExplorerNodeIndex,
@@ -100,6 +101,7 @@ export interface WorkbookBackedTestExplorerOptions extends SnapshotProviderOptio
   showErrorMessage: (message: string) => Thenable<unknown> | Promise<unknown>;
   requiredContract?: RequiredVbaDevContract | undefined;
   diagnosticReporter?: VbaDevSnapshotDiagnosticReporterLike | undefined;
+  confirmWorkbookChanges?: ((message: string, mode: { readonly noBuild: boolean }) => Promise<boolean>) | undefined;
 }
 
 export interface OpenTextDocumentState {
@@ -237,7 +239,15 @@ async function runTests(
     let invocationOptions = options;
     try {
       if (runOptions.noBuild) {
-        await options.vbaDevResolver?.resolve();
+        const provider = await options.vbaDevResolver?.resolve();
+        if (provider !== undefined) {
+          if (provider.capabilities.commands.test?.outputSchemaVersion !== '1.2' ||
+              ['test.sourceWorkbook', 'invocation.stdinCancellation', 'invocation.stdinWorkbookConfirmation']
+                .some(feature => provider.capabilities.featureVersions?.[feature] !== '1.0')) {
+            throw new VbaDevCompatibilityError('Source workbook Test requires test.sourceWorkbook, stdin cancellation and workbook confirmation version 1.0, and Test schema 1.2.');
+          }
+          invocationOptions = { ...options, vbaDevResolver: { resolve: async () => provider } };
+        }
       } else {
         const providers = await resolveSnapshotProviders({ ...options, purpose: 'test', cancellationToken: token });
         const activeCodePage = snapshotActiveWindowsCodePage(providers);
@@ -248,7 +258,7 @@ async function runTests(
         };
       }
     } catch (error) {
-      if (runOptions.noBuild && !isReportedVbaDevResolutionFailure(error)) {
+      if (runOptions.noBuild && !(error instanceof VbaDevCompatibilityError)) {
         throw error;
       }
       const errorItem = items[0];
@@ -281,26 +291,9 @@ async function runTests(
   }
 }
 
-function hasDirtyExportedSourceInScope(
-  options: WorkbookBackedTestExplorerOptions,
-  metadata: TestItemMetadata
-): boolean {
-  return options.openTextDocuments().some((document) => (
-    document.isDirty
-    && isExportedVbaSource(document.uriPath)
-    && metadata.sourceSetPaths.some((sourceSetPath) => (
-      isPathWithin(document.uriPath, sourceSetPath)
-    ))
-  ));
-}
-
 function isExportedVbaSource(filePath: string): boolean {
   const extension = path.extname(filePath).toLowerCase();
   return extension === '.bas' || extension === '.cls' || extension === '.frm';
-}
-
-function isPathWithin(filePath: string, directoryPath: string): boolean {
-  return relativeWindowsDescendantPath(path.resolve(directoryPath), path.resolve(filePath)) !== undefined;
 }
 
 function samePath(left: string, right: string): boolean {
@@ -321,8 +314,7 @@ async function runTestItem(
     return;
   }
 
-  const omitSourceLocations = runOptions.noBuild
-    && hasDirtyExportedSourceInScope(options, metadata);
+  const omitSourceLocations = runOptions.noBuild;
   if (omitSourceLocations) {
     nodeIndex.resetDiscoveryForRun(metadata);
   }
@@ -358,6 +350,8 @@ async function runTestItem(
     testRun.started(item);
     const result = await runVbaDevProjectCommandInvocation({
       ...options,
+      confirmWorkbookChanges: options.confirmWorkbookChanges === undefined ? undefined
+        : message => options.confirmWorkbookChanges!(message, { noBuild: runOptions.noBuild }),
       cancellationToken: token
     }, {
       projectRoot: metadata.projectRoot,

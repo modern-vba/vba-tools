@@ -78,7 +78,7 @@ export async function runTestBuildProblemsIntegrationTests(): Promise<void> {
       '    Dim results As Worksheet',
       '    Test_Module.Test_Passes',
       '    Open "' + marker + '" For Output As #1',
-      '    Print #1, "executed"',
+      '    Print #1, ThisWorkbook.FullName',
       '    Close #1',
       '    Set results = ThisWorkbook.Worksheets.Add',
       '    results.Name = "UNIT_TEST_SHEET"',
@@ -186,14 +186,15 @@ export async function runTestBuildProblemsIntegrationTests(): Promise<void> {
     await replaceText(callerUri, valid + "' unsaved valid run\r\n");
     await explorer.run({ include: [item] }, token);
     assert.ok(events.includes('passed:Test_Passes'));
-    assert.match(await readFile(marker, 'utf8'), /executed/);
+    assert.equal(windowsPathKey((await readFile(marker, 'utf8')).trim()), windowsPathKey(templatePath),
+      'Test Explorer must execute the exact manifest-selected source workbook, not a copied execution artifact.');
     assert.equal(collection.get(callerUri)?.length ?? 0, 0);
     assert.equal(caller.isDirty, true);
     assert.deepEqual(await readFile(callerPath), encode(valid));
     assert.deepEqual(await readFile(templatePath), template);
     assert.deepEqual(await readFile(binPath), previous);
     for (const dir of snapshots) await assert.rejects(stat(dir), { code: 'ENOENT' });
-    console.log('Native Test build validation passed: command and Explorer errors, related navigation after cleanup, zero macro on failure, real corrected test execution, scoped clear and byte preservation.');
+    console.log('Native source Test validation passed: saved-command and captured-Explorer errors, related navigation after cleanup, zero macro on failure, exact source-workbook execution, scoped clear and no automatic source/workbook save.');
   } catch (error) {
     try {
       const failureRoot = path.join(resolveExtensionHostFailureLogRoot(extensionRoot), 'native-test-build-fixtures');

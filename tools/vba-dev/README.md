@@ -23,13 +23,14 @@ the accompanying positive `activeWindowsCodePage` value captured from `GetACP`.
 Managed callers can require `invocation.stdinCancellation` version `1.0` before
 opting into the hidden `--cancellation-transport stdin-v1` control channel. In
 that mode only, exact BOM-less UTF-8 `cancel\n` requests cooperative command
-cancellation. Ordinary terminal Build reads standard input only when dirty
-workbook confirmation is required; other ordinary invocations do not read it.
+cancellation. Ordinary terminal Build and Test read standard input only when
+dirty-workbook confirmation is required; other ordinary invocations do not read it.
 Consumers of built-in UserForm Event catalogs can require `hostEvent.list`
 version `1.0` before invoking `host-event list --format json`.
 
-In-place Build/project Export callers must additionally require
-`build.sourceWorkbook: 1.0` or `export.sourceWorkbook: 1.0`, respectively.
+Source-workbook Build, project Export, and Test callers must additionally require
+`build.sourceWorkbook: 1.0`, `export.sourceWorkbook: 1.0`, or
+`test.sourceWorkbook: 1.0`, respectively.
 The unchanged command output schema alone does not distinguish an older
 bin-workbook provider from the source-workbook behavior.
 
@@ -42,7 +43,7 @@ ready continuation after recovery capture; it never saves or closes the workbook
 This raw Debug path does not run Build/Test/Publish's independent source-analysis
 gate. The adapter separately owns safe target admission, native Reset and Run.
 
-Managed source-workbook Build callers require
+Managed source-workbook Build and Test callers require
 `invocation.stdinWorkbookConfirmation: 1.0` before using the existing hidden
 `--cancellation-transport stdin-v1` channel for confirmation. One multiplexed
 reader accepts the unchanged `cancel\n` cancellation frame and confirmation
@@ -50,10 +51,14 @@ frames `confirm:<requestId>:yes\n` or `confirm:<requestId>:no\n`. The provider
 requests consent through a newline-terminated JSON stderr record with
 `type: "workbookConfirmation"`, `schemaVersion: "1.0"`, a 32-lowercase-hex
 `requestId`, and `message`. Consumers validate the schema and match the exact
-request instead of parsing terminal prompt text. VS Code offers `Import and
-Save` or cancellation for ordinary Build and sends only that answer; it does
-not replay the command. Source-workbook Build uses cooperative cancellation
-and bounded workbook operations, not a caller's force-kill shortcut. Publish
+request instead of parsing terminal prompt text. A managed caller with a UI
+callback supplies `--interactive true` and declares `stdin-v1`; without a callback
+it supplies `--interactive false`, which never waits for consent. VS Code offers
+`Import and Save` for ordinary Build, `Import and Run Tests` for ordinary/snapshot
+Test, or execution-only `Run Current Tests` for no-build Test, plus cancellation.
+It sends only that invocation's answer and never replays the command.
+Source-workbook Build and Test use cooperative cancellation and bounded workbook
+operations, not a caller's force-kill shortcut. Publish
 and paired snapshot-output Build keep their existing invocation policy.
 
 For `publish` and `build --source-snapshot ... --output ...`,
@@ -145,7 +150,8 @@ Build and Publish are declared by one sealed internal command family, but remain
 separate materialization modes: Publish has no `--output` or `--format`
 override.
 Test is declared by its own sealed internal command family. Its source mode is
-exactly persistent build, source-snapshot build, or existing-workbook no-build,
+exactly saved-source preparation, source-snapshot preparation, or current-source-
+workbook no-build,
 and its selector mode is exactly all tests, one module, or one procedure with
 its required module. The family owns those CLI distinctions without moving
 source capture, materialization, Excel execution, or result formatting out of
@@ -191,11 +197,11 @@ process suspended on a unique invocation-scoped private Windows desktop.
 Exact-PID observation starts before primary-thread resume, native object-model
 binding is restricted to that desktop, and the desktop remains owned until the
 complete Job process tree exits. This contract covers project creation, snapshot
-Build, legacy Test modes, Publish, standalone Import, explicit Export, Host Event
+Build, Publish, standalone Import, explicit Export, Host Event
 discovery, reference probes, and active Doctor probes. It has no command switch, best-effort mode, or
 caller-desktop fallback. A blocked prompt remains private and becomes a bounded
 failure with available PID, HWND, desktop, class, title, and lifecycle-phase
-evidence. Ordinary Build and project Export instead use the source-workbook
+evidence. Ordinary Build, every Test mode, and project Export instead use the source-workbook
 boundary: they borrow an exact existing workbook/session when available, or
 open the source file hidden with command-owned cleanup. Borrowing grants no
 authority to hide, close, quit, or force-terminate the user's session. This is
@@ -600,8 +606,9 @@ report still blocks Build and occupies one output line:
 {"type":"sourceAnalysis","schemaVersion":"3.0","complete":true,"diagnostics":[{"type":"diagnostic","owner":"vba-dev","uri":"file:///C:/Example/src/Main.bas","code":"validation.duplicateCallableParameterName","message":"Duplicate callable parameter name 'name'.","severity":"error","range":{"start":{"line":1,"character":43},"end":{"line":1,"character":47}}}],"failures":[]}
 ```
 
-The ordinary and snapshot build stages of `test`, including debug snapshot
-Build, inherit the complete shared analysis gate. Publish applies it to its
+The ordinary and snapshot preparation stages of `test` retain the complete
+shared analysis gate. Source-workbook Debug preparation has its separate raw
+admission contract and does not waive Test's checks. Publish applies the gate to its
 post-exclusion source set, as described below. Test Explorer reports source
 validation failure before test execution without inventing assertion outcomes.
 Standalone Import/Export, `test --no-build`, and Doctor's raw admission and
@@ -619,7 +626,7 @@ an assumed template identity. A gap or conflict prevents saving. This required
 live VBE/authority verification precedes native Save; ordinary Build does not
 add a saved-package reopen/hash gate.
 
-Only source-workbook Build uses a flat VBE import mirror in the stable shared
+Source-workbook Build and prepared Test use a flat VBE import mirror in the stable shared
 temporary parent `vba-dev-vbe-import/source-workbook-build`. Its source and
 sidecar filenames have an invocation-specific GUID prefix. Only parser-proven
 UserForm designer resource filenames are rewritten to the prefixed `.frx`
@@ -628,7 +635,7 @@ sidecar bytes remain unchanged. Cleanup removes only proved invocation-owned
 files after automation handles are released and the STA dispatcher retires.
 The shared parent is never a deletion target, and a borrowed Excel process
 need not exit. Unproved release or file ownership retains the affected files
-with manual-cleanup guidance. Publish, explicit Import, and legacy Test/snapshot
+with manual-cleanup guidance. Publish, explicit Import, and explicit snapshot-output
 generation retain their existing owned-directory and process-release policy.
 
 For a pre-existing workbook, Build captures its replaceable standard/class
@@ -658,11 +665,14 @@ outcome cannot be confirmed, the error reports an unknown save outcome. The
 command neither claims byte-for-byte workbook rollback nor automatically undoes
 a completed Save. It does not force-close or terminate a borrowed Excel session.
 
-Publish, public snapshot-output Build, and legacy Test generation retain their
+Publish and public snapshot-output Build retain their
 disposable workbook, saved-staging validation, released-owned-process, and
 atomic output-replacement contract. Saved staging is not their commitment
 boundary. Those paths do not acquire in-place source-workbook semantics from
 ordinary Build.
+
+Test instead uses verified source preparation/import without Save; its bound
+source-workbook execution and no-build lifetime are described in [test](#test).
 
 See [ADR 0061](../../docs/adr/0061-build-and-export-the-source-workbook-in-place.md)
 for the source-workbook/session boundary and staged compatibility decision.
@@ -693,47 +703,97 @@ Options:
   --project <path>               Project root containing vba-project.json.
   --document <name>, -d <name>   Document name from the project manifest.
   --format <text|ndjson>, -f <text|ndjson> Test output format.
-  --no-build                     Skip building before running tests.
+  --no-build                     Run current source workbook VBA without importing external sources.
   --source-snapshot <dir>        Complete caller-owned source snapshot directory.
   --timeout-seconds <seconds>    Test macro execution timeout in positive whole seconds.
   --module <name>                Run tests from one test module.
   --procedure <name>             Run one test procedure. Requires --module.
+  --interactive <true|false>     Allow terminal unsaved-workbook confirmation (default true).
 ```
 
-`test` currently generates legacy bin output before running tests by default;
-it does not invoke ordinary source-workbook Build. The private-desktop build
-process exits before a distinct private-desktop execution process starts. `--no-build`
-starts only the execution process. The default output format is `text`. Use
+Every Test mode runs the exact manifest-selected source workbook (`templatePath`),
+conventionally `src/<document>/<document>.xlsm`, never a bin or temporary execution
+copy. Ordinary CLI/Command Palette Test imports saved disk sources; the default
+Test Explorer profile imports a complete captured snapshot including participating
+unsaved source-editor contents. Neither route saves editors. The default
+`BuildFirst` preparation means source admission, analysis, import and verification,
+not ordinary Build's Save or output generation. `--no-build` skips those steps and
+runs current source-workbook VBA without applying any external source-editor edits.
+The default output format is `text`. Use
 `--format ndjson` for machine-readable newline-delimited JSON. Supplied
 `--project`, `--document`, and `--source-snapshot` values must be nonempty.
 An explicitly empty module or procedure is invalid rather than selecting all
 tests; omission still selects all tests, and exact valid VBA identifiers retain
 their existing code-page-sensitive spelling.
 
-Supplying `--source-snapshot` builds and tests a same-filename workbook inside a unique command-owned workspace without reading persistent source or touching the manifest bin workbook. It cannot be combined with `--no-build`, and `test` does not accept `--output`. Snapshot declaration ranges come from the fixed snapshot bytes while emitted locations use the corresponding persistent source URIs. The command releases its owned Excel processes before removing the workspace; a post-release deletion failure is warning-only and reports the retained absolute path without changing test outcomes, exit status, or the complete NDJSON 1.2 batch.
+Supplying `--source-snapshot` changes only the source input: its captured bytes
+are admitted and imported into that same selected source workbook, without reading
+persistent exported source as replacement input. It cannot be combined with
+`--no-build`, and Test does not accept `--output`. Snapshot declaration ranges
+come from the fixed captured bytes while emitted locations use the corresponding
+persistent source URIs. The caller owns its supplied snapshot directory and may
+remove it only after the child closes; `vba-dev` owns only import/recovery scratch.
+The former `SnapshotTestExecutionWorkspace` execution-copy route is not used by
+production Test. Manifest bin output is not read, created, replaced or deleted.
 
-The snapshot supplies only the complete VBA source inventory. Its build stage
+When the selected workbook is already open, Test reuses that exact workbook and
+Excel process, preserves the displayed window and leaves it open afterward. It
+never hides, closes, quits or force-terminates a borrowed session. When closed,
+Test opens the source file hidden with owned cleanup and closes it without saving
+after the run. Remaining unsaved import/test changes are discarded; results remain
+available in text or NDJSON output. No Test stage initiates `Workbook.Save`.
+This is not a no-mutation guarantee: test VBA can explicitly save, change workbook
+or VBE state, or perform external side effects, which are not suppressed or
+guaranteed reversible.
+
+An already-open unsaved workbook requires explicit consent before replacing live
+VBA and running tests. No-build requests execution-only consent explaining that
+external source will not be imported. Direct CLI asks through terminal `[y/N]`,
+never a GUI window, with `--interactive` defaulting to true. EOF or no affirmative
+answer declines. For batch use, `--interactive false` returns an error immediately
+when consent is required and performs no import or test execution; it never waits
+or auto-approves. The product does not auto-detect whether the caller is interactive.
+Managed callers use the same bound nonce confirmation transport described above.
+
+Normal/snapshot preparation captures existing modules, UserForm sidecars and
+references before replacement. A preparation/import failure or cancellation
+attempts recovery of a borrowed workbook without saving. An incomplete recovery
+is reported with retained evidence; a newly opened workbook closes without saving.
+After VBA may have started, Test does not attempt or claim rollback of its effects.
+Failures/cancellation do not replay tests or grant ownership of a user's session.
+
+The snapshot supplies only the complete VBA source inventory. Its preparation stage
 uses the same flat exported-filename order and caller-neutral classification as
 snapshot Build, independently of the project's installed CommonModules list;
 Publish markers do not filter it. The selected project and document, template,
 references, test selector, and output format still come from the project manifest
-and the ordinary `test` options. For ordinary and snapshot build-before-test runs,
-locations come only from an immutable index copied from the exact admitted source
-that produced the committed workbook; later source changes cannot alter that
+and the ordinary `test` options. Normal/snapshot Test retains complete source
+analysis and admission; Debug's separate analysis exemption does not apply.
+For ordinary and snapshot prepared runs, locations come only from an immutable
+index copied from the exact admitted source imported into the workbook that ran;
+later source changes cannot alter that
 run's locations, and lookup does not reread, decode, or parse source. Missing or
 ambiguous mappings omit only the optional location and emit a non-failing warning
 without changing test identity or outcome. `--no-build` has no proved source
 capture, never inspects project source for navigation, always omits locations,
 and emits exactly one fixed non-failing warning after each completed run. The
-optional location shape and NDJSON schema `1.2` are unchanged.
+optional location shape and NDJSON schema `1.2` are unchanged. Snapshot feature
+versions remain `2.0`; `test.sourceWorkbook: 1.0` distinguishes the new execution
+target from old providers. Test Explorer's snapshot admission requires seven CLI
+features: `build.sourceSnapshot: 2.0`, `build.sourceSnapshotAnalysis: 1.0`,
+`test.sourceSnapshot: 2.0`, `test.sourceWorkbook: 1.0`,
+`invocation.stdinCancellation: 1.0`, `invocation.stdinWorkbookConfirmation: 1.0`,
+and `sourceSnapshot.activeWindowsCodePage: 1.0`, plus Test schema `1.2`.
+Debug's separate exact five-feature adapter dependency map is unchanged.
 
 Preparation and execution failures use the shared Excel lifecycle evidence.
 Before a completed result, pure cancellation exits `130` only after process
-release and STA retirement are proved. Unproved release exits `1` even during
-cancellation and retains the dependent snapshot workspace; unproved STA
+release and STA retirement are proved. Borrowed release means automation-handle
+release, not user-process termination. Unproved release exits `1` even during
+cancellation and retains dependent import/recovery scratch; unproved STA
 retirement also exits `1`. Infrastructure failures emit no NDJSON batch.
 Completed test outcomes and their complete event sequence survive later
-cancellation. A preparation failure and a separate workspace-cleanup warning
+cancellation. A preparation failure and a separate caller snapshot-cleanup warning
 are both reported without replacing the primary failure.
 
 `--timeout-seconds` changes only the test macro execution deadline. When omitted, `test` uses `commandDefaults.test.executionTimeoutSeconds`, then a built-in 600-second default. Every value must be positive whole seconds; workbook open/save and cleanup retain their independent deadlines.
@@ -1085,8 +1145,8 @@ Example:
 | `documents` | Document definitions keyed by document name. |
 | `documents.<document>.kind` | Document kind. Currently only `excel` is supported. |
 | `documents.<document>.sourcePath` | Recursive DocumentSourceSet directory containing the template workbook and exported VBA source. `.bas`, `.cls`, and `.frm` file identity is flat by exported file name. |
-| `documents.<document>.templatePath` | Source workbook updated in place by ordinary Build and read by project Export; also the copied template for Publish and snapshot generation. |
-| `documents.<document>.binPath` | Legacy generated workbook used by current ordinary/no-build Test paths; not ordinary Build or project Export output. Retained during the staged migration. |
+| `documents.<document>.templatePath` | Actual source workbook used by ordinary Build, Test, Debug and project Export; also the copied template for Publish and explicit snapshot-output Build. Test and Debug do not initiate Save. |
+| `documents.<document>.binPath` | Legacy manifest field retained during the staged migration; not read or written by any Test mode, ordinary Build, Debug or project Export. |
 | `documents.<document>.publishPath` | Workbook generated by `publish`. |
 | `documents.<document>.commonModules[]` | Installed CommonModules entries for the document. |
 | `documents.<document>.commonModules[].name` | Extensionless CommonModuleName resolved through the CommonModules manifest. |
@@ -1107,7 +1167,7 @@ Manifest mutation commands transiently own the sibling marker `vba-project.json.
 
 Workbook open and save timeouts are project-level manifest defaults. `vba-dev`
 does not expose per-invocation command-line options for these two values.
-Publish, snapshot Build, and legacy Test generation use a dedicated hidden Excel
+Publish and explicit snapshot-output Build use a dedicated hidden Excel
 process on an invocation-scoped private desktop with a 30-second startup
 deadline, a 60-second deadline for each
 reference attempt, a 30-second deadline for each module import, and a 5-second
@@ -1115,5 +1175,5 @@ cooperative cleanup grace period. They preserve an existing completed output on
 failure or cancellation and atomically replace only the selected output after
 the staged workbook and owned process have completed successfully. Ordinary
 Build instead follows the source-workbook Save and lifetime rules described
-above, and project Export borrows an exact open source workbook without saving
-or closing it.
+above. Test follows its no-tool-Save source-workbook lifetime in every mode,
+and project Export borrows an exact open source workbook without saving or closing it.

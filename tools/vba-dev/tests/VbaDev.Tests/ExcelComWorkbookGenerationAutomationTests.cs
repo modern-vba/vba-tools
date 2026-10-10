@@ -71,6 +71,64 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
     }
 
     [Fact]
+    public async Task ClosedSourceTestProfileRunsTheBoundWorkbookWithoutSaving()
+    {
+        var events = new List<string>();
+        var lifecycle = new FakeWorkbookGenerationLifecycle(events);
+        var automation = new ExcelComClosedSourceWorkbookAutomation(
+            enableAutomationSecurityLow: true,
+            new RecordingGenerationDispatcherFactory(new RecordingGenerationDispatcher(events)), lifecycle);
+        const string sourcePath = "C:\\project\\src\\Book1\\Book1.xlsm";
+
+        var rows = await automation.RunAsync(sourcePath, WorkbookAutomationTimeouts.Default,
+            async (session, token) =>
+            {
+                Assert.False(session.WasAlreadyOpen);
+                var tests = Assert.IsAssignableFrom<IWorkbookTestExecutionSession>(session);
+                var result = await tests.RunTestsAsync(
+                    new WorkbookTestSelector("Test_Module", "Test_Passes"),
+                    TimeSpan.FromSeconds(42), token);
+                Assert.Equal(SourceWorkbookSaveState.NotStarted, session.SaveState);
+                return result;
+            }, CancellationToken.None);
+
+        Assert.Equal([new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", "")], rows);
+        Assert.Single(events, entry => entry == "open:" + sourcePath);
+        Assert.Single(events, entry => entry.StartsWith("test:", StringComparison.Ordinal));
+        Assert.DoesNotContain("save", events);
+        Assert.True(lifecycle.EnableAutomationSecurityLow);
+        Assert.True(lifecycle.Owner.HasExited);
+        Assert.Equal(0, lifecycle.Owner.TerminationCalls);
+    }
+
+    [Fact]
+    public async Task BoundGenerationTestsUseTheAlreadyOpenedSessionWithoutSaveOrReplay()
+    {
+        var events = new List<string>();
+        var lifecycle = new FakeWorkbookGenerationLifecycle(events);
+        var automation = new ExcelComWorkbookGenerationAutomation(
+            new RecordingGenerationDispatcherFactory(new RecordingGenerationDispatcher(events)), lifecycle);
+
+        var rows = await automation.RunAsync(
+            "C:\\project\\src\\Book1\\Book1.xlsm", WorkbookAutomationTimeouts.Default,
+            async (session, token) =>
+            {
+                var tests = Assert.IsAssignableFrom<IWorkbookTestExecutionSession>(session);
+                return await tests.RunTestsAsync(
+                    new WorkbookTestSelector("Test_Module", "Test_Passes"),
+                    TimeSpan.FromSeconds(42), token);
+            }, CancellationToken.None);
+
+        Assert.Equal([new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", "")], rows);
+        Assert.Single(events, entry => entry.StartsWith("open:", StringComparison.Ordinal));
+        Assert.Single(events, entry => entry.StartsWith("test:", StringComparison.Ordinal));
+        Assert.DoesNotContain("save", events);
+        Assert.True(lifecycle.Owner.HasExited);
+        Assert.Equal(0, lifecycle.Owner.TerminationCalls);
+        Assert.False(lifecycle.EnableAutomationSecurityLow);
+    }
+
+    [Fact]
     public async Task WorkbookTestsRunInsideTheOwnedSessionBeforeCleanupReturns()
     {
         var events = new List<string>();

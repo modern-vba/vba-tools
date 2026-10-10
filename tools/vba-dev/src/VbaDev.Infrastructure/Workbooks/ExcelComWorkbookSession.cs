@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
 
@@ -54,18 +55,21 @@ internal sealed class ExcelComWorkbookSession
 
     private readonly OwnedExcelTerminationController? terminationController;
     private readonly int? borrowedProcessId;
+    private readonly Action<object?>? borrowedReferenceReleaser;
     private bool disposed;
 
     private ExcelComWorkbookSession(
         object excelObject,
         object workbookObject,
         OwnedExcelTerminationController? terminationController,
-        int? borrowedProcessId = null)
+        int? borrowedProcessId = null,
+        Action<object?>? borrowedReferenceReleaser = null)
     {
         ExcelObject = excelObject;
         WorkbookObject = workbookObject;
         this.terminationController = terminationController;
         this.borrowedProcessId = borrowedProcessId;
+        this.borrowedReferenceReleaser = borrowedReferenceReleaser;
     }
 
     /// <summary>
@@ -78,19 +82,43 @@ internal sealed class ExcelComWorkbookSession
     /// </summary>
     public object WorkbookObject { get; }
 
+    internal bool IsBorrowed => borrowedProcessId is not null;
+
     /// <summary>Views a user-owned open workbook without acquiring Close/Quit authority.</summary>
-    internal static ExcelComWorkbookSession Borrow(object excelObject, object workbookObject, int processId)
+    internal static ExcelComWorkbookSession Borrow(
+        object excelObject, object workbookObject, int processId,
+        Action<object?>? releaseAcquiredReference = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
-        return new(excelObject, workbookObject, terminationController: null, borrowedProcessId: processId);
+        return new(excelObject, workbookObject, terminationController: null, borrowedProcessId: processId,
+            borrowedReferenceReleaser: releaseAcquiredReference);
     }
 
     internal void ReleaseBorrowed()
     {
         if (disposed) return;
         disposed = true;
-        try { ComObjectReleaser.Release(WorkbookObject); }
-        finally { ComObjectReleaser.Release(ExcelObject); }
+        var release = borrowedReferenceReleaser ?? ReleaseBorrowedAcquiredReference;
+        var failures = new List<WorkbookAutomationComReferenceReleaseFailure>();
+        TryRelease(WorkbookObject, "borrowed workbook");
+        TryRelease(ExcelObject, "borrowed Excel application");
+        if (failures.Count > 0)
+            throw new WorkbookAutomationComReferenceReleaseException(null, failures);
+
+        void TryRelease(object reference, string name)
+        {
+            try { release(reference); }
+            catch (Exception error) { failures.Add(new(name, error)); }
+        }
+    }
+
+    internal static void ReleaseBorrowedAcquiredReference(object? reference)
+    {
+        if (OperatingSystem.IsWindows() && reference is not null && Marshal.IsComObject(reference))
+        {
+            // Balance this acquisition only; other RCW counts are not ours.
+            _ = Marshal.ReleaseComObject(reference);
+        }
     }
 
     internal IReadOnlyList<string> CaptureLoadedModulePaths()

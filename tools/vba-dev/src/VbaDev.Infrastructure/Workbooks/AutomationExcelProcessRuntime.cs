@@ -160,6 +160,15 @@ internal sealed class AutomationExcelProcessRuntime
             enableAutomationSecurityLow: false,
             cancellationToken);
 
+    internal Task<AutomationExcelProcessOutcome<TResult>> RunWorkbookAsync<TResult>(
+        string workbookPath,
+        WorkbookAutomationTimeouts timeouts,
+        Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
+        bool enableAutomationSecurityLow,
+        CancellationToken cancellationToken)
+        => RunCoreAsync(workbookPath, timeouts, operation,
+            enableAutomationSecurityLow, cancellationToken);
+
     private async Task<AutomationExcelProcessOutcome<TResult>> RunCoreAsync<TResult>(
         string workbookPath,
         WorkbookAutomationTimeouts timeouts,
@@ -764,7 +773,8 @@ internal sealed class AutomationExcelProcessRuntime
         string workbookName,
         WorkbookAutomationTimeouts timeouts) :
         IWorkbookGenerationSession,
-        IWorkbookGenerationSavedStateReader
+        IWorkbookGenerationSavedStateReader,
+        IWorkbookTestExecutionSession
     {
         public WorkbookAutomationStage? LastStage => execution.LastStage;
 

@@ -1,3 +1,4 @@
+using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
 
@@ -11,6 +12,20 @@ internal interface IWorkbookGenerationSavedStateReader
 /// <summary>Opens the selected file in a hidden invocation-owned Excel process.</summary>
 internal sealed class ExcelComClosedSourceWorkbookAutomation : ISourceWorkbookAutomation
 {
+    private readonly bool enableAutomationSecurityLow;
+    private readonly IStaComDispatcherFactory dispatcherFactory;
+    private readonly IExcelComWorkbookGenerationLifecycle? generationLifecycle;
+
+    internal ExcelComClosedSourceWorkbookAutomation(
+        bool enableAutomationSecurityLow = false,
+        IStaComDispatcherFactory? dispatcherFactory = null,
+        IExcelComWorkbookGenerationLifecycle? generationLifecycle = null)
+    {
+        this.enableAutomationSecurityLow = enableAutomationSecurityLow;
+        this.dispatcherFactory = dispatcherFactory ?? new StaComDispatcherFactory();
+        this.generationLifecycle = generationLifecycle;
+    }
+
     public async Task<TResult> RunAsync<TResult>(
         string workbookPath,
         WorkbookAutomationTimeouts timeouts,
@@ -19,12 +34,13 @@ internal sealed class ExcelComClosedSourceWorkbookAutomation : ISourceWorkbookAu
     {
         var saveTracker = new SourceWorkbookSaveTracker();
         var runtime = new AutomationExcelProcessRuntime(
-            new StaComDispatcherFactory(), new SourceWorkbookGenerationLifecycle(saveTracker));
+            dispatcherFactory, generationLifecycle ?? new SourceWorkbookGenerationLifecycle(saveTracker));
         var outcome = await runtime.RunWorkbookAsync(
                 workbookPath,
                 timeouts,
                 (session, token) => operation(
                     new ClosedSourceWorkbookSession(session, saveTracker), token),
+                enableAutomationSecurityLow,
                 cancellationToken)
             .ConfigureAwait(false);
         // A known native Save remains known even if cancellation arrives during
@@ -62,6 +78,13 @@ internal sealed class ExcelComClosedSourceWorkbookAutomation : ISourceWorkbookAu
             }
 
             saveTracker.MarkSaved();
+        }, beforeNativeTest: () =>
+        {
+            if (isStillSelected is not null && !isStillSelected())
+            {
+                throw new InvalidOperationException(
+                    "The selected source workbook is no longer bound to its original Excel workbook.");
+            }
         });
 
     private sealed class SourceWorkbookGenerationLifecycle(SourceWorkbookSaveTracker saveTracker)
@@ -93,7 +116,7 @@ internal sealed class ExcelComClosedSourceWorkbookAutomation : ISourceWorkbookAu
 
     private sealed class ClosedSourceWorkbookSession(
         IWorkbookGenerationSession session,
-        SourceWorkbookSaveTracker saveTracker) : ISourceWorkbookSession
+        SourceWorkbookSaveTracker saveTracker) : ISourceWorkbookSession, IWorkbookTestExecutionSession
     {
         public bool WasAlreadyOpen => false;
 
@@ -141,5 +164,14 @@ internal sealed class ExcelComClosedSourceWorkbookAutomation : ISourceWorkbookAu
 
         public Task SaveAsync(CancellationToken cancellationToken)
             => session.SaveAsync(cancellationToken);
+
+        public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
+            WorkbookTestSelector selector,
+            TimeSpan executionTimeout,
+            CancellationToken cancellationToken)
+            => session is IWorkbookTestExecutionSession tests
+                ? tests.RunTestsAsync(selector, executionTimeout, cancellationToken)
+                : throw new NotSupportedException(
+                    "The bound source workbook does not support Test execution; it was not reopened.");
     }
 }

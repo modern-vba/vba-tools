@@ -50,3 +50,28 @@ original files. Test results continue to describe only executed workbook tests.
 The native integration proof uses the public CLI, real Excel, VS Code diagnostics
 and Testing API adapters; it verifies failure without macro execution followed
 by a corrected unsaved run, related navigation and preserved persistent bytes.
+
+## Issue #449 follow-up: source-workbook preparation without Save
+
+Ordinary and snapshot Test retain the complete source-analysis/admission gate,
+but their preparation no longer generates or saves an execution workbook.
+They import the admitted saved-source or captured-editor generation into the
+exact manifest-selected source workbook and execute there. `BuildFirst` denotes
+that preparation, not an implicit ordinary Build or Save. Debug's analysis
+exemption does not propagate to Test. A source-analysis failure still returns
+before import/Run, with no fallback to old live code or bin output and no
+fabricated test outcomes.
+
+SourceAnalysis `3.0` stderr records, Test NDJSON `1.2`, snapshot `2.0`, captured
+origins, primary/related navigation, stale-generation handling and scoped
+diagnostic replacement remain unchanged. The new `test.sourceWorkbook: 1.0`
+capability and seven-feature Test snapshot projection admit the changed execution
+semantics; Debug's exact five-entry dependency declaration remains separate.
+
+No-build runs the selected source workbook's current VBA without external source
+capture, import or analysis. It cannot refresh or clear preparation-derived Test
+Problems, and its outcomes carry no optional external-source locations even when
+editors are clean. Open borrowed versus closed hidden/no-save lifetime, mode-bound
+dirty-workbook consent, pre-Run recovery and the absence of rollback after possible
+VBA execution follow ADR 0026's #449 follow-up. Test does not initiate Save; test
+VBA's explicit Save and external effects are not suppressed or guaranteed reversible.

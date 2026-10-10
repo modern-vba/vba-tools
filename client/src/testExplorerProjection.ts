@@ -235,7 +235,7 @@ export class TestExplorerNodeIndex {
         }));
     if (policy.omitSourceLocations && processCompleted) {
       testRun.appendOutput(
-        'Source navigation unavailable: dirty source was not built for this no-build test run.\n');
+        'Source navigation unavailable: no-build runs current workbook VBA without a proved source capture.\n');
     }
     if (
       processCompleted

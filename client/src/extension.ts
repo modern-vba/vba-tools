@@ -845,6 +845,10 @@ export async function activate(
         isDirty: document.isDirty
       })),
     captureSourceSnapshot: captureTestSourceSnapshot,
+    confirmWorkbookChanges: async (message, mode) => {
+      const action = mode.noBuild ? 'Run Current Tests' : 'Import and Run Tests';
+      return await window.showWarningMessage(message, { modal: true }, action) === action;
+    },
     diagnosticReporter: toolDiagnosticReporter,
     requireTrustedWorkspace: () => (
       workspaceTrustGate.requireTrusted('managed-tooling')
@@ -1212,8 +1216,10 @@ async function runWorkbookBackedProjectCommandWithProgress(
         diagnosticReporter: toolDiagnosticReporter,
         showWarningMessage: (message, ...items) =>
           window.showWarningMessage(message, ...items),
-        confirmWorkbookChanges: async (message) =>
-          await window.showWarningMessage(message, { modal: true }, 'Import and Save') === 'Import and Save',
+        confirmWorkbookChanges: async (message) => {
+          const action = toolCommandName === 'test' ? 'Import and Run Tests' : 'Import and Save';
+          return await window.showWarningMessage(message, { modal: true }, action) === action;
+        },
         showErrorMessage: (message) => window.showErrorMessage(message),
         reportCancellationProgress: (message) => progress.report({ message }),
         cancellationToken: token

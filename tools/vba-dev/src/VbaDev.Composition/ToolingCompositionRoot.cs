@@ -79,7 +79,8 @@ public static class ToolingCompositionRoot
         IWorkbookModuleExporter? projectWorkbookModuleExporter = null,
         TimeSpan? sourceWorkbookRecoveryBudget = null,
         IExactFileSystemObjectOwnershipFactory? sourceWorkbookRecoveryOwnershipFactory = null,
-        Func<int, long, ISourceWorkbookAutomation>? debugSourceWorkbookAutomationFactory = null)
+        Func<int, long, ISourceWorkbookAutomation>? debugSourceWorkbookAutomationFactory = null,
+        ISourceWorkbookAutomation? testSourceWorkbookAutomation = null)
     {
         var ownershipFactory = new WindowsExactFileSystemObjectOwnershipFactory();
         var pathIdentityResolver = new FileSystemPathIdentityResolver();
@@ -166,10 +167,16 @@ public static class ToolingCompositionRoot
             pathIdentityResolver);
         var workbookOutputCommand = new WorkbookOutputCommand(materializer,
             persistSourceAnalysisFailureEvidence ? new SourceAnalysisEvidenceStore().Save : null);
+        var sourceTestCommand = new SourceWorkbookTestCommand(materializer,
+            testSourceWorkbookAutomation ?? sourceWorkbookAutomation
+                ?? ExcelComSourceWorkbookAutomation.CreateForTestExecution(),
+            referenceNormalizer, sourceWorkbookRecoveryOwnershipFactory ?? ownershipFactory,
+            sourceWorkbookRecoveryBudget,
+            saveFailureEvidence: persistSourceAnalysisFailureEvidence ? new SourceAnalysisEvidenceStore().Save : null);
         var buildCommand = new BuildCommand(workbookOutputCommand, pathIdentityResolver,
             ownershipFactory, new SourceWorkbookBuildCommand(materializer, sourceAutomation,
                 referenceNormalizer, sourceWorkbookRecoveryOwnershipFactory ?? ownershipFactory,
-                sourceWorkbookRecoveryBudget));
+                sourceWorkbookRecoveryBudget), sourceTestCommand);
         var debugPreparationCommand = new DebugWorkbookPreparationCommand(
             materializer,
             debugSourceWorkbookAutomationFactory
@@ -183,8 +190,8 @@ public static class ToolingCompositionRoot
             workbookTestRunner ?? new ExcelComWorkbookTestRunner(),
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            pathIdentityResolver,
-            ownershipFactory);
+            new SnapshotTestExecutionWorkspaceFactory(ownershipFactory, pathIdentityResolver),
+            sourceTestCommand);
         var exportCommand = new ExportCommand(ownershipFactory,
             workbookModuleExporter ?? new ExcelComWorkbookModuleExporter(),
             projectWorkbookModuleExporter ?? workbookModuleExporter

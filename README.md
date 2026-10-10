@@ -303,10 +303,16 @@ vba-dev test --module Test_Sample
 vba-dev test --module Test_Sample --procedure Test_Target_Condition_ExpectedResult
 ```
 
-`vba-dev test` currently generates a legacy bin workbook before running tests;
-it does not invoke ordinary source-workbook Build. Use
-`--no-build` only when you intentionally want to rerun tests against the
-existing bin workbook. `--procedure` requires `--module`, and
+`vba-dev test` imports saved sources and runs tests in the exact selected source
+workbook, conventionally `src/<document>/<document>.xlsm`, without automatically
+saving it. Test Explorer's normal profile imports its captured sources, including
+participating unsaved editor contents. Use `--no-build` only when you intentionally
+want to run the source workbook's current VBA without importing external sources.
+An already-open workbook keeps its process and displayed window; a closed workbook
+opens hidden and closes without saving afterward. Test VBA can still change or
+explicitly save the workbook and can have external side effects. See
+[Test Explorer](#test-explorer) for consent, input, and navigation details.
+`--procedure` requires `--module`, and
 `--source-snapshot` cannot be combined with `--no-build`. Explicit output
 formats remain `text` and `ndjson`, explicit timeout values must be positive
 whole seconds, and supplied project, document, and snapshot paths must be
@@ -477,9 +483,9 @@ to other commands, documents, or tools are retained. Processing failures and
 the reason for incomplete analysis remain available in the VBA Tools output.
 
 This gate includes the existing project-semantic source diagnostics. It does not
-claim native VBE compile success. The ordinary saved-source build
-stage of `vba-dev test` uses the same gate. Source-snapshot Build, including the
-Build stage of snapshot Test, validates its captured bytes with
+claim native VBE compile success. The ordinary saved-source import/preparation
+stage of `vba-dev test` uses the same gate without invoking Build's Save.
+Source-snapshot Build and snapshot Test preparation validate their captured bytes with
 the same selected-project evidence. It does not substitute saved source text.
 Snapshot Build/Test Problems point to the original editor documents, including related
 locations, and remain navigable after temporary files are removed. A failed
@@ -490,7 +496,7 @@ in Output rather than linked to a deleted temporary file.
 Source Debug uses a separate no-save preparation path without this independent
 analysis gate; Excel/VBE compile and runtime errors remain visible in the VBE.
 
-Test command and Test Explorer Build failures expose the same diagnostics and
+Test command and Test Explorer preparation failures expose the same diagnostics and
 stop before test execution; see [Test Explorer](#test-explorer). [Publish](#publish)
 applies this gate to its included source set. Standalone Import and Export, and
 `test --no-build` retain their existing behavior.
@@ -542,9 +548,9 @@ vba-dev build
 Use Build when you want the source workbook to contain the saved exported VBA
 for manual inspection or execution. `build --source-snapshot <dir> --output
 <workbook>` remains a separate caller-owned-output capability, not an in-place
-Build. Publish and the current legacy Test generation paths retain their
-staged-copy lifecycle; they do not change this Build contract. Source Debug uses
-its separate no-save preparation against the source workbook.
+Build. Publish retains its staged-copy lifecycle. Test and Source Debug use
+separate no-save preparation against the source workbook; neither invokes
+ordinary Build's Save. These paths do not change this Build contract.
 
 Build captures the selected source files and form
 sidecars once. A supported UTF-8, UTF-16 LE, or UTF-16 BE BOM identifies the
@@ -684,11 +690,13 @@ force-terminate Excel.
 
 ### Test
 
-`VBA Tools: Test` runs `vba-dev test` for the selected workbook document. By
-default, tests build first so the workbook under test matches the source tree.
-The hidden private-desktop build process exits before a distinct hidden
-private-desktop test-execution process starts. `--no-build` starts only the
-execution process.
+`VBA Tools: Test` imports saved disk sources and runs tests in the selected
+source workbook, without saving source editors or initiating a workbook Save.
+It reuses the exact already-open workbook and leaves its window open; otherwise
+it opens the file hidden and closes it without saving after the run. Unlike
+the default Test Explorer profile, this command does not apply dirty editor
+contents. `--no-build` skips external source import and runs current workbook
+VBA. See [Test Explorer](#test-explorer) for dirty-workbook consent and limitations.
 
 ### Publish
 
@@ -937,10 +945,10 @@ contains a readable `vba-project.json` manifest.
 
 | Profile | Behavior |
 | --- | --- |
-| `Run Tests` | Captures a caller-owned source snapshot, including dirty editors without saving them, then invokes `vba-dev test --source-snapshot <temporary-directory> --format ndjson`. |
-| `Run Tests Without Build` | Skips saving and snapshot capture, then invokes `vba-dev test --no-build --format ndjson` against existing generated output. |
+| `Run Tests` | Captures the selected document's source snapshot, including participating dirty editors without saving them, and imports it into the exact selected source workbook before running tests. Uses `vba-dev test --source-snapshot <temporary-directory> --format ndjson`. |
+| `Run Tests Without Build` | Skips editor saving, snapshot capture, source analysis, and import. Uses `vba-dev test --no-build --format ndjson` to run current VBA in the exact source workbook: live VBE state when open, saved workbook state when closed. External editor changes are not applied. |
 
-Build-before-test validates the complete generated document source set, even
+Normal Test preparation validates the complete selected document source set, even
 when one module or procedure is selected. A source error or incomplete required
 analysis stops the invocation before any test macro runs, without falling back
 to an older workbook. Test Explorer reports a source-validation execution error;
@@ -954,15 +962,47 @@ after snapshot cleanup. Correcting the sources and running again clears only
 the selected Test contribution and executes the selected tests normally.
 No-build runs neither refresh nor clear these source-validation findings.
 
+All Test modes use manifest `templatePath`, conventionally
+`src/<document>/<document>.xlsm`, not `binPath` or a temporary execution workbook.
+An already-open workbook is borrowed in its existing Excel process and window;
+Test never hides, closes, quits, or force-terminates that session. A closed file
+opens hidden and closes without saving after the run, so any remaining unsaved
+import/test changes are discarded. Results remain in command output and Test
+Explorer. Test itself never initiates Save, but test VBA can explicitly save,
+modify worksheets or code, or perform external side effects; these are not
+suppressed or guaranteed reversible.
+
+If an already-open workbook has unsaved changes, Test asks before replacing live
+VBA and running tests. VS Code offers `Import and Run Tests`; no-build instead
+offers `Run Current Tests` and never implies import or Save. Declining leaves
+the workbook unchanged and starts neither import nor tests. Direct CLI uses a
+terminal `[y/N]` prompt with `--interactive` defaulting to true. For batch use,
+pass `--interactive false`: required consent fails without waiting or mutation.
+EOF or anything other than affirmative consent declines; there is no CLI GUI
+dialog or automatic interactive-mode detection. Managed VS Code prompts use
+one bound stdin confirmation exchange, not a replayed command.
+
+Before replacement, Test captures existing modules, UserForm sidecars, and
+references. Preparation/import failure or cancellation attempts recovery of a
+borrowed workbook without saving it; incomplete recovery is reported and its
+evidence retained. After VBA may have started, Test does not claim rollback of
+its effects or replay execution. A newly opened hidden workbook closes without
+saving instead of persisting failed preparation.
+
 CLI test output remains schema `1.2`: its NDJSON records describe actual test
 results. Build diagnostics remain separate `sourceAnalysis` schema `3.0` records
 on stderr, with the existing provider capability checks. Validation failure
-returns nonzero and emits no successful empty test run. Saved-source policy,
-source/template preservation, cancellation, and owned cleanup are unchanged.
+returns nonzero and emits no successful empty test run. NDJSON `1.2` and source
+snapshot `2.0` remain unchanged. Source-workbook Test additionally requires the
+`test.sourceWorkbook` capability `1.0`; older bin-semantic providers cannot be
+admitted merely because their result schema matches.
 
-Missing or unusable generated output is reported as a test run error in the
-no-build profile. When selected source is dirty, no-build results remain
-available but source navigation is omitted because the workbook was not rebuilt.
+An unavailable or unusable source workbook is a test run error, not a failed
+assertion. No-build results always omit source navigation and report a non-failing
+warning, even when external editors are clean: current live VBA has no proved
+external source capture. Normal runs navigate only through the exact admitted
+source generation; stale editor/project revisions retain outcomes but do not
+publish stale procedure navigation.
 
 ---
 
@@ -1066,8 +1106,8 @@ cannot influence executable selection.
 | The debug adapter exits abnormally | VBA execution state is unconfirmed. Use Reset in the selected source workbook's VBE if needed. The source workbook is not automatically saved or closed, and execution is not replayed. Review VBA Tools Output; pending companion/recovery material is retained until its release is proved. |
 | Workbook commands fail before opening Excel | Run `VBA Tools: Doctor`, review the `Project automation` section, and confirm that the workspace contains `vba-project.json`. |
 | Build, publish, or build-before-test reports an unexpected source-analysis exception | Preserve the JSON file named by `Source-analysis failure evidence saved` in VBA Tools Output. Reports are local under `%LOCALAPPDATA%\VbaTools\Diagnostics\source-analysis` (newest 20 retained). See the [failure investigation guide](https://github.com/modern-vba/vba-tools/blob/main/docs/source-analysis-failure-evidence.md). A successful retry does not establish that the cause is fixed. |
-| An already-open source workbook stays visible during ordinary Build or project Export | This is expected: the exact existing workbook is reused without changing its displayed window or closing the user's session. Build saves after import; Export does not save. |
-| Excel or a dialog appears during snapshot Build, legacy Test, Publish, standalone Import, explicit Export, project creation, Host Event discovery, reference probing, or project Doctor | This is an automation-isolation failure, not expected behavior. Preserve the VBA Tools Output failure, including any PID, HWND, desktop, class, title, and phase evidence, and report it. Those command-owned paths do not fall back to visible Excel. |
+| An already-open source workbook stays visible during ordinary Build, Test, or project Export | This is expected: the exact existing workbook is reused without changing its displayed window or closing the user's session. Build saves after import; Test and Export do not initiate Save. Test VBA may explicitly save or have other side effects. |
+| Excel or a dialog appears during snapshot-output Build, Publish, standalone Import, explicit Export, project creation, Host Event discovery, reference probing, project Doctor, or a Test that opened a previously closed source workbook | This is an automation-isolation failure, not expected behavior. Preserve the VBA Tools Output failure, including any PID, HWND, desktop, class, title, and phase evidence, and report it. These command-owned paths do not fall back to visible Excel; an already-open borrowed source workbook intentionally retains its window. |
 | F5 cannot establish VBE debugging | Run `VBA Tools: Doctor` and review the `VBE debugging` checks and remediation in the VBA Tools output channel. |
 | Excel becomes visible after F5 | Debug uses the selected source workbook. An already-open workbook keeps its Excel process and display state; a closed source workbook opens in a visible debug session. Its VBE is shown for native breakpoints and execution. Stop leaves the workbook open and unsaved. |
 | VBE Doctor reports an adapter infrastructure failure | Check the executable path and compatibility details in the VBA Tools output channel. If `vbaTools.debugAdapter.path` is set, correct or clear the explicit path; invalid overrides intentionally do not fall back. |

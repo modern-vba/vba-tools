@@ -1,4 +1,5 @@
 using System.Runtime.ExceptionServices;
+using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
 
@@ -53,6 +54,12 @@ public sealed class ExcelComSourceWorkbookAutomation : ISourceWorkbookAutomation
     {
     }
 
+    /// <summary>Creates bound Test automation with a runnable hidden closed-workbook profile.</summary>
+    public static ExcelComSourceWorkbookAutomation CreateForTestExecution()
+        => new(new StaComDispatcherFactory(), new WindowsSourceWorkbookOpenLocator(),
+            new ExcelComClosedSourceWorkbookAutomation(enableAutomationSecurityLow: true),
+            validateSelectedWorkbookBeforeOperations: true);
+
     internal ExcelComSourceWorkbookAutomation(
         IStaComDispatcherFactory dispatcherFactory,
         ISourceWorkbookOpenLocator openLocator,
@@ -80,6 +87,7 @@ public sealed class ExcelComSourceWorkbookAutomation : ISourceWorkbookAutomation
         using var lookupCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         Task<SourceWorkbookBorrowedBinding?>? lookup = null;
         SourceWorkbookBorrowedBinding? binding = null;
+        BorrowedSourceWorkbookSession? borrowedSession = null;
         TResult? result = default;
         Exception? operationError = null;
         try
@@ -94,10 +102,9 @@ public sealed class ExcelComSourceWorkbookAutomation : ISourceWorkbookAutomation
                 .ConfigureAwait(false);
             if (binding is not null)
             {
-                result = await operation(
-                        new BorrowedSourceWorkbookSession(dispatcher, binding, timeouts,
-                            validateSelectedWorkbookBeforeOperations),
-                        cancellationToken)
+                borrowedSession = new BorrowedSourceWorkbookSession(dispatcher, binding, timeouts,
+                    validateSelectedWorkbookBeforeOperations);
+                result = await operation(borrowedSession, cancellationToken)
                     .ConfigureAwait(false);
             }
         }
@@ -108,6 +115,7 @@ public sealed class ExcelComSourceWorkbookAutomation : ISourceWorkbookAutomation
         }
 
         Exception? cleanupError = null;
+        Task? retirement = null;
         try
         {
             // Queue COM release on the original STA even when a timed-out COM call
@@ -121,23 +129,47 @@ public sealed class ExcelComSourceWorkbookAutomation : ISourceWorkbookAutomation
 
                 return true;
             }, CancellationToken.None);
-            var retirement = dispatcher.DisposeAsync().AsTask();
+            retirement = dispatcher.DisposeAsync().AsTask();
             await Task.WhenAll(release, retirement)
                 .WaitAsync(timeouts.ProcessCleanup)
                 .ConfigureAwait(false);
         }
         catch (Exception error)
         {
-            var cleanupFailure = new WorkbookAutomationCleanupException(
-                "Borrowed source-workbook COM release or STA retirement could not be proved; " +
-                "the user's Excel process was left running.", error);
-            ((IWorkbookAutomationLifecycleFailure)cleanupFailure).LifecycleEvidence =
-                new WorkbookAutomationLifecycleEvidence(
-                    Stage: new WorkbookAutomationStage(WorkbookAutomationStageKind.ProcessCleanup),
-                    ProcessReleaseProven: false,
-                    DispatcherRetired: false,
-                    CancellationObserved: cancellationToken.IsCancellationRequested);
-            cleanupError = cleanupFailure;
+            var cleanupStage = new WorkbookAutomationStage(WorkbookAutomationStageKind.ProcessCleanup);
+            if (error is WorkbookAutomationComReferenceReleaseException && retirement?.IsCompletedSuccessfully == true)
+            {
+                var referenceFailure = new WorkbookAutomationStageFailureException(cleanupStage, error);
+                ((IWorkbookAutomationLifecycleFailure)referenceFailure).LifecycleEvidence =
+                    new(cleanupStage, ProcessReleaseProven: true, DispatcherRetired: true,
+                        CancellationObserved: cancellationToken.IsCancellationRequested);
+                cleanupError = referenceFailure;
+            }
+            else
+            {
+                var cleanupFailure = new WorkbookAutomationCleanupException(
+                    "Borrowed source-workbook COM release or STA retirement could not be proved; " +
+                    "the user's Excel process was left running.", error);
+                ((IWorkbookAutomationLifecycleFailure)cleanupFailure).LifecycleEvidence =
+                    new WorkbookAutomationLifecycleEvidence(
+                        Stage: cleanupStage,
+                        ProcessReleaseProven: false,
+                        DispatcherRetired: false,
+                        CancellationObserved: cancellationToken.IsCancellationRequested);
+                cleanupError = cleanupFailure;
+            }
+        }
+
+        // A deadline ends the caller's wait, not an in-flight borrowed COM call.
+        // Inspect only already-completed evidence after the same bounded cleanup;
+        // never extend that bound or acquire process termination authority.
+        if (borrowedSession?.GetAbandonedTestFailure() is { } lateFailure)
+        {
+            operationError = operationError is null
+                ? lateFailure
+                : new InvalidOperationException(
+                    $"{operationError.Message} {lateFailure.Message}",
+                    new AggregateException(operationError, lateFailure));
         }
 
         if (cleanupError is not null)
@@ -186,9 +218,10 @@ public sealed class ExcelComSourceWorkbookAutomation : ISourceWorkbookAutomation
         IStaComDispatcher dispatcher,
         SourceWorkbookBorrowedBinding binding,
         WorkbookAutomationTimeouts timeouts,
-        bool validateSelectedWorkbookBeforeOperations) : ISourceWorkbookSession
+        bool validateSelectedWorkbookBeforeOperations) : ISourceWorkbookSession, IWorkbookTestExecutionSession
     {
         private int saveState;
+        private Task? abandonedTestOperation;
 
         public bool WasAlreadyOpen => true;
 
@@ -273,6 +306,18 @@ public sealed class ExcelComSourceWorkbookAutomation : ISourceWorkbookAutomation
                 },
                 cancellationToken);
 
+        public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
+            WorkbookTestSelector selector,
+            TimeSpan executionTimeout,
+            CancellationToken cancellationToken)
+            => ExecuteAsync(new WorkbookAutomationStage(WorkbookAutomationStageKind.TestExecution),
+                executionTimeout,
+                () => binding.Workbook is IExcelComWorkbookTestSession tests
+                    ? tests.RunTests(selector)
+                    : throw new NotSupportedException(
+                        "The bound source workbook does not support Test execution; it was not reopened."),
+                cancellationToken);
+
         private async Task<T> ExecuteAsync<T>(
             WorkbookAutomationStage stage,
             TimeSpan timeout,
@@ -292,11 +337,24 @@ public sealed class ExcelComSourceWorkbookAutomation : ISourceWorkbookAutomation
                 return await WaitForStageAsync(pending, stage, timeout, cancellationToken)
                     .ConfigureAwait(false);
             }
-            catch
+            catch (Exception error)
             {
                 stageCancellation.Cancel();
+                if (stage.Kind == WorkbookAutomationStageKind.TestExecution
+                    && error is (WorkbookAutomationTimeoutException or WorkbookAutomationCanceledException))
+                {
+                    abandonedTestOperation = pending;
+                }
                 throw;
             }
+        }
+
+        internal Exception? GetAbandonedTestFailure()
+        {
+            var abandoned = abandonedTestOperation;
+            if (abandoned?.IsFaulted != true) return null;
+            var causes = abandoned.Exception!.InnerExceptions;
+            return causes.Count == 1 ? causes[0] : abandoned.Exception;
         }
 
         private Task ExecuteAsync(

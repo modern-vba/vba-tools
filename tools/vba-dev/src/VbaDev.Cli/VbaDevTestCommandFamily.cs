@@ -26,7 +26,7 @@ internal sealed class VbaDevTestCommandFamily
         TestCommand = VbaDevCommandGrammar.AddCapabilityCommand(
             rootCommand,
             "test",
-            "Run VBA unit tests for the selected document.",
+            "Run VBA unit tests in the selected source workbook without saving it.",
             "test",
             "1.2",
             capabilityRegistrations);
@@ -41,7 +41,7 @@ internal sealed class VbaDevTestCommandFamily
             "-f");
         NoBuildOption = new Option<bool>("--no-build")
         {
-            Description = "Skip building before running tests."
+            Description = "Run current source workbook VBA without importing external sources."
         };
         SourceSnapshotOption = VbaDevCommandGrammar.CreateStringOption(
             "--source-snapshot",
@@ -60,12 +60,18 @@ internal sealed class VbaDevTestCommandFamily
             "--procedure",
             "Run one test procedure. Requires --module.",
             "name");
+        InteractiveOption = new Option<bool>("--interactive")
+        {
+            Description = "Allow terminal confirmation for unsaved workbook changes (default true); false refuses without prompting.",
+            DefaultValueFactory = _ => true
+        };
         TestCommand.Add(FormatOption);
         TestCommand.Add(NoBuildOption);
         TestCommand.Add(SourceSnapshotOption);
         TestCommand.Add(TimeoutSecondsOption);
         TestCommand.Add(ModuleOption);
         TestCommand.Add(ProcedureOption);
+        TestCommand.Add(InteractiveOption);
         grammarFailureRules.RequireNonEmpty(SourceSnapshotOption);
         grammarFailureRules.RequirePositive(TimeoutSecondsOption);
         grammarFailureRules.Requires(TestCommand, ProcedureOption, ModuleOption);
@@ -97,6 +103,8 @@ internal sealed class VbaDevTestCommandFamily
     internal Option<string> ModuleOption { get; }
 
     internal Option<string> ProcedureOption { get; }
+
+    internal Option<bool> InteractiveOption { get; }
 
     internal VbaDevGrammarIntentBinding<VbaDevTestCommandIntent> IntentBinding { get; }
 
@@ -177,7 +185,8 @@ internal sealed class VbaDevTestCommandFamily
                 parseResult.GetValue(FormatOption),
                 parseResult.GetValue(TimeoutSecondsOption),
                 source,
-                selector));
+                selector,
+                parseResult.GetValue(InteractiveOption)));
     }
 
     private Task<AppCommandResult> RunAsync(
@@ -240,6 +249,7 @@ internal sealed class VbaDevTestCommandFamily
                     return await composition.TestCommand.RunAsync(
                             context,
                             request,
+                            intent.Interactive ? VbaDevWorkbookConfirmationInput.ConfirmAsync : null,
                             operationCancellationToken)
                         .ConfigureAwait(false);
                 }
@@ -258,7 +268,8 @@ internal sealed record VbaDevTestCommandIntent(
     string? ExplicitFormat,
     int? ExplicitTimeoutSeconds,
     VbaDevTestSourceIntent Source,
-    VbaDevTestSelectorIntent Selector);
+    VbaDevTestSelectorIntent Selector,
+    bool Interactive);
 
 internal abstract record VbaDevTestSourceIntent
 {

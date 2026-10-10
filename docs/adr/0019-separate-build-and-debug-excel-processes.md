@@ -6,7 +6,11 @@ status: accepted
 
 > Source-workbook Debug ownership, Stop/Restart and preparation are now governed
 > by [ADR 0062](0062-debug-the-retained-source-workbook.md). Disposable/copied
-> Debug claims below are historical for that route; independent Build/Test,
+> Debug claims below are historical for that route. Ordinary source Build/project
+> Export are governed by [ADR 0061](0061-build-and-export-the-source-workbook-in-place.md),
+> and all current Test execution targets/lifetimes by the
+> [Issue #449 follow-up in ADR 0026](0026-run-tests-from-command-owned-snapshot-workbooks.md#issue-449-follow-up-source-workbook-test).
+> Copied Build/Test claims below are historical for those superseded routes;
 > Publish, public snapshot-output, Doctor and their evidence are unchanged.
 
 A `VbeDebugSession` uses the existing dedicated hidden Excel automation for

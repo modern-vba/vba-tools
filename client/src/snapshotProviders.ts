@@ -176,6 +176,9 @@ function projectSnapshotContract(
         'build.sourceSnapshot',
         'build.sourceSnapshotAnalysis',
         'test.sourceSnapshot',
+        'test.sourceWorkbook',
+        'invocation.stdinCancellation',
+        'invocation.stdinWorkbookConfirmation',
         'sourceSnapshot.activeWindowsCodePage'
       ];
   const command = purpose === 'debug' ? 'prepare-debug' : 'test';
@@ -220,6 +223,9 @@ function validateSnapshotVersions(
         cli.featureVersions?.['build.sourceSnapshot'] !== '2.0'
         || cli.featureVersions?.['build.sourceSnapshotAnalysis'] !== '1.0'
         || cli.featureVersions?.['test.sourceSnapshot'] !== '2.0'
+        || cli.featureVersions?.['test.sourceWorkbook'] !== '1.0'
+        || cli.featureVersions?.['invocation.stdinCancellation'] !== '1.0'
+        || cli.featureVersions?.['invocation.stdinWorkbookConfirmation'] !== '1.0'
         || cli.featureVersions?.['sourceSnapshot.activeWindowsCodePage'] !== '1.0'
       ))) {
     throw new Error('Snapshot schema 2 requires the matching extension, CLI feature and adapter protocol matrix.');

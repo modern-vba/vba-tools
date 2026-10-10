@@ -1,6 +1,7 @@
 using System.Text;
 using VbaDev.App.FileSystem;
 using VbaDev.App.Projects;
+using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
 using VbaDev.Composition;
 using VbaDev.Domain;
@@ -814,8 +815,25 @@ internal sealed class ThrowingExactOwnershipFactory : IExactFileSystemObjectOwne
         => throw new IOException("Simulated recovery scratch creation failure.");
 }
 
-internal sealed class RecordingSourceWorkbookSession : ISourceWorkbookSession
+internal sealed class RecordingSourceWorkbookSession : ISourceWorkbookSession, VbaDev.App.Testing.IWorkbookTestExecutionSession
 {
+    public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
+        WorkbookTestSelector selector, TimeSpan executionTimeout, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        Events.Add("test");
+        BeforeTests?.Invoke();
+        if (TestFailure is not null) throw TestFailure;
+        return Task.FromResult(TestRows);
+    }
+
+    public IReadOnlyList<WorkbookTestResultRow> TestRows { get; set; } =
+        [new WorkbookTestResultRow("Local", "Test_Passes", "OK", "")];
+
+    public Exception? TestFailure { get; set; }
+
+    public Action? BeforeTests { get; set; }
+
     public bool WasAlreadyOpen { get; set; }
 
     public bool IsSaved { get; set; } = true;
@@ -846,6 +864,10 @@ internal sealed class RecordingSourceWorkbookSession : ISourceWorkbookSession
     public string? LastImportedSourcePath { get; private set; }
 
     public string? LastBuildImportSourcePath { get; private set; }
+
+    public List<string> ImportedSourceTexts { get; } = [];
+
+    public Action<VbeImportSourceFile>? BeforeImportSource { get; set; }
 
     public bool ExportFormWithoutDeclaredSidecar { get; set; }
 
@@ -904,6 +926,8 @@ internal sealed class RecordingSourceWorkbookSession : ISourceWorkbookSession
     {
         Events.Add($"import:{sourceFile.ImportVerification.ComponentName}{Path.GetExtension(sourceFile.SourcePath)}");
         LastImportedSourcePath = sourceFile.SourcePath;
+        ImportedSourceTexts.Add(File.ReadAllText(sourceFile.SourcePath));
+        BeforeImportSource?.Invoke(sourceFile);
         if (sourceFile.ImportVerification.OriginalEncoding != "recovery")
         {
             LastBuildImportSourcePath = sourceFile.SourcePath;
