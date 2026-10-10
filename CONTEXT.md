@@ -286,7 +286,7 @@ response. Names in separate objects, casing differences, and distinct Unicode
 normalization forms are independent. Well-formed additive offers remain valid;
 required membership does not depend on ordering or forbid repeated array values.
 The LSP requires only `reference list` output schema `1.0`; the DAP requires only
-`build.sourceSnapshot: 2.0`, `debug.sourceWorkbookPreparation: 1.0`,
+`build.sourceSnapshot: 2.0`, `debug.sourceWorkbookPreparation: 2.0`,
 `invocation.stdinCancellation: 1.0`, `invocation.stdinWorkbookConfirmation: 1.0`
 and `sourceSnapshot.activeWindowsCodePage: 1.0`. Debug does not require the
 independent snapshot-Build analysis gate. The extension retains its complete
@@ -364,7 +364,7 @@ The extension-owned compatibility requirement stored as
 Its capability contract requires adapter contract `1.0`, DAP extension
 protocol `2.0`, DAP source-snapshot schema `2`, stdio transport, lowercase-hex-32 session IDs, cleanup and
 Doctor commands, Doctor schema `1.0`, and the complete required VbaDev feature
-map `build.sourceSnapshot: 2.0`, `debug.sourceWorkbookPreparation: 1.0`,
+map `build.sourceSnapshot: 2.0`, `debug.sourceWorkbookPreparation: 2.0`,
 `invocation.stdinCancellation: 1.0`, `invocation.stdinWorkbookConfirmation: 1.0`
 and `sourceSnapshot.activeWindowsCodePage: 1.0`, plus adapter features
 `doctor.stdinCancellation: 1.0` and `debug.sourceWorkbook: 1.0`.
@@ -386,9 +386,13 @@ _Avoid_: vba-dev contract, package version, Doctor readiness
 A workbook-backed launch initiated from VS Code. The debug component captures
 an immutable `DebugSourceSnapshot`, resolves the exact selected `SourceWorkbook`
 through the CLI, and prepares its live VBA through `prepare-debug` without the
-independent source-error gate. It reuses an already-open exact Excel session or
-opens that source visibly, displays the target code pane, and hands interactive
-debugging to the VBE. It never automatically saves source editors or the workbook.
+independent source-error gate. It reuses an already-open exact Excel session and
+its window state or opens that source visibly, displays the target code pane,
+and hands interactive debugging to the VBE. The Debug request authorizes live
+VBE-code replacement even when workbook changes are unsaved, without another
+confirmation. Unsaved VBE-direct edits can be overwritten; cells remain, and
+source editors and the workbook are never automatically saved. Build and Test
+retain their separate dirty-workbook consent policies. See ADR 0064.
 _Avoid_: VS Code-owned VBA debugger, headless macro run
 
 **VbeDebugSession**:
@@ -397,11 +401,12 @@ breakpoint transfer, and launch lifecycle while the VBE owns interactive
 debugging. One VS Code window owns at most one active session. Stop/disconnect
 requests bounded native Reset, then releases the connection without saving,
 closing or force-terminating source Excel. Restart captures fresh source and,
-after consent/capture, resets and imports into the same workbook/process while
-preserving cell changes. An actual source close or Excel exit ends the session
+without dirty-workbook confirmation, captures recovery, resets and imports into
+the same workbook/process while preserving cell changes. An actual source close
+or Excel exit ends the session
 without reopening; cancelling close leaves it active. Completion distinguishes
 workbook close, observed process exit and detach and retains primary/cleanup
-evidence without fabricating an exit code. See ADR 0062.
+evidence without fabricating an exit code. See ADRs 0062 and 0064.
 _Avoid_: language-server session, VBE debugging session, headless macro run
 
 **DebugExcelProcess**:
@@ -1001,12 +1006,12 @@ _Avoid_: new launch target, active-editor retargeting, project-only restart toke
 The adapter-internal immutable one-shot launch capability produced after one
 initial or restart `DebugSourceAdmission`, target procedure, mapped breakpoints,
 conditional-compilation participation, generation, and any restart binding have
-been validated together. For Restart, preparation obtains dirty-workbook consent
-and captures recovery state while the current session stays active. Only its
-bound readiness authorizes commit: recheck the live session, confirm Reset,
+been validated together. For Restart, preparation captures recovery state
+without dirty-workbook confirmation while the current session stays active.
+Only its bound readiness authorizes commit: recheck the live session, confirm Reset,
 authorize import, verify exact source, transfer breakpoints and run the target
-again in the same workbook/process. Declining or cancelling before commit leaves
-current execution unchanged. No disposable replacement process is started.
+again in the same workbook/process. Rejecting readiness or cancelling before
+commit leaves current execution unchanged. No disposable replacement process is started.
 _Avoid_: raw launch request, reusable launch cache, early restart teardown,
 validation-before-swap teardown
 
@@ -5497,7 +5502,7 @@ Dev: "What should guided creation do when neither the configured nor bundled `vb
 Domain Expert: "Stop before environment preflight or project input and report one actionable error with Open Settings and Show Output. Do not search PATH, download another tool, run with an incompatible executable, or retry automatically. A compatible bundled fallback remains visible and session-pinned; a complete resolution failure creates no reusable preflight state."
 
 Dev: "Should the debug adapter require the complete `vba-dev` command contract or a particular CLI release?"
-Domain Expert: "No. It requires the exact five consumed CLI features in `VbaDebugAdapterContract`, including source Debug preparation and managed consent/cancellation. Adapter protocol, transport, session-ID form, cleanup and Doctor remain separately versioned; capability inspection starts no Excel."
+Domain Expert: "No. It requires the exact five consumed CLI features in `VbaDebugAdapterContract`, including confirmation-free source Debug preparation 2.0 and managed cancellation. The confirmation transport remains compatibility-only for Debug. Adapter protocol, transport, session-ID form, cleanup and Doctor remain separately versioned; capability inspection starts no Excel."
 
 Dev: "Can `VbaLaunchConfiguration` specify only a module without a procedure?"
 Domain Expert: "No. Module and procedure are specified together or both inferred from the active source position captured in `DebugSourceSnapshot`. Project and document may independently narrow the selection."
@@ -5536,7 +5541,7 @@ Dev: "Can one VS Code window run two `VbeDebugSession`s at the same time?"
 Domain Expert: "No. The initial product permits one active session per window and never ends or reuses that session implicitly for another launch."
 
 Dev: "Does Restart Debugging reuse the existing Excel process?"
-Domain Expert: "Yes. Capture the latest immutable source, reconfirm a dirty workbook and capture recovery while current execution stays active. After one-shot live binding revalidation, Reset/import/Run uses the same workbook/PID, preserving cells without saving. Decline or pre-commit cancellation preserves current execution; an ended binding is not reopened or revived."
+Domain Expert: "Yes. Capture the latest immutable source and recovery while current execution stays active, without asking about unsaved workbook changes. The Restart request authorizes live VBE-code replacement. After one-shot live binding revalidation, Reset/import/Run uses the same workbook/PID, preserving cells without saving. Readiness rejection or pre-commit cancellation preserves current execution; an ended binding is not reopened or revived."
 
 Dev: "Does closing only the `DebugWorkbook` leave an empty debug Excel session running?"
 Domain Expert: "The debug connection ends on actual source close without reopening or terminating Excel. Other workbooks remain. Cancelling the normal close/save choice is not a confirmed close and leaves the session active."

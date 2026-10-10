@@ -72,8 +72,11 @@ public sealed class DebugPreparationCommandLineTests
         Assert.Equal("saved source", File.ReadAllText(workbookPath));
     }
 
-    [Fact]
-    public async Task ManagedPreparationUsesCapturedSnapshotAndItsBoundReadyContinuationWithoutSaving()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("true")]
+    [InlineData("false")]
+    public async Task ManagedDirtyPreparationUsesCapturedSnapshotWithoutConfirmationOrSaving(string? interactive)
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -89,6 +92,7 @@ public sealed class DebugPreparationCommandLineTests
             new UTF8Encoding(false));
         var automation = new RecordingSourceWorkbookAutomation();
         automation.Session.WasAlreadyOpen = true;
+        automation.Session.IsSaved = false;
         const int processId = 1234;
         const long startTicks = 638900000000000000;
         var factoryCalls = 0;
@@ -106,17 +110,21 @@ public sealed class DebugPreparationCommandLineTests
         var generation = new string('a', 32);
         using var error = new ReadyWriter(input, generation, workbookPath, processId, startTicks);
 
-        var exitCode = await VbaDevCommandLine.Create(composition).InvokeAsync(
-            ["prepare-debug", "--project", root, "--document", "Book1",
+        var arguments = new List<string> { "prepare-debug", "--project", root, "--document", "Book1",
                 "--source-snapshot", snapshot, "--generation", generation,
                 "--excel-process-id", processId.ToString(),
                 "--excel-process-start-utc-ticks", startTicks.ToString(),
-                "--cancellation-transport", "stdin-v1"],
+                "--cancellation-transport", "stdin-v1" };
+        if (interactive is not null) arguments.AddRange(["--interactive", interactive]);
+        var exitCode = await VbaDevCommandLine.Create(composition).InvokeAsync(
+            arguments.ToArray(),
             input, output, error, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.Equal(0, exitCode);
         Assert.Equal(1, factoryCalls);
         Assert.Equal(1, error.ReadyRequestCount);
+        Assert.DoesNotContain("workbookConfirmation", error.ToString());
+        Assert.DoesNotContain("[y/N]", error.ToString());
         Assert.Equal(workbookPath, Assert.Single(automation.OpenedPaths));
         Assert.Contains("import:Local.bas", automation.Session.Events);
         Assert.DoesNotContain("save", automation.Session.Events);

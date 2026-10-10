@@ -30,7 +30,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new(Path.GetFullPath("project"), "Book1", "Book1.xlsm", sourceSet),
             [new(snapshotUri, sourceUri)], new(0, "Built workbook.\r\n", stderr));
         var probe = new RecordingVbaDevCapabilitiesProbe(new(0,
-            "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty));
+            "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty));
         var service = new RecordingDebugLaunchService(lifecycleMessage:
             new DebugLifecycleMessage("Snapshot build completed.") { SnapshotBuild = report });
         var commandLine = CreateCommandLine(new StandaloneVbaDebugAdapterStdioRunner(service), probe);
@@ -79,7 +79,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
 
         Assert.Equal(0, exitCode);
         Assert.Equal(
-            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"debug.sourceWorkbook\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}" + Environment.NewLine,
+            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"debug.sourceWorkbook\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}" + Environment.NewLine,
             ReadUtf8(standardOutput));
         Assert.Empty(ReadUtf8(standardError));
     }
@@ -520,7 +520,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             runner,
@@ -597,7 +597,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             runner,
@@ -643,7 +643,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)),
             new FailingDisposeSessionWorkspaceManager(retainedPath));
         using var standardError = new MemoryStream();
@@ -767,7 +767,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)),
             manager);
 
@@ -820,7 +820,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)),
             new VbaDebugSessionWorkspaceManager(root));
 
@@ -898,7 +898,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(),
@@ -947,7 +947,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(),
@@ -989,7 +989,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -1090,7 +1090,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -1140,7 +1140,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -1199,7 +1199,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var runningSession = new RecordingRunningSession();
         var launchService = new RecordingDebugLaunchService(runningSession);
@@ -1313,7 +1313,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)));
         var launchArguments = CreateValidLaunchArguments();
         launchArguments["__vbaRestartPreparation"] = new
@@ -1431,7 +1431,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -1547,7 +1547,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -1642,7 +1642,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -1730,7 +1730,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)));
         var oldContent = Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
             "Attribute VB_Name = \"Module1\"\r\nPublic Sub Run()\r\nEnd Sub\r\n"));
@@ -1851,7 +1851,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["project"] = aliasedProjectRoot;
@@ -1923,7 +1923,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -2026,7 +2026,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -2141,7 +2141,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["module"] = "module1";
@@ -2222,7 +2222,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -2327,7 +2327,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         });
         var commandLine = CreateCommandLine(new StandaloneVbaDebugAdapterStdioRunner(service),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new { protocolVersion = 1, id = preparationId, generation = 0 };
         var freshLaunch = CreateValidLaunchArguments();
@@ -2382,7 +2382,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var service = new RestartReplacementFailingDebugLaunchService(oldSession, []);
         var commandLine = CreateCommandLine(new StandaloneVbaDebugAdapterStdioRunner(service),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
         using var input = CreatePreparedRestartInput();
         using var output = new MemoryStream();
         _ = await commandLine.InvokeAsync(
@@ -2437,7 +2437,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             phase == "cleanup" ? EndOldSession : null);
         var commandLine = CreateCommandLine(new StandaloneVbaDebugAdapterStdioRunner(service),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
         using var prefix = CreatePreparedRestartInput();
         using var input = new BlockingTailStream(prefix.ToArray());
         using var output = new GatedDapResponseStream(3);
@@ -2480,7 +2480,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var service = new FailingRestartPlanDebugLaunchService(oldSession, CreateFileOnlyGenerationFailure());
         var commandLine = CreateCommandLine(new StandaloneVbaDebugAdapterStdioRunner(service),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
         using var prefix = CreatePreparedRestartInput(stop == "root cancellation" ? null : stop);
         using var input = new BlockingTailStream(prefix.ToArray());
         using var output = new GatedDapResponseStream(3);
@@ -2544,7 +2544,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var service = new FailingRestartPlanDebugLaunchService(oldSession, cleanup.Complete());
         var commandLine = CreateCommandLine(new StandaloneVbaDebugAdapterStdioRunner(service),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new { protocolVersion = 1, id = preparationId, generation = 0 };
         var freshLaunch = CreateValidLaunchArguments();
@@ -2608,7 +2608,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -2688,7 +2688,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -2759,7 +2759,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch.Remove("module");
@@ -2832,7 +2832,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)));
         var launchArguments = CreateValidLaunchArguments();
         launchArguments["__vbaRestartPreparation"] = new
@@ -2906,7 +2906,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)));
         var launchArguments = CreateValidLaunchArguments();
         launchArguments["__vbaRestartPreparation"] = new
@@ -2999,7 +2999,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -3096,7 +3096,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -3185,7 +3185,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -3253,7 +3253,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -3457,7 +3457,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var runningSession = new RecordingRunningSession();
         var commandLine = CreateCommandLine(
@@ -3531,7 +3531,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var runningSession = new RecordingRunningSession();
         var launchService = new RecordingDebugLaunchService(runningSession);
@@ -3604,7 +3604,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var launchService = new CancellationAwareDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -3691,7 +3691,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var runningSession = new RecordingRunningSession(
             processId: 2718,
@@ -3794,7 +3794,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService(runningSession)),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
         using var prefix = CreateDapInput(
             new { seq = 1, type = "request", command = "launch", arguments = CreateValidLaunchArguments() },
             new { seq = 2, type = "request", command = "configurationDone", arguments = new { } });
@@ -3835,7 +3835,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService(runningSession)),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
         using var prefix = CreateDapInput(
             new { seq = 1, type = "request", command = "launch", arguments = CreateValidLaunchArguments() },
             new { seq = 2, type = "request", command = "configurationDone", arguments = new { } });
@@ -3867,7 +3867,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService(runningSession)),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
         using var input = CreateDapInput(
             new { seq = 1, type = "request", command = "launch", arguments = CreateValidLaunchArguments() },
             new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
@@ -3894,7 +3894,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService(runningSession)),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", string.Empty)));
         using var input = CreateDapInput(
             new { seq = 1, type = "request", command = "launch", arguments = CreateValidLaunchArguments() },
             new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
@@ -3915,7 +3915,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService(
             inputWait: new DebugInputWait(
@@ -3968,7 +3968,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService(
             lifecycleMessage: new DebugLifecycleMessage(warning));
@@ -4018,7 +4018,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             + "is deprecated and scheduled for removal. Remove binPath from vba-project.json; "
             + "ordinary Build, Debug, Test, and project Export use templatePath. Existing bin files are left unchanged.";
         var probe = new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(0,
-            "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\","
+            "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\","
             + "\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\","
             + "\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectManifest.optionalBinPath\":\"1.0\"}}",
             string.Empty));
@@ -4050,7 +4050,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(
@@ -4109,7 +4109,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService()),
@@ -4158,7 +4158,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService()),
@@ -4214,7 +4214,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService()),
@@ -4257,7 +4257,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -4331,7 +4331,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -4434,7 +4434,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -4502,7 +4502,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService()),
@@ -4559,7 +4559,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -4630,7 +4630,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService(
             new RecordingRunningSession([mappedBreakpoint]));
@@ -5072,7 +5072,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService(validate: validate);
         var commandLine = CreateCommandLine(

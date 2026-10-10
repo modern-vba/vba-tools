@@ -7,13 +7,42 @@ namespace VbaDebugAdapter.Tests;
 public sealed partial class VbaDebugAdapterCliSurfaceTests
 {
     [Fact]
+    public async Task ConfirmationBasedDebugPreparationProviderIsRejectedBeforeStdioStarts()
+    {
+        using var temp = TempDirectory.Create();
+        var runner = new RecordingStdioRunner();
+        var probe = new RecordingVbaDevCapabilitiesProbe(new(0,
+            """
+            {"featureVersions":{"build.sourceSnapshot":"2.0","debug.sourceWorkbookPreparation":"1.0","invocation.stdinCancellation":"1.0","invocation.stdinWorkbookConfirmation":"1.0","sourceSnapshot.activeWindowsCodePage":"1.0"}}
+            """, ""));
+        var commandLine = CreateCommandLine(
+            runner, probe, new VbaDebugSessionWorkspaceManager(temp.Path));
+        var executablePath = Path.GetFullPath("vba-dev.exe");
+        using var output = new MemoryStream();
+        using var error = new MemoryStream();
+
+        var result = await commandLine.InvokeAsync(
+            ["--stdio", "--vba-dev", executablePath, "--session", "0123456789abcdef0123456789abcdef"],
+            Stream.Null, output, error, CancellationToken.None);
+
+        Assert.Equal(1, result);
+        Assert.Equal([executablePath], probe.Invocations);
+        Assert.Empty(runner.Invocations);
+        Assert.Empty(ReadUtf8(output));
+        var diagnostic = ReadUtf8(error);
+        Assert.Contains("incompatible", diagnostic, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("VersionMismatch", diagnostic, StringComparison.Ordinal);
+        Assert.Contains("debug.sourceWorkbookPreparation 2.0", diagnostic, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task UniqueReorderedCapabilityOffersKeepOnlyTheSourceWorkbookRequirementsAndPinnedExecutable()
     {
         using var temp = TempDirectory.Create();
         var runner = new RecordingStdioRunner();
         var probe = new RecordingVbaDevCapabilitiesProbe(new(0,
             """
-            {"future":[{"value":1},{"value":2}],"featureVersions":{"invocation.stdinWorkbookConfirmation":"1.0","debug.sourceWorkbookPreparation":"1.0","future":"99.0","sourceSnapshot.activeWindowsCodePage":"1.0","build.sourceSnapshot":"2.0","invocation.stdinCancellation":"1.0"},"contractVersion":"99.0","commands":{"future command":{"outputSchemaVersion":"99.0"}}}
+            {"future":[{"value":1},{"value":2}],"featureVersions":{"invocation.stdinWorkbookConfirmation":"1.0","debug.sourceWorkbookPreparation":"2.0","future":"99.0","sourceSnapshot.activeWindowsCodePage":"1.0","build.sourceSnapshot":"2.0","invocation.stdinCancellation":"1.0"},"contractVersion":"99.0","commands":{"future command":{"outputSchemaVersion":"99.0"}}}
             """, ""));
         var commandLine = CreateCommandLine(runner, probe, new VbaDebugSessionWorkspaceManager(temp.Path));
         var executablePath = Path.GetFullPath("vba-dev.exe");
@@ -38,7 +67,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var workspaces = new CapabilityRejectedWorkspaceManager();
         var probe = new RecordingVbaDevCapabilitiesProbe(new(0,
             """
-            {"featureVersions":{"build.sourceSnapshot":"2.0","debug.sourceWorkbookPreparation":"1.0","invocation.stdinCancellation":"1.0","invocation.stdinWorkbookConfirmation":"1.0","sourceSnapshot.activeWindowsCodePage":"1.0"},"future":{"nested":[{"value":1,"value":1}]}}
+            {"featureVersions":{"build.sourceSnapshot":"2.0","debug.sourceWorkbookPreparation":"2.0","invocation.stdinCancellation":"1.0","invocation.stdinWorkbookConfirmation":"1.0","sourceSnapshot.activeWindowsCodePage":"1.0"},"future":{"nested":[{"value":1,"value":1}]}}
             """, ""));
         var commandLine = CreateCommandLine(runner, probe, workspaces);
         var executablePath = Path.GetFullPath("vba-dev.exe");
@@ -102,7 +131,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(new(
             0,
             """
-            {"featureVersions":{"build.sourceSnapshot":"2.0","debug.sourceWorkbookPreparation":"1.0","invocation.stdinCancellation":"1.0","invocation.stdinWorkbookConfirmation":"1.0","sourceSnapshot.activeWindowsCodePage":"1.0"}}
+            {"featureVersions":{"build.sourceSnapshot":"2.0","debug.sourceWorkbookPreparation":"2.0","invocation.stdinCancellation":"1.0","invocation.stdinWorkbookConfirmation":"1.0","sourceSnapshot.activeWindowsCodePage":"1.0"}}
             """,
             "private stderr")
         {

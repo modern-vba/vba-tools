@@ -614,7 +614,8 @@ and select `VBA: Active Procedure`. VBA Tools captures an immutable snapshot of
 the selected document's clean files and dirty file-backed editor content without
 saving, then imports that snapshot into its exact source workbook
 (`templatePath`, normally `src/<document>/<document>.xlsm`). An already-open
-workbook reuses its Excel process; a closed workbook opens visibly for debugging.
+workbook reuses its exact file, Excel process and existing window state, even
+when it has unsaved changes; a closed workbook opens visibly for debugging.
 The adapter transfers breakpoints and runs the procedure through the VBE.
 `Option Private Module` is supported. Desktop Excel and trusted access to the
 VBA project object model are required.
@@ -626,9 +627,12 @@ still apply. Build, Test, Publish and explicit snapshot-output Build retain thei
 source-analysis requirements. An unsafe or unidentifiable target/breakpoint is
 rejected with an explanation rather than guessed.
 
-Before replacing VBA in a dirty open workbook, VBA Tools asks whether to replace
-its live VBE code. Declining changes neither the workbook nor its current debug
-execution. Accepting does not save cell changes, the workbook or source editors.
+F5 and Restart do not ask for confirmation when the selected open workbook has
+unsaved changes. Starting debugging authorizes replacement of its live VBE code
+with the captured source, including replacement of unsaved VBE-direct edits.
+Existing cell changes remain; VBA Tools does not save the workbook or source
+editors before or after debugging. Build and Test retain their separate
+dirty-workbook confirmation rules.
 Before replacement, modules, UserForms with their `.frx` data and references are
 captured for attempted code/reference recovery during replacement/verification.
 Failed capture prevents replacement; incomplete recovery is reported with
@@ -682,11 +686,11 @@ Restart Debugging captures a new immutable snapshot from the project and
 document bound at launch, including unsaved editor bytes without saving them.
 Changing the active editor or supplying different restart arguments does not
 retarget the session. The adapter validates the fresh snapshot and captures
-recovery material while the current session remains active, reconfirming
-replacement when the workbook is dirty. Only after acceptance and exact-session
+recovery material while the current session remains active, without a
+dirty-workbook confirmation. Only after captured readiness and exact-session
 revalidation does it Reset execution, import the latest source and run the bound
-target from the beginning in the same workbook and Excel process. Declining
-confirmation or cancelling before that boundary preserves the current execution.
+target from the beginning in the same workbook and Excel process. Cancelling
+before that boundary preserves the current execution.
 Restart does not undo prior cell changes or save. A closed/replaced binding is
 never automatically reopened or retargeted.
 

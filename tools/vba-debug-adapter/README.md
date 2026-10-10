@@ -9,6 +9,15 @@ Excel process, or open it visibly. The workbook/process lifetime is borrowed,
 including a workbook newly opened by Debug. It is never automatically saved,
 closed or killed. Source editors are never automatically saved either.
 
+F5 and Restart replace the selected workbook's live VBE code with captured
+source without asking about unsaved workbook changes. Starting debugging is
+the replacement authority; unsaved VBE-direct edits can be overwritten, while
+cell edits remain and no tool-initiated Save occurs. An already-open workbook
+keeps its exact file, Excel process and existing window state. Build and Test
+retain their own dirty-workbook confirmation policies. The adapter requires
+`debug.sourceWorkbookPreparation: 2.0` so an older prompting CLI cannot satisfy
+the current Debug contract. DAP and command-result schemas are unchanged.
+
 Debug omits the independent syntax/type/argument-error gate, but still requires
 readable/representable bytes, safe target/breakpoint mapping, workbook access and
 native VBE compile/runtime behavior. Build/Test/Publish and public paired
@@ -44,11 +53,12 @@ timed-out, or cancelled stage.
 Each stdio session uses a random 32-character lowercase hexadecimal ID and a
 create-new lease beneath the adapter-owned temporary root. Restart keeps that
 session ID, validates a fresh snapshot for the originally bound target, and
-obtains dirty-workbook replacement consent and captures modules/forms/FRX and
-references while current execution remains active. A one-shot, generation-bound
+captures modules/forms/FRX and references while current execution remains active.
+A one-shot, generation-bound
 ready record permits commit only after live binding revalidation. Restart then
 Reset/import/Run uses the same workbook/PID with fresh source, preserving cells
-without saving. Decline/cancellation before commit preserves current execution.
+without saving or asking for dirty-workbook confirmation. Readiness rejection
+or cancellation before commit preserves current execution.
 Failure or cancellation during companion replacement/verification attempts
 captured code/reference recovery and reports retained manual material if
 incomplete; it is not whole-workbook rollback. After verified preparation, native
