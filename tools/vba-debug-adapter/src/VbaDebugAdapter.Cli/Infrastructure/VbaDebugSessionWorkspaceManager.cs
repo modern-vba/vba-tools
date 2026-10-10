@@ -203,6 +203,11 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
                 "The VBA debug session workspace boundary could not be verified as safe.");
         }
 
+        if (HasSourceCompanionRetentionMarker(sessionWorkspacePath))
+        {
+            return RetainedForSourceCompanion(sessionWorkspacePath);
+        }
+
         var completion = new DebugFailureCompletion();
         var preliminaryLeaseState = InspectLease(
             () => CleanupOperations.OpenSessionLeaseStream(sessionId),
@@ -253,6 +258,10 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
                     ? "is still active" : "could not be verified as stale";
                 result = new VbaDebugSessionCleanupResult(false, Path.GetFullPath(sessionWorkspacePath),
                     $"The VBA debug session workspace lease {stateDescription}.");
+            }
+            else if (HasSourceCompanionRetentionMarker(sessionWorkspacePath))
+            {
+                result = RetainedForSourceCompanion(sessionWorkspacePath);
             }
             else
             {
@@ -412,6 +421,25 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
         }
         return false;
     }
+
+    private static bool HasSourceCompanionRetentionMarker(string sessionWorkspacePath)
+    {
+        try
+        {
+            return WindowsVbaDebugWorkspacePath.EntryExistsNoFollow(
+                Path.Combine(sessionWorkspacePath, "source-companion-retention.json"));
+        }
+        catch
+        {
+            // An unreadable or uninspectable marker cannot authorize deletion.
+            return true;
+        }
+    }
+
+    private static VbaDebugSessionCleanupResult RetainedForSourceCompanion(string sessionWorkspacePath)
+        => new(false, Path.GetFullPath(sessionWorkspacePath),
+            "The source preparation companion release remains unproved; " +
+            "the complete VBA debug session workspace is retained without deletion.");
 
     private static VbaDebugSessionLeaseState InspectLease(
         Func<Stream> openLeaseStream,
@@ -581,10 +609,13 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
         FileStream leaseStream,
         IVbaDebugSessionWorkspaceCreationScope creationScope,
         DebugFailureOutcome acquisitionOutcome)
-        : IVbaDebugSessionWorkspaceLease, IDebugResourceOwnerEvidence
+        : IVbaDebugSessionWorkspaceLease, IVbaDebugSessionWorkspaceRetention, IDebugResourceOwnerEvidence
     {
         private readonly HashSet<DebugGenerationId> claimedGenerations = [];
         private readonly object gate = new();
+        private FileStream? retentionMarkerStream;
+        private DebugGenerationId? retentionGeneration;
+        private bool retentionArmed;
         private int disposed;
         private Task? disposal;
 
@@ -614,6 +645,85 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
             }
         }
 
+        public void ArmForUnprovedCompanion(
+            DebugGenerationId generation, string retainedPath, string reason)
+        {
+            ArgumentNullException.ThrowIfNull(generation);
+            ArgumentException.ThrowIfNullOrWhiteSpace(retainedPath);
+            ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+            lock (gate)
+            {
+                ObjectDisposedException.ThrowIf(disposed != 0, this);
+                if (!claimedGenerations.Contains(generation) || !string.Equals(
+                        retainedPath,
+                        Path.Combine(SessionWorkspacePath, "generations", generation.WorkspaceDirectoryName),
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        "The retained companion path must be the exact claimed generation workspace.");
+                }
+                if (retentionArmed)
+                {
+                    throw new InvalidOperationException(
+                        "A source companion retention marker is already armed for this session.");
+                }
+
+                // Once arming starts, any failure retains the whole session conservatively.
+                retentionArmed = true;
+                retentionGeneration = generation;
+                var retentionScope = creationScope as IVbaDebugSessionWorkspaceRetentionScope
+                    ?? throw new InvalidOperationException(
+                        "The session owner cannot create a pinned retention marker.");
+                retentionMarkerStream = retentionScope.CreateRetentionMarkerStream();
+                JsonSerializer.Serialize(retentionMarkerStream,
+                    new SourceCompanionRetentionMetadata(1, SessionId.Value,
+                        generation.Value, retainedPath, reason), LeaseJsonOptions);
+                retentionMarkerStream.Flush(flushToDisk: true);
+            }
+        }
+
+        public bool ConfirmCompanionRelease(
+            DebugGenerationId generation, DebugFailureOutcome terminalOutcome)
+        {
+            ArgumentNullException.ThrowIfNull(generation);
+            ArgumentNullException.ThrowIfNull(terminalOutcome);
+            lock (gate)
+            {
+                ObjectDisposedException.ThrowIf(disposed != 0, this);
+                if (!retentionArmed || retentionGeneration != generation)
+                {
+                    throw new InvalidOperationException(
+                        "The source companion release does not match an armed generation.");
+                }
+
+                var process = terminalOutcome.Evidence.Where(item => item.Kind == DebugResourceKind.Process).ToArray();
+                var handles = terminalOutcome.Evidence.Where(item => item.Kind == DebugResourceKind.Handle).ToArray();
+                if (process.Length == 0 || handles.Length == 0 ||
+                    process.Any(item => !item.Released) || handles.Any(item => !item.Released) ||
+                    terminalOutcome.HasUnprovedRelease)
+                {
+                    return false;
+                }
+
+                var marker = retentionMarkerStream ?? throw new InvalidOperationException(
+                    "The source companion marker has no pinned owner handle.");
+                var markerPath = Path.Combine(SessionWorkspacePath, "source-companion-retention.json");
+                WindowsVbaDebugWorkspaceTreeDeleter.DeletePinnedWorkspaceFile(
+                    marker.SafeFileHandle, markerPath);
+                WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandle(marker.SafeFileHandle);
+                marker.Dispose();
+                if (WindowsVbaDebugWorkspacePath.EntryExistsNoFollow(markerPath))
+                {
+                    throw new IOException(
+                        $"The pinned source companion marker remains after proved release: {markerPath}");
+                }
+                retentionMarkerStream = null;
+                retentionGeneration = null;
+                retentionArmed = false;
+                return true;
+            }
+        }
+
         public ValueTask DisposeAsync()
         {
             lock (gate)
@@ -627,6 +737,18 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
         {
             var completion = new DebugFailureCompletion();
             completion.Merge(acquisitionOutcome);
+            if (retentionMarkerStream is { } markerStream)
+            {
+                WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                    [markerStream.SafeFileHandle], completion,
+                    "source-companion-marker-handle", SessionWorkspacePath);
+                try { await markerStream.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception exception)
+                {
+                    completion.AddFailure("source-companion-marker-stream", SessionWorkspacePath,
+                        DebugResourceKind.Handle, exception, retainedPath: SessionWorkspacePath);
+                }
+            }
             WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
                 [leaseStream.SafeFileHandle], completion, "session-lease-handle", SessionWorkspacePath);
             try
@@ -639,7 +761,15 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
                     DebugResourceKind.Handle, exception, retainedPath: SessionWorkspacePath);
             }
             var deletionRequested = false;
-            try
+            if (retentionArmed)
+            {
+                completion.AddEvidence(new("source-companion-retention", SessionWorkspacePath,
+                    DebugResourceKind.FileSystem, false,
+                    "The source preparation companion has no proved terminal process and handle release; " +
+                    "the complete session workspace is retained without a deletion attempt.",
+                    RetainedPath: SessionWorkspacePath));
+            }
+            else try
             {
                 if (!await owner.TryDeleteWithRetryAsync(
                         creationScope.DeleteOwnedTree,
@@ -714,6 +844,13 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
         int ProcessId,
         string ProcessStartTimeUtc);
 
+    private sealed record SourceCompanionRetentionMetadata(
+        int SchemaVersion,
+        string SessionId,
+        int GenerationId,
+        string RetainedPath,
+        string Reason);
+
     private string WorkspaceRoot => workspaceContext.Value.WorkspaceRoot;
 
     private WindowsVbaDebugWorkspaceCreator WorkspaceCreator
@@ -759,6 +896,15 @@ public interface IVbaDebugSessionWorkspaceLease : IAsyncDisposable
     IVbaDebugGenerationWorkspace CreateGenerationWorkspace(
         DebugGenerationId generationId,
         string workbookFileName);
+}
+
+internal interface IVbaDebugSessionWorkspaceRetention
+{
+    void ArmForUnprovedCompanion(
+        DebugGenerationId generation, string retainedPath, string reason);
+
+    bool ConfirmCompanionRelease(
+        DebugGenerationId generation, DebugFailureOutcome terminalOutcome);
 }
 
 public sealed record VbaDebugSessionCleanupResult(

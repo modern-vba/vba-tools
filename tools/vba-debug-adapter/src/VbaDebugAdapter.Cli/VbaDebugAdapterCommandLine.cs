@@ -14,7 +14,10 @@ public sealed class VbaDebugAdapterCommandLine
         featureVersions: new Dictionary<string, string>
         {
             ["build.sourceSnapshot"] = "2.0",
-            ["build.sourceSnapshotAnalysis"] = "1.0"
+            ["debug.sourceWorkbookPreparation"] = "1.0",
+            ["invocation.stdinCancellation"] = "1.0",
+            ["invocation.stdinWorkbookConfirmation"] = "1.0",
+            ["sourceSnapshot.activeWindowsCodePage"] = "1.0"
         });
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -127,12 +130,15 @@ public sealed class VbaDebugAdapterCommandLine
                 new Dictionary<string, string>(StringComparer.Ordinal)
                 {
                     ["doctor.stdinCancellation"] = "1.0",
-                    ["snapshotBuild.diagnostics"] = "1.0"
+                    ["debug.sourceWorkbook"] = "1.0"
                 },
                 new Dictionary<string, string>(StringComparer.Ordinal)
                 {
                     ["build.sourceSnapshot"] = "2.0",
-                    ["build.sourceSnapshotAnalysis"] = "1.0"
+                    ["debug.sourceWorkbookPreparation"] = "1.0",
+                    ["invocation.stdinCancellation"] = "1.0",
+                    ["invocation.stdinWorkbookConfirmation"] = "1.0",
+                    ["sourceSnapshot.activeWindowsCodePage"] = "1.0"
                 });
             await WriteLineAsync(
                 standardOutput,
@@ -316,7 +322,9 @@ public sealed class VbaDebugAdapterCommandLine
                 await WriteLineAsync(
                     standardError,
                     "The supplied vba-dev executable is incompatible; " +
-                    "it must advertise build.sourceSnapshot 2.0 and build.sourceSnapshotAnalysis 1.0. " +
+                    "it must advertise build.sourceSnapshot 2.0, debug.sourceWorkbookPreparation 1.0, " +
+                    "invocation.stdinCancellation 1.0, invocation.stdinWorkbookConfirmation 1.0, " +
+                    "and sourceSnapshot.activeWindowsCodePage 1.0. " +
                     $"Capability response rejected: {admission.Rejection!.Kind}.").ConfigureAwait(false);
                 return 1;
             }

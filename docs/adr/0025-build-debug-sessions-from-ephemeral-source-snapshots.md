@@ -4,6 +4,11 @@ status: accepted
 
 # Build debug sessions from ephemeral source snapshots
 
+> Source-workbook Debug ownership, Stop/Restart and preparation are now governed
+> by [ADR 0062](0062-debug-the-retained-source-workbook.md). Disposable/copied
+> Debug claims below are historical for that route; independent Build/Test,
+> Publish, public snapshot-output, Doctor and their evidence are unchanged.
+
 `VscodeExtension` captures one immutable `DebugSourceSnapshot` for the selected
 project document without saving editor buffers. Open dirty exported VBA source
 contributes its in-memory state, while source without a dirty editor contributes

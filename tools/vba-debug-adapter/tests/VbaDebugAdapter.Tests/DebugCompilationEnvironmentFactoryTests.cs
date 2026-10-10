@@ -7,6 +7,25 @@ namespace VbaDebugAdapter.Tests;
 public sealed class DebugCompilationEnvironmentFactoryTests
 {
     [Fact]
+    public void LiveHostBuiltInsAndSnapshotLocalConstantsDoNotInventACompleteProjectInventory()
+    {
+        var host = HostFacts(DebugExcelProcessArchitecture.X64,
+            new DebugCompilerBuiltInConstants(true, true, false, true, true, false));
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas",
+            "#Const Feature = VBA7\n#If Feature And Win64 Then\nPublic Sub Enabled()\nEnd Sub\n#End If");
+
+        var environment = new DebugCompilationEnvironmentFactory().CreateForLiveHost(host);
+        var evaluation = VbaConditionalCompilationEvaluator.Evaluate(tree, environment);
+
+        Assert.False(environment.GlobalConstantsAreComplete);
+        Assert.True(environment.SupportsLongLong);
+        Assert.True(evaluation.Succeeded);
+        var enabled = Assert.Single(tree.Module.CallableDeclarations);
+        Assert.True(VbaConditionalCompilationBranchFacts.TryGetPath(tree, enabled.Range, true, out var path));
+        Assert.True(evaluation.IsActive(path));
+    }
+
+    [Fact]
     public void ActualWindows64HostAndProjectConstantsCreateTheEvaluationEnvironment()
     {
         var settings = Settings(

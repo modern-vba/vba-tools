@@ -3,6 +3,7 @@ import {
   CompanionExecutableResolver,
   ProcessRunner,
   RequiredVbaDevContract,
+  VbaDevCapabilities,
   VbaDevSessionResolver,
   loadRequiredVbaDevContract,
   resolveCompatibleVbaDev
@@ -19,6 +20,7 @@ import { CommandCancellationToken } from './devtoolCommand';
 export class SnapshotProviderCancellationError extends Error {}
 
 export interface SnapshotProviderOptions {
+  readonly purpose?: 'debug' | 'test' | undefined;
   readonly extensionRoot: string;
   readonly configuredDevToolPath?: string | undefined;
   readonly configuredDebugAdapterPath?: string | undefined;
@@ -90,9 +92,11 @@ async function inspectSnapshotProviders(
     }
   };
   checkCancellation();
-  const requiredContract = options.requiredContract ?? loadRequiredVbaDevContract(options.extensionRoot);
+  const declaredContract = options.requiredContract ?? loadRequiredVbaDevContract(options.extensionRoot);
   const requiredAdapter = options.requiredDebugAdapterContract ?? loadRequiredVbaDebugAdapterContract(options.extensionRoot);
-  validateSnapshotVersions(requiredContract, requiredAdapter);
+  const purpose = options.purpose ?? 'debug';
+  validateSnapshotVersions(declaredContract, requiredAdapter, purpose);
+  const requiredContract = projectSnapshotContract(declaredContract, purpose);
   options = { ...options, requiredContract, requiredDebugAdapterContract: requiredAdapter };
   if (pinned !== undefined) {
     const inspected = await resolveCompatibleVbaDev({
@@ -115,7 +119,7 @@ async function inspectSnapshotProviders(
       isWorkspaceTrusted: options.isWorkspaceTrusted
     });
     checkCancellation();
-    validateSnapshotVersions(inspected.capabilities, adapter.capabilities);
+    validateSnapshotVersions(inspected.capabilities, adapter.capabilities, options.purpose ?? 'debug');
     return Object.freeze({ vbaDev: { ...pinned.vbaDev, ...inspected }, adapter });
   }
   let vbaDev = await (options.vbaDevResolver ?? new VbaDevSessionResolver({
@@ -152,23 +156,72 @@ async function inspectSnapshotProviders(
       isWorkspaceTrusted: options.isWorkspaceTrusted
     }));
   checkCancellation();
-  validateSnapshotVersions(vbaDev.capabilities, adapter.capabilities);
+  validateSnapshotVersions(vbaDev.capabilities, adapter.capabilities, options.purpose ?? 'debug');
   return Object.freeze({ vbaDev, adapter });
 }
 
+function projectSnapshotContract(
+  declared: RequiredVbaDevContract,
+  purpose: 'debug' | 'test'
+): RequiredVbaDevContract {
+  const names = purpose === 'debug'
+    ? [
+        'build.sourceSnapshot',
+        'debug.sourceWorkbookPreparation',
+        'invocation.stdinCancellation',
+        'invocation.stdinWorkbookConfirmation',
+        'sourceSnapshot.activeWindowsCodePage'
+      ]
+    : [
+        'build.sourceSnapshot',
+        'build.sourceSnapshotAnalysis',
+        'test.sourceSnapshot',
+        'sourceSnapshot.activeWindowsCodePage'
+      ];
+  const command = purpose === 'debug' ? 'prepare-debug' : 'test';
+  return {
+    contractVersion: declared.contractVersion,
+    featureVersions: Object.fromEntries(names.map(name => [name, declared.featureVersions?.[name]])) as Record<string, string>,
+    commandSchemaVersions: { [command]: declared.commandSchemaVersions[command] }
+  };
+}
+
 function validateSnapshotVersions(
-  cli: Pick<RequiredVbaDevContract, 'contractVersion' | 'featureVersions'>,
-  adapter: RequiredVbaDebugAdapterContract
+  cli: RequiredVbaDevContract | VbaDevCapabilities,
+  adapter: RequiredVbaDebugAdapterContract,
+  purpose: 'debug' | 'test'
 ): void {
+  const debugDependencies = {
+    'build.sourceSnapshot': '2.0',
+    'debug.sourceWorkbookPreparation': '1.0',
+    'invocation.stdinCancellation': '1.0',
+    'invocation.stdinWorkbookConfirmation': '1.0',
+    'sourceSnapshot.activeWindowsCodePage': '1.0'
+  };
+  const cliSchema = 'commandSchemaVersions' in cli
+    ? cli.commandSchemaVersions['prepare-debug']
+    : cli.commands['prepare-debug']?.outputSchemaVersion;
   if (cli.contractVersion !== '1.0' || adapter.contractVersion !== '1.0'
       || adapter.protocolVersion !== '2.0'
-      || adapter.requiredVbaDevFeatureVersions['build.sourceSnapshot'] !== '2.0'
-      || adapter.requiredVbaDevFeatureVersions['build.sourceSnapshotAnalysis'] !== '1.0'
-      || adapter.featureVersions?.['snapshotBuild.diagnostics'] !== '1.0'
-      || cli.featureVersions?.['build.sourceSnapshot'] !== '2.0'
-      || cli.featureVersions?.['build.sourceSnapshotAnalysis'] !== '1.0'
-      || cli.featureVersions?.['test.sourceSnapshot'] !== '2.0'
-      || cli.featureVersions?.['sourceSnapshot.activeWindowsCodePage'] !== '1.0') {
+      || !adapter.transports.includes('stdio')
+      || !adapter.commands.includes('cleanup')
+      || adapter.sessionIdFormat !== 'lowercase-hex-32'
+      || adapter.featureVersions?.['doctor.stdinCancellation'] !== '1.0'
+      || adapter.featureVersions?.['debug.sourceWorkbook'] !== '1.0'
+      || Object.keys(adapter.requiredVbaDevFeatureVersions).length !== Object.keys(debugDependencies).length
+      || Object.entries(debugDependencies).some(([name, version]) =>
+        adapter.requiredVbaDevFeatureVersions[name] !== version)
+      || (purpose === 'debug' && (
+        cliSchema !== '1.0'
+        || Object.entries(debugDependencies).some(([name, version]) =>
+          cli.featureVersions?.[name] !== version)
+      ))
+      || (purpose === 'test' && (
+        cli.featureVersions?.['build.sourceSnapshot'] !== '2.0'
+        || cli.featureVersions?.['build.sourceSnapshotAnalysis'] !== '1.0'
+        || cli.featureVersions?.['test.sourceSnapshot'] !== '2.0'
+        || cli.featureVersions?.['sourceSnapshot.activeWindowsCodePage'] !== '1.0'
+      ))) {
     throw new Error('Snapshot schema 2 requires the matching extension, CLI feature and adapter protocol matrix.');
   }
 }

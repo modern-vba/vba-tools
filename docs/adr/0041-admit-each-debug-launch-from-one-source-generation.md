@@ -4,6 +4,11 @@ status: accepted
 
 # Admit each debug launch from one parsed source generation
 
+> Source-workbook Debug ownership, Stop/Restart and preparation are now governed
+> by [ADR 0062](0062-debug-the-retained-source-workbook.md). Disposable/copied
+> Debug claims below are historical for that route; independent Build/Test,
+> Publish, public snapshot-output, Doctor and their evidence are unchanged.
+
 ADRs 0020, 0025, 0027, and 0037 require an immutable debug source snapshot,
 exact breakpoint mapping, an independently validating `VbaDev` provider, and a
 generation-bound Restart lifecycle. This decision consolidates the adapter-side

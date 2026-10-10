@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
@@ -61,7 +62,9 @@ internal sealed class WindowsSourceWorkbookOpenLocator : ISourceWorkbookOpenLoca
                                 selected = new SourceWorkbookBorrowedBinding(
                                     buildSession, buildSession.IsSaved, buildSession.ReleaseBorrowed,
                                     () => SourceWorkbookPathVerification.IsSelectedWorkbookPath(
-                                        selectedWorkbookObject, workbookPath));
+                                        selectedWorkbookObject, workbookPath),
+                                    processId: process.Id,
+                                    processStartUtcTicks: TryReadProcessStartUtcTicks(process));
                                 application = null;
                                 workbookObject = null;
                             }
@@ -85,6 +88,21 @@ internal sealed class WindowsSourceWorkbookOpenLocator : ISourceWorkbookOpenLoca
         {
             selected?.Dispose();
             throw;
+        }
+    }
+
+    private static long? TryReadProcessStartUtcTicks(Process process)
+    {
+        try
+        {
+            return process.HasExited ? null : process.StartTime.ToUniversalTime().Ticks;
+        }
+        catch (Exception error) when (error is Win32Exception or InvalidOperationException
+                                        or NotSupportedException)
+        {
+            // Ordinary Build may still borrow the exact open workbook. Debug
+            // rejects this unproved process identity before its callback.
+            return null;
         }
     }
 }

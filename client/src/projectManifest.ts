@@ -10,7 +10,7 @@ export interface WorkbookBackedProjectDocument {
   name: string;
   sourcePath: string;
   templatePath: string;
-  binPath: string;
+  binPath?: string;
 }
 
 export function parseProjectManifestProjection(
@@ -114,7 +114,7 @@ export function parseProjectManifestProjection(
         document.kind !== 'excel' ||
         !isNonemptyString(document.sourcePath) ||
         !isNonemptyString(document.templatePath) ||
-        !isNonemptyString(document.binPath) ||
+        (document.binPath !== undefined && !isNonemptyString(document.binPath)) ||
         !isNonemptyString(document.publishPath) ||
         !Array.isArray(document.commonModules) ||
         !document.commonModules.every(isInstalledCommonModule) ||
@@ -132,7 +132,7 @@ export function parseProjectManifestProjection(
       name,
       sourcePath: document.sourcePath,
       templatePath: document.templatePath,
-      binPath: document.binPath
+      ...(document.binPath === undefined ? {} : { binPath: document.binPath })
     });
   }
 

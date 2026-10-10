@@ -224,7 +224,7 @@ internal sealed class DebugRestartSwapAuthority : IDisposable
             if (state == RestartSwapState.SessionEnded)
             {
                 throw new DebugSetupException(
-                    "The owned VBA debug session exited during restart build before replacement committed.");
+                    "The VBA debug session ended during restart preparation before code replacement committed.");
             }
             if (state is RestartSwapState.Cancelled or RestartSwapState.Disposed)
             {
@@ -256,7 +256,7 @@ internal sealed class DebugRestartSwapAuthority : IDisposable
             {
                 SetInvalidated(RestartSwapState.SessionEnded);
                 throw new DebugSetupException(
-                    "The owned VBA debug session exited during restart build before replacement committed.");
+                    "The VBA debug session ended during restart preparation before code replacement committed.");
             }
 
             state = RestartSwapState.Claimed;

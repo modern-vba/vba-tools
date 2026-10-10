@@ -83,6 +83,9 @@ internal static class VbaDevCommandGrammar
             capabilityCommands,
             commandFamilyOwnership);
         buildPublishCommandFamily.RegisterBuild(rootCommand);
+        _ = VbaDevDebugPreparationCommandFamily.Register(
+            rootCommand, composition, grammarFailureRules,
+            capabilityCommands, commandFamilyOwnership);
         _ = VbaDevTestCommandFamily.Register(
             rootCommand,
             composition,

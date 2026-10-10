@@ -16,7 +16,7 @@ public sealed class VbaDevProjectSelectorTests
 
     private static readonly string[] ProjectLeaves =
     [
-        "build", "test", "publish", "export",
+        "build", "prepare-debug", "test", "publish", "export",
         "common-module add", "common-module list", "common-module update",
         "reference add", "reference list", "reference remove", "check", "doctor"
     ];
@@ -268,6 +268,7 @@ public sealed class VbaDevProjectSelectorTests
     private static string[] BaseArguments(string commandPath)
         => commandPath switch
         {
+            "prepare-debug" => ["prepare-debug", "--describe"],
             "common-module add" => ["common-module", "add", "ModuleOne"],
             "reference add" => ["reference", "add", "LibraryOne"],
             "reference remove" => ["reference", "remove", "LibraryOne"],
@@ -305,6 +306,7 @@ public sealed class VbaDevProjectSelectorTests
         var buildPublish = VbaDevBuildPublishCommandFamily.Create(
             composition, rules, capabilities, ownership);
         buildPublish.RegisterBuild(root);
+        var preparation = VbaDevDebugPreparationCommandFamily.Register(root, composition, rules, capabilities, ownership);
         buildPublish.RegisterPublish(root);
         var test = VbaDevTestCommandFamily.Register(root, composition, rules, capabilities, ownership);
         var importExport = VbaDevImportExportCommandFamily.Register(
@@ -317,6 +319,11 @@ public sealed class VbaDevProjectSelectorTests
             ["build"] = Leaf(buildPublish.BuildCommand, buildPublish.BuildIntentBinding, intent =>
             {
                 var bound = Assert.IsType<VbaDevBuildCommandIntent.PersistentBuild>(intent);
+                return new SelectorValues(bound.ProjectRoot, bound.DocumentName);
+            }),
+            ["prepare-debug"] = Leaf(preparation.Command, preparation.IntentBinding, intent =>
+            {
+                var bound = Assert.IsType<VbaDevDebugPreparationCommandIntent.Describe>(intent);
                 return new SelectorValues(bound.ProjectRoot, bound.DocumentName);
             }),
             ["test"] = Leaf(test.TestCommand, test.IntentBinding, intent =>

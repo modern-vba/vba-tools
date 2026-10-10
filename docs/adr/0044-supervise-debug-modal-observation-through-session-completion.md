@@ -4,6 +4,11 @@ status: accepted
 
 # Supervise debug modal observation through session completion
 
+> Source-workbook Debug ownership, Stop/Restart and preparation are now governed
+> by [ADR 0062](0062-debug-the-retained-source-workbook.md). Disposable/copied
+> Debug claims below are historical for that route; independent Build/Test,
+> Publish, public snapshot-output, Doctor and their evidence are unchanged.
+
 Workbook-open, Run-time, and post-Run modal observation share one phase-owned
 polling loop. Each phase captures its baseline before COM starts. WorkbookOpen
 ends after opening; TargetStart survives Run's return with its baseline and

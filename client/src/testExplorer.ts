@@ -239,7 +239,7 @@ async function runTests(
       if (runOptions.noBuild) {
         await options.vbaDevResolver?.resolve();
       } else {
-        const providers = await resolveSnapshotProviders({ ...options, cancellationToken: token });
+        const providers = await resolveSnapshotProviders({ ...options, purpose: 'test', cancellationToken: token });
         const activeCodePage = snapshotActiveWindowsCodePage(providers);
         invocationOptions = {
           ...options,

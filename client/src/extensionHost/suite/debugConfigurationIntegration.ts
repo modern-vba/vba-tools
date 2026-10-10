@@ -97,6 +97,14 @@ export async function runDebugConfigurationIntegrationTests(): Promise<void> {
     assert.equal(String(configuration.project).toLowerCase(), fixtureRoot.toLowerCase());
     assert.equal(configuration.document, 'Book1');
     assert.equal(configuration.__vbaDebugWorkbookFileName, 'Book1.xlsm');
+    assert.equal(
+      String(configuration.__vbaDebugSourceWorkbookPath).toLowerCase(),
+      path.join(fixtureRoot, 'src', 'Book1', 'Book1.xlsm').toLowerCase()
+    );
+    assert.notEqual(
+      String(configuration.__vbaDebugSourceWorkbookPath).toLowerCase(),
+      path.join(fixtureRoot, 'bin', 'Book1.xlsm').toLowerCase()
+    );
     assert.equal(snapshot.schemaVersion, 2);
     assert.equal(snapshot.sources.length, 2);
     const sourcesByRelativePath = new Map(snapshot.sources.map((source) => [

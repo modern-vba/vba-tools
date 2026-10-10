@@ -1,5 +1,6 @@
 using VbaDev.Infrastructure.FileSystem;
 using VbaDev.App.Build;
+using VbaDev.App.DebugPreparation;
 using VbaDev.App.CommonModules;
 using VbaDev.App.Diagnostics;
 using VbaDev.App.Export;
@@ -51,6 +52,7 @@ public static class ToolingCompositionRoot
     /// <param name="persistSourceAnalysisFailureEvidence">Whether to retain local failure evidence; tests can disable persistence.</param>
     /// <param name="sourceWorkbookRecoveryBudget">The optional finite overall budget for borrowed-workbook recovery.</param>
     /// <param name="sourceWorkbookRecoveryOwnershipFactory">The optional ownership adapter for source Build recovery staging.</param>
+    /// <param name="debugSourceWorkbookAutomationFactory">The optional exact borrowed-workbook debug preparation adapter factory.</param>
     /// <returns>The composed services consumed by a command-line host.</returns>
     public static ToolingApplicationComposition CreateApplicationComposition(
         string workingDirectory,
@@ -76,7 +78,8 @@ public static class ToolingCompositionRoot
         ISourceWorkbookAutomation? sourceWorkbookAutomation = null,
         IWorkbookModuleExporter? projectWorkbookModuleExporter = null,
         TimeSpan? sourceWorkbookRecoveryBudget = null,
-        IExactFileSystemObjectOwnershipFactory? sourceWorkbookRecoveryOwnershipFactory = null)
+        IExactFileSystemObjectOwnershipFactory? sourceWorkbookRecoveryOwnershipFactory = null,
+        Func<int, long, ISourceWorkbookAutomation>? debugSourceWorkbookAutomationFactory = null)
     {
         var ownershipFactory = new WindowsExactFileSystemObjectOwnershipFactory();
         var pathIdentityResolver = new FileSystemPathIdentityResolver();
@@ -167,6 +170,13 @@ public static class ToolingCompositionRoot
             ownershipFactory, new SourceWorkbookBuildCommand(materializer, sourceAutomation,
                 referenceNormalizer, sourceWorkbookRecoveryOwnershipFactory ?? ownershipFactory,
                 sourceWorkbookRecoveryBudget));
+        var debugPreparationCommand = new DebugWorkbookPreparationCommand(
+            materializer,
+            debugSourceWorkbookAutomationFactory
+                ?? ((processId, startTicks) => new ExcelComDebugSourceWorkbookAutomation(processId, startTicks)),
+            referenceNormalizer,
+            sourceWorkbookRecoveryOwnershipFactory ?? ownershipFactory,
+            sourceWorkbookRecoveryBudget);
         var publishCommand = new PublishCommand(workbookOutputCommand);
         var testCommand = new TestCommand(
             buildCommand,
@@ -198,7 +208,8 @@ public static class ToolingCompositionRoot
             importCommand,
             hostEventListCommand,
             projectContextResolver,
-            workingDirectory);
+            workingDirectory,
+            debugPreparationCommand);
     }
 
 }
@@ -220,6 +231,7 @@ public static class ToolingCompositionRoot
 /// <param name="HostEventListCommand">The generic intrinsic UserForm Event catalog command.</param>
 /// <param name="ProjectContextResolver">The project and document context resolver.</param>
 /// <param name="WorkingDirectory">The invocation working directory.</param>
+/// <param name="DebugWorkbookPreparationCommand">The non-saving, exact source-workbook debug preparation command.</param>
 public sealed record ToolingApplicationComposition(
     DoctorCommand DoctorCommand,
     StaticProjectCheckCommand StaticProjectCheckCommand,
@@ -234,4 +246,5 @@ public sealed record ToolingApplicationComposition(
     ImportCommand ImportCommand,
     HostEventListCommand HostEventListCommand,
     ProjectContextResolver ProjectContextResolver,
-    string WorkingDirectory);
+    string WorkingDirectory,
+    DebugWorkbookPreparationCommand DebugWorkbookPreparationCommand);

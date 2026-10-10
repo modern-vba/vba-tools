@@ -148,6 +148,25 @@ internal sealed class WorkbookMaterializer
             plan.Timeouts);
     }
 
+    /// <summary>
+    /// Prepares strict immutable debug snapshot bytes without a source-error analysis gate.
+    /// This intent never generates output or acquires semantic-quality inputs.
+    /// </summary>
+    internal Task<PreparedSourceWorkbookDebug> PrepareSourceWorkbookDebugAsync(
+        ResolvedProjectContext context,
+        string sourceSnapshotDirectory,
+        string workingDirectory,
+        CancellationToken cancellationToken)
+    {
+        var snapshotPath = Path.GetFullPath(sourceSnapshotDirectory, Path.GetFullPath(workingDirectory));
+        var admission = sourceAdmission.AdmitSourceSnapshotBuild(snapshotPath, cancellationToken);
+        var prepared = CreateImportSourceSetAndReleaseInput(
+            null, new AdmittedWorkbookGenerationSourceInput(admission), cancellationToken,
+            forSourceWorkbookBuild: true);
+        return Task.FromResult(new PreparedSourceWorkbookDebug(
+            prepared.SourceSet, prepared.Preflight, ResolveTimeouts(context)));
+    }
+
     private async Task<WorkbookMaterializationPlan> CreateAnalyzedProjectPlanAsync(
         WorkbookMaterializationIntent intent, CancellationToken cancellationToken,
         bool sourceWorkbookInPlace = false)

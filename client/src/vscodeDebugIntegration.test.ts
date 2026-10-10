@@ -14,6 +14,7 @@ import {
   VscodeDebugIntegration,
   createVbaDebugAdapterTracker,
   createVbaDebugConfigurationProvider,
+  handleVbaDebugLifecycleRequest,
   handleVbaDebugSessionTermination,
   stopVbaDebugSessionAfterLifecycleFailure,
   useVbaDebugConfigurationObserverForTest
@@ -303,8 +304,10 @@ test('F5 cancellation aborts owned CLI capability inspection before source captu
   await assertCancelledProviderInspection('cli');
 });
 
-for (const mismatch of ['cliBuild', 'cliTest', 'cliAcp', 'adapterProtocol', 'adapterBuild',
-  'cliAnalysis', 'adapterAnalysis', 'adapterDiagnostics'] as const) {
+for (const mismatch of ['cliBuild', 'cliDebugPreparation', 'cliStdinCancellation',
+  'cliStdinWorkbookConfirmation', 'cliAcp', 'cliPrepareDebugSchema', 'adapterProtocol',
+  'adapterDebug', 'adapterBuild', 'adapterDebugPreparation', 'adapterStdinCancellation',
+  'adapterStdinWorkbookConfirmation', 'adapterAcp'] as const) {
   test(`snapshot startup rejects the ${mismatch} mixed-version matrix row`, async () => {
     for (const alterRequirement of [false, true]) {
       let captures = 0;
@@ -315,13 +318,21 @@ for (const mismatch of ['cliBuild', 'cliTest', 'cliAcp', 'adapterProtocol', 'ada
       const cliTarget = alterRequirement ? requiredCli : cli;
       const adapterTarget = alterRequirement ? requiredAdapter : adapter;
       if (mismatch === 'cliBuild') { cliTarget.featureVersions!['build.sourceSnapshot'] = '1.0'; }
-      if (mismatch === 'cliTest') { cliTarget.featureVersions!['test.sourceSnapshot'] = '1.0'; }
+      if (mismatch === 'cliDebugPreparation') { cliTarget.featureVersions!['debug.sourceWorkbookPreparation'] = '0.9'; }
+      if (mismatch === 'cliStdinCancellation') { cliTarget.featureVersions!['invocation.stdinCancellation'] = '0.9'; }
+      if (mismatch === 'cliStdinWorkbookConfirmation') { cliTarget.featureVersions!['invocation.stdinWorkbookConfirmation'] = '0.9'; }
       if (mismatch === 'cliAcp') { cliTarget.featureVersions!['sourceSnapshot.activeWindowsCodePage'] = '0.9'; }
+      if (mismatch === 'cliPrepareDebugSchema') {
+        if (alterRequirement) { requiredCli.commandSchemaVersions['prepare-debug'] = '0.9'; }
+        else { cli.commands['prepare-debug']!.outputSchemaVersion = '0.9'; }
+      }
       if (mismatch === 'adapterProtocol') { adapterTarget.protocolVersion = '1.1'; }
+      if (mismatch === 'adapterDebug') { adapterTarget.featureVersions['debug.sourceWorkbook'] = '0.9'; }
       if (mismatch === 'adapterBuild') { adapterTarget.requiredVbaDevFeatureVersions['build.sourceSnapshot'] = '1.0'; }
-      if (mismatch === 'cliAnalysis') { cliTarget.featureVersions!['build.sourceSnapshotAnalysis'] = '0.9'; }
-      if (mismatch === 'adapterAnalysis') { adapterTarget.requiredVbaDevFeatureVersions['build.sourceSnapshotAnalysis'] = '0.9'; }
-      if (mismatch === 'adapterDiagnostics') { adapterTarget.featureVersions['snapshotBuild.diagnostics'] = '0.9'; }
+      if (mismatch === 'adapterDebugPreparation') { adapterTarget.requiredVbaDevFeatureVersions['debug.sourceWorkbookPreparation'] = '0.9'; }
+      if (mismatch === 'adapterStdinCancellation') { adapterTarget.requiredVbaDevFeatureVersions['invocation.stdinCancellation'] = '0.9'; }
+      if (mismatch === 'adapterStdinWorkbookConfirmation') { adapterTarget.requiredVbaDevFeatureVersions['invocation.stdinWorkbookConfirmation'] = '0.9'; }
+      if (mismatch === 'adapterAcp') { adapterTarget.requiredVbaDevFeatureVersions['sourceSnapshot.activeWindowsCodePage'] = '0.9'; }
       const integration = fixtureIntegration({
         extensionRoot: path.resolve(__dirname, '..', '..'),
         getConfiguredDevToolPath: () => undefined,
@@ -759,6 +770,246 @@ test('VBA debug provider binds the resolved standalone-adapter launch for restar
       generation: 0
     }
   });
+});
+
+test('the owning VS Code debug session confirms live source replacement through its adapter', async () => {
+  const adapterSessionId = '0123456789abcdef0123456789abcdef';
+  const requestId = 'fedcba9876543210fedcba9876543210';
+  const prompts: string[] = [];
+  const requests: Array<{ command: string; argumentsValue: Record<string, unknown> }> = [];
+  const integration = fixtureIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    debugConfigurationHost: snapshotDebugHost(),
+    createDebugSessionId: () => adapterSessionId,
+    confirmWorkbookReplacement: async warning => { prompts.push(warning); return true; }
+  });
+  const configuration = integration.prepareDebugConfigurationForRestart(
+    await integration.resolveDebugConfiguration({})
+  );
+  const vscodeSessionId = 'vscode-uuid-that-is-not-the-adapter-id';
+  await integration.createDebugAdapterExecutable({
+    id: vscodeSessionId, configuration, stop: () => undefined
+  });
+  const tracker = createVbaDebugAdapterTracker(integration, {
+    id: vscodeSessionId, configuration,
+    customRequest: (command, argumentsValue) => { requests.push({ command, argumentsValue }); }
+  }, {
+    reportLifecycleFailure: () => undefined, stopDebugging: () => undefined
+  });
+
+  tracker.onDidSendMessage({
+    type: 'event', event: 'vba/workbookConfirmation', body: {
+      schemaVersion: '1.0', requestId, sessionId: adapterSessionId, generationId: 0,
+      workbookPath: configuration.__vbaDebugSourceWorkbookPath,
+      message: 'Use the selected workbook?'
+    }
+  });
+  await new Promise<void>(resolve => setImmediate(resolve));
+
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /replace live VBA code/i);
+  assert.deepEqual(requests, [{
+    command: 'vba/workbookConfirmationResult',
+    argumentsValue: { requestId, sessionId: adapterSessionId, generationId: 0, accepted: true }
+  }]);
+});
+
+test('an unrelated VS Code tracker cannot answer the owning adapter confirmation', async () => {
+  const adapterSessionId = '0123456789abcdef0123456789abcdef';
+  const requestId = 'fedcba9876543210fedcba9876543210';
+  let prompts = 0;
+  const replies: Record<string, unknown>[] = [];
+  const integration = fixtureIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    debugConfigurationHost: snapshotDebugHost(),
+    createDebugSessionId: () => adapterSessionId,
+    confirmWorkbookReplacement: async () => { prompts++; return true; }
+  });
+  const configuration = integration.prepareDebugConfigurationForRestart(
+    await integration.resolveDebugConfiguration({})
+  );
+  await integration.createDebugAdapterExecutable({
+    id: 'owning-vscode-uuid', configuration, stop: () => undefined
+  });
+  const tracker = createVbaDebugAdapterTracker(integration, {
+    id: 'unrelated-vscode-uuid', configuration,
+    customRequest: (_command, argumentsValue) => { replies.push(argumentsValue); }
+  }, {
+    reportLifecycleFailure: () => undefined, stopDebugging: () => undefined
+  });
+
+  tracker.onDidSendMessage({
+    type: 'event', event: 'vba/workbookConfirmation', body: {
+      schemaVersion: '1.0', requestId, sessionId: adapterSessionId, generationId: 0,
+      workbookPath: configuration.__vbaDebugSourceWorkbookPath,
+      message: 'Continue?'
+    }
+  });
+  await new Promise<void>(resolve => setImmediate(resolve));
+
+  assert.equal(prompts, 0);
+  assert.deepEqual(replies, []);
+});
+
+test('ending the VS Code debug session cancels a pending workbook confirmation reply', async () => {
+  const adapterSessionId = '0123456789abcdef0123456789abcdef';
+  const requestId = 'fedcba9876543210fedcba9876543210';
+  let finishPrompt: ((accepted: boolean) => void) | undefined;
+  const prompt = new Promise<boolean>(resolve => { finishPrompt = resolve; });
+  const replies: Record<string, unknown>[] = [];
+  const integration = fixtureIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    debugConfigurationHost: snapshotDebugHost(),
+    createDebugSessionId: () => adapterSessionId,
+    confirmWorkbookReplacement: () => prompt
+  });
+  const configuration = integration.prepareDebugConfigurationForRestart(
+    await integration.resolveDebugConfiguration({})
+  );
+  const vscodeSessionId = 'ended-vscode-uuid';
+  await integration.createDebugAdapterExecutable({
+    id: vscodeSessionId, configuration, stop: () => undefined
+  });
+  const tracker = createVbaDebugAdapterTracker(integration, {
+    id: vscodeSessionId, configuration,
+    customRequest: (_command, argumentsValue) => { replies.push(argumentsValue); }
+  }, {
+    reportLifecycleFailure: () => undefined, stopDebugging: () => undefined
+  });
+
+  tracker.onDidSendMessage({
+    type: 'event', event: 'vba/workbookConfirmation', body: {
+      schemaVersion: '1.0', requestId, sessionId: adapterSessionId, generationId: 0,
+      workbookPath: configuration.__vbaDebugSourceWorkbookPath,
+      message: 'Continue?'
+    }
+  });
+  integration.releaseSession(vscodeSessionId);
+  finishPrompt?.(true);
+  await new Promise<void>(resolve => setImmediate(resolve));
+
+  assert.deepEqual(replies, []);
+});
+
+test('the tracker can register confirmation before its adapter descriptor is created', async () => {
+  const adapterSessionId = '0123456789abcdef0123456789abcdef';
+  const requestId = 'fedcba9876543210fedcba9876543210';
+  const workbookPath = path.resolve('BookProject', 'src', 'Book1', 'Book1.xlsm');
+  const configuration: VbaDebugConfiguration = { __vbaDebugSourceWorkbookPath: workbookPath };
+  const replies: Record<string, unknown>[] = [];
+  const integration = fixtureIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    createDebugSessionId: () => adapterSessionId,
+    confirmWorkbookReplacement: async () => true
+  });
+  const vscodeSessionId = 'tracker-created-first';
+  const tracker = createVbaDebugAdapterTracker(integration, {
+    id: vscodeSessionId, configuration,
+    customRequest: (_command, argumentsValue) => { replies.push(argumentsValue); }
+  }, {
+    reportLifecycleFailure: () => undefined, stopDebugging: () => undefined
+  });
+  await integration.createDebugAdapterExecutable({
+    id: vscodeSessionId, configuration, stop: () => undefined
+  });
+
+  tracker.onDidSendMessage({
+    type: 'event', event: 'vba/workbookConfirmation', body: {
+      schemaVersion: '1.0', requestId, sessionId: adapterSessionId, generationId: 0,
+      workbookPath, message: 'Continue?'
+    }
+  });
+  await new Promise<void>(resolve => setImmediate(resolve));
+
+  assert.deepEqual(replies, [{ requestId, sessionId: adapterSessionId, generationId: 0, accepted: true }]);
+});
+
+test('restart replaces confirmation authority before notifying the next debug generation', async () => {
+  const adapterSessionId = '0123456789abcdef0123456789abcdef';
+  const requestId = 'fedcba9876543210fedcba9876543210';
+  const prompts: string[] = [];
+  const requests: Record<string, unknown>[] = [];
+  const notices: Record<string, unknown>[] = [];
+  const integration = fixtureIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    debugConfigurationHost: snapshotDebugHost(),
+    createDebugSessionId: () => adapterSessionId,
+    confirmWorkbookReplacement: async warning => { prompts.push(warning); return true; }
+  });
+  const configuration = integration.prepareDebugConfigurationForRestart(
+    await integration.resolveDebugConfiguration({})
+  );
+  const vscodeSessionId = 'vscode-restart-uuid';
+  await integration.createDebugAdapterExecutable({
+    id: vscodeSessionId, configuration, stop: () => undefined
+  });
+  const tracker = createVbaDebugAdapterTracker(integration, {
+    id: vscodeSessionId, configuration,
+    customRequest: (_command, argumentsValue) => { requests.push(argumentsValue); }
+  }, {
+    reportLifecycleFailure: () => undefined, stopDebugging: () => undefined
+  });
+
+  await handleVbaDebugLifecycleRequest(integration, configuration,
+    { type: 'request', command: 'restart', seq: 51 },
+    (_command, argumentsValue) => { notices.push(argumentsValue); });
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].generation, 1);
+  assert.equal((notices[0].launch as VbaDebugConfiguration).__vbaDebugSourceWorkbookPath,
+    configuration.__vbaDebugSourceWorkbookPath);
+
+  const confirmation = (generationId: number) => ({
+    type: 'event', event: 'vba/workbookConfirmation', body: {
+      schemaVersion: '1.0', requestId, sessionId: adapterSessionId, generationId,
+      workbookPath: configuration.__vbaDebugSourceWorkbookPath,
+      message: 'Continue?'
+    }
+  });
+  tracker.onDidSendMessage(confirmation(0));
+  tracker.onDidSendMessage(confirmation(1));
+  await new Promise<void>(resolve => setImmediate(resolve));
+
+  assert.equal(prompts.length, 1);
+  assert.deepEqual(requests, [{ requestId, sessionId: adapterSessionId, generationId: 1, accepted: true }]);
+});
+
+test('restart refuses a manifest change that would retarget the bound source workbook', async () => {
+  const host = snapshotDebugHost();
+  let sourceWorkbookPath = 'src/Book1/Book1.xlsm';
+  const integration = fixtureIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    debugConfigurationHost: {
+      ...host,
+      readTextFile: async () => {
+        const manifest = JSON.parse(await host.readTextFile());
+        manifest.documents.Book1.templatePath = sourceWorkbookPath;
+        return JSON.stringify(manifest);
+      }
+    },
+    createDebugSessionId: () => '0123456789abcdef0123456789abcdef'
+  });
+  const configuration = integration.prepareDebugConfigurationForRestart(
+    await integration.resolveDebugConfiguration({})
+  );
+  await integration.createDebugAdapterExecutable({
+    id: 'bound-vscode-uuid', configuration, stop: () => undefined
+  });
+  sourceWorkbookPath = 'src/Book1/OtherWorkbook.xlsm';
+  const notices: Record<string, unknown>[] = [];
+
+  const preparation = handleVbaDebugLifecycleRequest(integration, configuration,
+    { type: 'request', command: 'restart', seq: 52 },
+    (_command, argumentsValue) => { notices.push(argumentsValue); });
+  assert.ok(preparation);
+  await assert.rejects(preparation, /cannot change its source workbook/);
+
+  assert.deepEqual(notices, []);
 });
 
 test('VBA debug lifecycle notification failure reports the error and stops the session', async () => {
@@ -1421,8 +1672,11 @@ test('a crashed VBA debug adapter reports its pinned executable and terminal sta
   assert.match(diagnostics[0] ?? '', /executable=.*vba-debug-adapter\.exe.*attempt=1\/1/);
   assert.match(diagnostics[0] ?? '', /exitCodeSigned=-1073741819 exitCodeHex=0xC0000005/);
   assert.match(diagnostics[0] ?? '', /outcome=not-retried/);
+  assert.match(diagnostics[0] ?? '', /execution state is unconfirmed.*Reset.*source workbook.*VBE/i);
   assert.equal(notifications.length, 1);
   assert.match(notifications[0] ?? '', /terminated abnormally.*0xC0000005.*not retried.*Output/i);
+  assert.match(notifications[0] ?? '', /execution state is unconfirmed.*Reset.*source workbook.*VBE/i);
+  assert.match(notifications[0] ?? '', /not saved or closed/i);
   assert.deepEqual(cleanupCalls, [{
     file: adapterPath,
     args: ['cleanup', '--session', '0123456789abcdef0123456789abcdef']
@@ -1832,10 +2086,12 @@ function compatibleCapabilities(): VbaDevCapabilities {
   return {
     toolVersion: '0.1.0',
     contractVersion: '1.0',
-    commands: {},
+    commands: { 'prepare-debug': { outputSchemaVersion: '1.0' } },
     activeWindowsCodePage: 65001,
     featureVersions: {
-      'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0'
+      'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0', 'test.sourceSnapshot': '2.0',
+      'debug.sourceWorkbookPreparation': '1.0', 'invocation.stdinCancellation': '1.0',
+      'invocation.stdinWorkbookConfirmation': '1.0', 'sourceSnapshot.activeWindowsCodePage': '1.0'
     }
   };
 }
@@ -1849,8 +2105,12 @@ function compatibleDebugAdapterCapabilities() {
     sessionIdFormat: 'lowercase-hex-32',
     commands: ['cleanup', 'doctor'],
     commandSchemaVersions: { doctor: '1.0' },
-    featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
-    requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
+    featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
+    requiredVbaDevFeatureVersions: {
+      'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '1.0',
+      'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
+      'sourceSnapshot.activeWindowsCodePage': '1.0'
+    }
   };
 }
 
@@ -1863,9 +2123,11 @@ function requiredContract() {
   return {
     contractVersion: '1.0',
     featureVersions: {
-      'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0'
+      'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0', 'test.sourceSnapshot': '2.0',
+      'debug.sourceWorkbookPreparation': '1.0', 'invocation.stdinCancellation': '1.0',
+      'invocation.stdinWorkbookConfirmation': '1.0', 'sourceSnapshot.activeWindowsCodePage': '1.0'
     },
-    commandSchemaVersions: {}
+    commandSchemaVersions: { 'prepare-debug': '1.0' }
   };
 }
 
@@ -1901,22 +2163,10 @@ function snapshotDebugHost() {
 function fixtureIntegration(options: ConstructorParameters<typeof VscodeDebugIntegration>[0]): VscodeDebugIntegration {
   return new VscodeDebugIntegration({
     requiredContract: requiredContract(),
-    requiredDebugAdapterContract: {
-      contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
-      sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
-      commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
-      requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
-    },
+    requiredDebugAdapterContract: requiredDebugAdapterContract(),
     capabilitiesProcess: async file => ({
-      stdout: JSON.stringify(file.endsWith('vba-dev.exe') ? {
-        toolVersion: '0.1.0', contractVersion: '1.0', commands: {}, activeWindowsCodePage: 65001,
-        featureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0' }
-      } : {
-        toolVersion: '0.1.0', contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
-        sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
-        commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
-        requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
-      }),
+      stdout: JSON.stringify(file.endsWith('vba-dev.exe')
+        ? compatibleCapabilities() : compatibleDebugAdapterCapabilities()),
       stderr: ''
     }),
     ...options

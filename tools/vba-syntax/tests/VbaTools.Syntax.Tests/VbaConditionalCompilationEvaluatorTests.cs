@@ -6,6 +6,24 @@ namespace VbaTools.Syntax.Tests;
 public sealed class VbaConditionalCompilationEvaluatorTests
 {
     [Fact]
+    public void IncompleteGlobalInventoryDoesNotAssumeAnUnobservedConstantIsEmpty()
+    {
+        const string source = "#If Missing Then\n"
+            + "Public Sub Enabled()\nEnd Sub\n"
+            + "#Else\nPublic Sub Fallback()\nEnd Sub\n#End If";
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Module1.bas", source);
+        var environment = new VbaConditionalCompilationEnvironment([], globalConstantsAreComplete: false);
+
+        var evaluation = VbaConditionalCompilationEvaluator.Evaluate(tree, environment);
+
+        Assert.False(evaluation.Succeeded);
+        Assert.Contains(evaluation.Diagnostics, item =>
+            item.Code == "syntax.conditionalCompilationUndefinedConstant"
+            && item.Message.Contains("Missing", StringComparison.Ordinal));
+        Assert.False(evaluation.IsActive(PathFor(tree, "Fallback")));
+    }
+
+    [Fact]
     public void Evaluation_selects_active_branch_using_case_insensitive_global_constants()
     {
         const string source = "#If VBA7 Then\n"

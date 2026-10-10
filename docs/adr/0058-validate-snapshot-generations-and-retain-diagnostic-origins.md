@@ -4,6 +4,11 @@ status: accepted
 
 # Validate snapshot generations and retain diagnostic origins
 
+> Source-workbook Debug ownership, Stop/Restart and preparation are now governed
+> by [ADR 0062](0062-debug-the-retained-source-workbook.md). Disposable/copied
+> Debug claims below are historical for that route; independent Build/Test,
+> Publish, public snapshot-output, Doctor and their evidence are unchanged.
+
 - Date: 2026-09-10
 - Issue: #401
 - Extends: [ADR 0057](0057-share-project-semantic-validation-with-ordinary-build.md)

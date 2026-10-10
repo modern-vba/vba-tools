@@ -36,7 +36,7 @@ public sealed class DebugSourceAdmissionConditionalCompilationTests
         Assert.Contains("invalid breakpoint", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("inactive", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(":10'", error.Message, StringComparison.Ordinal);
-        Assert.Contains("actual generated workbook compilation context", error.Message);
+        Assert.Contains("actual workbook compilation context", error.Message);
         Assert.Contains("not relocated", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -55,7 +55,7 @@ public sealed class DebugSourceAdmissionConditionalCompilationTests
 
         Assert.Contains("target", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("inactive", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("actual generated workbook compilation context", error.Message);
+        Assert.Contains("actual workbook compilation context", error.Message);
     }
 
     [Theory]

@@ -47,9 +47,11 @@ _Avoid_: language server, command-line tool
 **VbaDebugAdapter**:
 The Debug Adapter Protocol entry point in a debug component separate from
 `VbaDev`, distributed in the VSIX as the self-contained Windows x64
-`vba-debug-adapter.exe`. It owns `VbeDebugSession` lifecycle, visible Excel and
-VBIDE automation, and starts snapshot-aware `vba-dev build` subprocesses through
-the public CLI contract without referencing `VbaDev` application assemblies. It
+`vba-debug-adapter.exe`. It owns `VbeDebugSession` connections and visible VBIDE
+automation, resolves the exact source workbook through read-only CLI description,
+and starts cooperative `vba-dev prepare-debug` subprocesses through the public
+CLI contract without referencing `VbaDev` application assemblies or owning the
+source workbook/process lifetime. It
 supports side-effect-free capability inspection, stdio launch, ordinary source
 breakpoints, restart, termination, and
 `DebugLifecycleOutput`, but does not project VBE interactive state or VBA
@@ -89,7 +91,7 @@ The single constructed `RootCommand`, its exact hidden cancellation-transport
 symbol, its single grammar-failure router, and its completed-graph-validated
 capability registrations. Its narrow family-ownership ledger stores only each
 sealed internal family `Type` and the actual `Command` references that family
-registered; completed-graph validation proves that all seventeen public leaves
+registered; completed-graph validation proves that all public leaves
 occur exactly once. The ledger is an invariant witness, not a command catalog.
 Parsing, validation, help, version, completion, and action dispatch use that
 same root instance; each command-line composition receives its own graph rather
@@ -244,13 +246,16 @@ another scope's findings.
 Snapshot capture alone does not admit workbook generation. Both Build paths use
 the same complete analysis gate with their captured source authority and selected
 project evidence. `build.sourceSnapshotAnalysis: 1.0` advertises this behavior.
-The debug adapter owns an immutable snapshot-to-editor origin association and
-forwards exact Build output in `vba/snapshotBuild` events (`1.0`). VS Code projects
-primary and related locations through that association, retaining exported-source
-coordinates and omitting unsupported navigation with an Output explanation.
-Current-generation, project/document checks and atomic validation prevent stale
-or malformed reports from replacing Problems. Successful Build clears only the
-scoped debug contribution; cleanup does not invalidate original source locations.
+Consumers retain an immutable snapshot-to-editor origin association for explicit
+snapshot Build. VS Code projects primary and related locations through that
+association, retaining exported-source coordinates and omitting unsupported
+navigation with an Output explanation. Current-generation, project/document
+checks and atomic validation prevent stale or malformed reports from replacing
+Problems. Successful Build clears only its own scoped contribution; cleanup does
+not invalidate original source locations. The legacy adapter's
+`vba/snapshotBuild` events (`1.0`) remain compatibility evidence, not a current
+source Debug dependency: source Debug uses preparation without the independent
+Build analysis gate and emits no snapshot-Build report.
 See [ADR 0058](docs/adr/0058-validate-snapshot-generations-and-retain-diagnostic-origins.md).
 _Avoid_: in-process command invocation, shared product DTO, product test helper
 
@@ -279,8 +284,11 @@ response. Names in separate objects, casing differences, and distinct Unicode
 normalization forms are independent. Well-formed additive offers remain valid;
 required membership does not depend on ordering or forbid repeated array values.
 The LSP requires only `reference list` output schema `1.0`; the DAP requires only
-`build.sourceSnapshot: 2.0` and `build.sourceSnapshotAnalysis: 1.0`. The extension
-retains its complete compatibility contract, metadata shape, and active Windows
+`build.sourceSnapshot: 2.0`, `debug.sourceWorkbookPreparation: 1.0`,
+`invocation.stdinCancellation: 1.0`, `invocation.stdinWorkbookConfirmation: 1.0`
+and `sourceSnapshot.activeWindowsCodePage: 1.0`. Debug does not require the
+independent snapshot-Build analysis gate. The extension retains its complete
+compatibility contract, metadata shape, and active Windows
 code-page requirement. Adapter offers use unordered required-subset matching,
 with exact consumed versions, while its complete `requiredVbaDevFeatureVersions`
 dependency declaration must match exactly. It validates uniqueness before ordinary JSON parsing can
@@ -354,8 +362,10 @@ The extension-owned compatibility requirement stored as
 Its capability contract requires adapter contract `1.0`, DAP extension
 protocol `2.0`, DAP source-snapshot schema `2`, stdio transport, lowercase-hex-32 session IDs, cleanup and
 Doctor commands, Doctor schema `1.0`, and the complete required VbaDev feature
-map `build.sourceSnapshot: 2.0` and `build.sourceSnapshotAnalysis: 1.0`, plus
-adapter features `doctor.stdinCancellation: 1.0` and `snapshotBuild.diagnostics: 1.0`.
+map `build.sourceSnapshot: 2.0`, `debug.sourceWorkbookPreparation: 1.0`,
+`invocation.stdinCancellation: 1.0`, `invocation.stdinWorkbookConfirmation: 1.0`
+and `sourceSnapshot.activeWindowsCodePage: 1.0`, plus adapter features
+`doctor.stdinCancellation: 1.0` and `debug.sourceWorkbook: 1.0`.
 Offered commands and transports are unordered required subsets: extra and
 repeated entries are accepted. Additional well-formed schema entries, features,
 and unique properties are accepted; consumed versions remain exact.
@@ -372,34 +382,33 @@ _Avoid_: vba-dev contract, package version, Doctor readiness
 
 **VbeDebugLaunch**:
 A workbook-backed launch initiated from VS Code. The debug component captures
-an immutable `DebugSourceSnapshot`, supplies its build-neutral source inventory
-to `vba-dev build`, owns the resulting temporary `DebugWorkbook`, starts a
-selected VBA procedure from that build in visible Excel, displays the target
-code pane in the VBE, and hands interactive debugging to the VBE.
+an immutable `DebugSourceSnapshot`, resolves the exact selected `SourceWorkbook`
+through the CLI, and prepares its live VBA through `prepare-debug` without the
+independent source-error gate. It reuses an already-open exact Excel session or
+opens that source visibly, displays the target code pane, and hands interactive
+debugging to the VBE. It never automatically saves source editors or the workbook.
 _Avoid_: VS Code-owned VBA debugger, headless macro run
 
 **VbeDebugSession**:
 A VS Code Debug Adapter session that owns `VbeDebugLaunch` configuration,
 breakpoint transfer, and launch lifecycle while the VBE owns interactive
-debugging. It remains running until its launched Excel process exits, and any
-session termination force-terminates that process. One VS Code window owns at
-most one active session. Closing its `DebugWorkbook` also terminates the owned
-process and session. Restart captures a fresh `DebugSourceSnapshot` and replaces
-the process through a complete new temporary build and launch.
-One supervised modal-observation phase spans target start and the later
-interactive session. Window-observation and notification failures end the
-session immediately, even with stdin open. Stop, workbook close, process exit,
-and observation failure share terminal cleanup, retaining the first cause and
-additional cleanup evidence. Completion includes process, observation, COM,
-and generation release; planned Restart cutover only ends the old session.
+debugging. One VS Code window owns at most one active session. Stop/disconnect
+requests bounded native Reset, then releases the connection without saving,
+closing or force-terminating source Excel. Restart captures fresh source and,
+after consent/capture, resets and imports into the same workbook/process while
+preserving cell changes. An actual source close or Excel exit ends the session
+without reopening; cancelling close leaves it active. Completion distinguishes
+workbook close, observed process exit and detach and retains primary/cleanup
+evidence without fabricating an exit code. See ADR 0062.
 _Avoid_: language-server session, VBE debugging session, headless macro run
 
 **DebugExcelProcess**:
-The dedicated visible Excel process owned by one `VbeDebugSession`. It is
-separate from build automation and from the user's existing Excel sessions.
-It enables macros only while programmatically opening its `DebugWorkbook`;
-every workbook opened in the process belongs to the same session lifetime.
-_Avoid_: build process, active Excel session, shared Excel instance
+The visible exact-PID/start-time Excel binding used by one `VbeDebugSession`.
+It may be the user's existing process and grants no whole-process lifetime
+ownership, even if the adapter opened the selected source workbook. Unrelated
+workbooks/processes are never Reset, Save, Close, Quit or termination targets.
+Private Doctor/probe processes retain their separate explicit ownership.
+_Avoid_: disposable build process, arbitrary active Excel instance, lifetime ownership
 
 **DebugRequestAdmission**:
 The internal DAP-owned Module that completely validates consumed request
@@ -433,9 +442,10 @@ concurrent observers. Neither a Dispose call nor a released/swap-start flag
 proves cleanup; absent owner evidence remains unproved.
 A Restart-only failure before swap may retain its current live session when
 cleanup is proved or only isolated temporary-file deletion failed. Unproved
-process, COM, or handle release revokes replacement authority and terminates
-through the existing session path. Stop, disconnect, and root cancellation
-terminate regardless of retained files. See ADR 0048.
+process, COM, or handle release revokes replacement authority and ends the debug
+connection with retained recovery material. In a source session this never
+confers Save/Close/Quit/Kill authority. Stop, disconnect and cancellation request
+bounded Reset and preserve workbook state. See ADRs 0048 and 0062.
 _Avoid_: resource owner, retry coordinator, generic cleanup callback registry
 
 **AutomationExcelProcess**:
@@ -585,16 +595,15 @@ change the intentionally visible `DebugExcelProcess`.
 _Avoid_: production fallback, release test, debug-process isolation
 
 **DebugWorkbook**:
-A session-temporary workbook built from one `DebugSourceSnapshot` and opened by
-a `DebugExcelProcess`. It uses the manifest-defined bin workbook's file name in
-a snapshot-specific temporary directory, preserving `ThisWorkbook.Name` without
-replacing completed bin output; `ThisWorkbook.Path` therefore identifies the
-temporary directory. The debug component owns and removes the successful build
-output after its Excel process ends; `VbaDev` owns only build-invocation scratch.
-It is not a source of persistent workbook changes. Excel events are suppressed
-while it opens and re-enabled before its `DebugTargetProcedure` runs; open-time
-modal prompts remain user-facing.
-_Avoid_: bin workbook, source template, publish workbook
+The selected document's exact `SourceWorkbook` used for debugging. Its path is
+manifest `templatePath`, conventionally `src/<document>/<document>.xlsm`, not
+bin or a temporary execution copy. Imported VBA and execution side effects stay
+unsaved after Stop; the developer explicitly saves/discards them in Excel.
+Only immutable source/recovery scratch is adapter/companion-owned. Open-time
+events are suppressed only while opening a closed source in a new visible
+application, then its original settings are restored. Exact already-open source
+reuse leaves application settings unchanged; unrelated processes are not normalized.
+_Avoid_: disposable debug copy, bin workbook, publish workbook
 
 **VbeBreakpoint**:
 A native, session-local VBE breakpoint associated with one executable physical
@@ -625,10 +634,12 @@ UserForm leading blank belongs to the projection.
 _Avoid_: fixed line offset, raw file line number, form sidecar mapping
 
 **DebugCompilationContext**:
-The actual conditional-compilation environment of the snapshot-generated
-temporary `DebugWorkbook` in its `DebugExcelProcess`. It determines which `#If` branches
+The proved actual conditional-compilation environment of the live source
+`DebugWorkbook` in its exact `DebugExcelProcess`. It determines which `#If` branches
 can contain a `DebugTargetProcedure` or `VbeBreakpoint`; the launch
-configuration does not override its constants.
+configuration does not override its constants. Unavailable live custom constants
+are not inferred from an older saved package or assumed zero; unsafe conditional
+participants are rejected with an explanation before code replacement.
 _Avoid_: parser-inferred branch, launch-specific compiler constants, active-branch fallback
 
 **DebugTargetProcedure**:
@@ -673,31 +684,31 @@ _Avoid_: mutable editor state, stale build input, workspace-wide snapshot
 The internal sealed `VbaDebugAdapter` boundary that freezes and validates one
 transported `DebugSourceSnapshot`, parses each text source once, and derives one
 opaque generation-bound target, active position, request-ordered breakpoint
-mapping, deferred conditional-compilation proof, and exact-byte build source
-set. A failed admission returns no partial value or build request. The builder
-can consume only the opaque source set; after materialization, `VbaDev`
+mapping, deferred conditional-compilation proof, and exact-byte source set.
+A failed admission returns no partial value or workbook preparation request.
+Source preparation can consume only the opaque source set; after materialization, `VbaDev`
 independently admits the bytes through its public process contract and receives
 no adapter proof, syntax tree, or runtime DTO.
 _Avoid_: public admission interface, reusable launch cache, repeated source parser, VbaDev reverse dependency
 
 **DebugSourceRejection**:
 A known input rejection explicitly identified by `DebugSourceAdmission` before
-workbook building, such as invalid transported bytes, an unavailable target,
+source-workbook acquisition, such as invalid transported bytes, an unavailable target,
 duplicate source identity, or an invalid source breakpoint mapping. The source
 authority carries this classification through preparation and failure completion
 alongside the original cause and owner-release evidence. Exception text, a broad
-exception type, or merely failing before build does not establish this category.
+exception type, or merely failing before preparation does not establish this category.
 An initial rejection fails its launch request without a terminated event and
 allows a corrected request in the same adapter. A rejected Restart consumes that
 attempt but preserves the still-current usable session and its completion
 monitoring. An exited or stopped session is never revived, and failed rejection
 output still triggers terminal cleanup without retrying the transport.
-Rejected admission acquires no generation workspace, build process, or Excel
-process; the existing adapter-session lease and logical generation identifiers
-are separate facts. Unexpected parser failures, Build source-analysis failures,
-and later Excel or lifecycle faults retain their existing failure and cleanup
+Rejected admission acquires no generation workspace, preparation companion, or
+Excel binding; the existing adapter-session lease and logical generation identifiers
+are separate facts. Unexpected parser failures
+and later Excel or lifecycle faults retain their failure and cleanup
 policy, including evidence-based Restart retention where allowed by ADR 0048.
-_Avoid_: request argument rejection, catch-all pre-build error, automatic retry,
+_Avoid_: request argument rejection, catch-all pre-preparation error, automatic retry,
 source-identity equivalence change
 
 **SnapshotSourceInventory**:
@@ -895,8 +906,8 @@ _Avoid_: adapter setup failure, VBA runtime error, target picker
 
 **DebugSetupError**:
 A failure after debug selection succeeds but before the `DebugTargetProcedure`
-begins, including build, workbook open, source mapping, breakpoint setup, VBE
-compile failure, or `VbeProcedureRun` command failure. A modal VBE compile error
+begins, including source preparation, workbook open, source mapping, breakpoint
+setup, VBE compile failure, or `VbeProcedureRun` command failure. A modal VBE compile error
 may remain interactive without a timeout until the user dismisses it or cancels
 launch. A setup error prevents `VbeDebugLaunch` from becoming an interactive
 run.
@@ -909,26 +920,30 @@ _Avoid_: debug setup error, launch failure, test failure
 
 **DebugSessionError**:
 An adapter infrastructure failure after launch, including modal-window
-observation or lifecycle-notification failure. It ends the owned session and
+observation or lifecycle-notification failure. It ends the debug connection,
+requests bounded Reset and preserves the borrowed source workbook/Excel. It
 reports one terminal event over a healthy DAP transport. Failed output is
 latched and never retried; cleanup still proceeds. It does not reinterpret a
 VBA runtime error or an ordinary interactive prompt as an adapter failure.
 _Avoid_: debug setup error, VBA runtime error, prompt timeout
 
 **DebugLifecycleOutput**:
-The build, prompt-wait, breakpoint-verification, procedure-run, setup-error, and
+The source-preparation, prompt-wait, breakpoint-verification, procedure-run, setup-error, and
 Excel-process lifecycle messages emitted by the separate `VbaDebugAdapter` to
 the VS Code Debug Console. It does not copy `Debug.Print`, Immediate Window
-content, or VBE runtime state.
+content, or VBE runtime state. An abnormal adapter exit logs and displays the
+unconfirmed execution state with manual Reset guidance, rather than replaying
+execution or claiming that Excel ended.
 _Avoid_: VBA output stream, Immediate Window mirror, debug-state projection
 
 **DebugLaunchCancellation**:
-An explicit stop before or during `VbeDebugLaunch` completion. It terminates any
-owned build or debug Excel process. `VbaDev` cleans only its active invocation's
-internal scratch; after that invocation exits, the debug component removes its
-caller-owned snapshot and `DebugWorkbook`. Persistent project source and
-completed bin output remain unchanged, and cancellation is reported rather than
-a `DebugSetupError`.
+An explicit stop before or during `VbeDebugLaunch` completion. Source preparation
+receives cooperative cancellation and attempts captured code/reference recovery;
+Stop requests bounded native Reset without saving, closing or killing Excel.
+Snapshot scratch is removable only after proved companion terminal/handle
+release. A durable retention marker prevents outer cleanup/reaping from deleting
+pending recovery material. Cancellation retains its original cause and reports
+any additional unproved cleanup; it does not undo arbitrary workbook effects.
 _Avoid_: launch failure, graceful workbook close, persistent source rollback
 
 **DebugSessionId**:
@@ -942,31 +957,31 @@ _Avoid_: lease ID, project ID, adapter-generated cleanup handle
 
 **DebugRestartPreparation**:
 The transaction that captures and validates a fresh `DebugSourceSnapshot`
-before replacing an active `VbeDebugSession`. Its identity is bound to the
+before replacing the source state of an active `VbeDebugSession`. Its identity is bound to the
 session, canonical project, selected document, original target module and
 procedure, restart generation, and DAP request sequence. One adapter-owned
 module retains the pending request, monotonic counters, fixed launch binding,
 and one-shot swap authority. Additional Restart requests while preparation,
-build, or swap is active fail with `DebugLaunchBusy` without changing that state.
+capture, import, or commit is active fail with `DebugLaunchBusy` without changing that state.
 Notification correlation precedes payload validation: only an exact match of
 session ID, preparation ID, request sequence, and generation consumes the
 pending preparation. Unrelated, malformed-correlation, stale, future, or
 duplicate notifications are acknowledged without consuming it. A matching
 notification with an invalid payload or missing/changed target fails only its
 Restart and retains the usable current session. Session termination invalidates
-preparation and prevents a late build from launching a replacement.
+preparation and prevents a late companion result from reopening the workbook.
 _Avoid_: new launch target, active-editor retargeting, project-only restart token
 
 **PreparedDebugLaunchPlan**:
 The adapter-internal immutable one-shot launch capability produced after one
 initial or restart `DebugSourceAdmission`, target procedure, mapped breakpoints,
 conditional-compilation participation, generation, and any restart binding have
-been validated together. For Restart, preparation builds that generation while
-the current `VbeDebugSession` remains active and produces the plan only after
-build success. Commit then rechecks the binding and ends the old session
-immediately before starting the replacement. This build-before-swap ordering
-intentionally replaces the former validation-before-swap behavior: validation
-alone never authorizes teardown of a usable current session.
+been validated together. For Restart, preparation obtains dirty-workbook consent
+and captures recovery state while the current session stays active. Only its
+bound readiness authorizes commit: recheck the live session, confirm Reset,
+authorize import, verify exact source, transfer breakpoints and run the target
+again in the same workbook/process. Declining or cancelling before commit leaves
+current execution unchanged. No disposable replacement process is started.
 _Avoid_: raw launch request, reusable launch cache, early restart teardown,
 validation-before-swap teardown
 
@@ -980,10 +995,11 @@ _Avoid_: project lock, manifest lock, arbitrary cleanup path
 
 **DebugGenerationWorkspace**:
 The create-new generation workspace issued only by a live
-`DebugWorkspaceLease`; it owns the exact source snapshot and generated workbook
-paths for one build attempt and transfers that same ownership to the resulting
-`VbeDebugSession`. Cleanup consumes this capability or its owning session, never
-an arbitrary path or an optional ownership flag.
+`DebugWorkspaceLease`; for source Debug it owns only the sealed exact-byte
+snapshot for one preparation attempt, never the persistent workbook. Legacy
+copied generation/Doctor paths keep their separate workbook capabilities.
+Cleanup consumes an issued capability, never an arbitrary path; a pending
+unproved source companion arms whole-session retention before child launch.
 _Avoid_: session workspace path, caller-constructed generation path, borrowed artifact
 
 **DebugSessionReaper**:
@@ -994,7 +1010,8 @@ initialization failed because it generated and retained the `DebugSessionId`
 before process launch. An invalid ID fails before filesystem access. A missing
 or never-claimed workspace is a silent successful no-op; a proved-stale
 workspace receives five seconds of bounded deletion retries. Reapers refuse a
-live or unverifiable lease and report a retained absolute path on stderr without
+live or unverifiable lease, any source-companion retention marker or uncertain
+marker inspection, and report a retained absolute path on stderr without
 widening deletion scope. Their nonzero result is a housekeeping warning that
 does not alter an already determined debug outcome. A next-start scan continues
 past an unrelated retained workspace, and the initial cleanup command has no
@@ -1295,9 +1312,11 @@ conventionally `src/<document_name>/<document_name>.xlsm`. Ordinary Build import
 saved exported source and saves this workbook in place; project Export extracts
 its actual VBA. When already open, its exact workbook/process identity, live
 state and user-owned lifetime remain authoritative. Publish and public paired
-snapshot-output Build still copy its saved package as their template. Legacy
-Test and Debug generation retain their existing copy semantics until their
-separate migration issues are integrated.
+snapshot-output Build still copy its saved package as their template. Debug
+imports its immutable captured sources through `prepare-debug` without the
+independent source-error gate, saving or taking workbook/process lifetime
+ownership. Legacy Test generation retains its existing copy semantics until
+its separate migration issue is integrated.
 _Avoid_: arbitrary active workbook, same-basename match, bin output
 
 **SourceWorkbookBuildCommand**:
@@ -5412,10 +5431,10 @@ Dev: "Does F5 keep focus in VS Code while `VbeDebugLaunch` starts?"
 Domain Expert: "No. It displays both Excel and the target VBE code pane, and may move focus to the VBE where interactive debugging occurs."
 
 Dev: "Does `VscodeExtension` automate Excel while handling F5?"
-Domain Expert: "No. It launches the separate `VbaDebugAdapter`. The adapter invokes `VbaDev` for the hidden snapshot build, then owns visible Excel, VBIDE automation, and the `DebugExcelProcess`."
+Domain Expert: "No. It launches the separate `VbaDebugAdapter`, which resolves and prepares the exact source through the public CLI, then owns native VBE commands and connection cleanup without owning workbook/Excel lifetime."
 
 Dev: "Should `VbaDebugAdapter` reference `VbaDev.App` to avoid starting another process?"
-Domain Expert: "No. It invokes the public `vba-dev build` CLI as a child process and uses its arguments, output, exit status, and cancellation contract. Internal application services do not cross the component boundary."
+Domain Expert: "No. It invokes public `prepare-debug --describe` and managed `prepare-debug` through arguments, streams, exit status and cooperative cancellation. Internal application services do not cross the component boundary."
 
 Dev: "Should `VbaDebugAdapter` search beside itself or on PATH for `vba-dev.exe`?"
 Domain Expert: "No. `VscodeExtension` resolves and validates both executables and passes the effective absolute CLI path through `--vba-dev`. An invalid `vba-dev` override produces a visible warning and falls back to the compatible bundled CLI for the whole extension session; an invalid debug-adapter override still fails without substitution."
@@ -5424,7 +5443,7 @@ Dev: "What should guided creation do when neither the configured nor bundled `vb
 Domain Expert: "Stop before environment preflight or project input and report one actionable error with Open Settings and Show Output. Do not search PATH, download another tool, run with an incompatible executable, or retry automatically. A compatible bundled fallback remains visible and session-pinned; a complete resolution failure creates no reusable preflight state."
 
 Dev: "Should the debug adapter require the complete `vba-dev` command contract or a particular CLI release?"
-Domain Expert: "No. Its independent contract requires only `featureVersions[\"build.sourceSnapshot\"] == \"2.0\"` from the supplied CLI. `vba-dev-contract.json` does not carry the adapter protocol, and the adapter's protocol, transport, session-ID form, cleanup command, and Doctor schema belong to `vba-debug-adapter-contract.json`."
+Domain Expert: "No. It requires the exact five consumed CLI features in `VbaDebugAdapterContract`, including source Debug preparation and managed consent/cancellation. Adapter protocol, transport, session-ID form, cleanup and Doctor remain separately versioned; capability inspection starts no Excel."
 
 Dev: "Can `VbaLaunchConfiguration` specify only a module without a procedure?"
 Domain Expert: "No. Module and procedure are specified together or both inferred from the active source position captured in `DebugSourceSnapshot`. Project and document may independently narrow the selection."
@@ -5445,40 +5464,40 @@ Dev: "Should the `VbeDebugSession` report that VS Code is stopped when the VBE e
 Domain Expert: "No. It remains running in VS Code until its launched Excel process exits; the VBE alone presents its break and run states."
 
 Dev: "Does ending a `VbeDebugSession` ask Excel to save changes?"
-Domain Expert: "No. Any session termination force-terminates its `DebugExcelProcess`; unsaved workbook changes and VBE state are lost."
+Domain Expert: "No. Stop resets execution and detaches without saving, discarding, closing or killing the source workbook/Excel, even if Debug opened it. If Reset cannot be confirmed, report manual VBE guidance. The developer chooses whether to save."
 
 Dev: "Can an adapter crash leave its Excel process, `vba-dev` child, and workspace indefinitely?"
-Domain Expert: "The extension generates a random `DebugSessionId` before adapter launch and retains it even if initialization fails. The kill-on-close Job terminates the process tree; the extension then reaps that ID, or the next adapter start removes the stale lease. Neither cleanup path accepts an arbitrary directory."
+Domain Expert: "The source Excel lifetime is deliberately not owned. A pending non-owning CLI receives cooperative cancellation; a durable marker armed before child start retains recovery material if terminal release is unproved or the adapter dies. Session-ID-only cleanup/reaping never deletes through that marker or uncertain lease state."
 
 Dev: "Can a builder construct a generation directory from `DebugSessionId` and pass the path to cleanup?"
-Domain Expert: "No. Only a live `DebugWorkspaceLease` can issue a create-new `DebugGenerationWorkspace`, and that capability owns its exact source and workbook artifacts through build and the resulting `VbeDebugSession`. Cleanup accepts owned state or the session ID, never a caller-composed path or ancestry proof."
+Domain Expert: "No. Only the live lease issues generation capabilities. Source Debug owns its exact immutable snapshot, never the persistent execution workbook. Cleanup accepts issued ownership or session ID, honors pending-companion retention, and never derives authority from a caller-composed path."
 
 Dev: "Should failure to remove a stale debug workspace change the result of the debug session that just ended?"
 Domain Expert: "No. After five seconds of bounded deletion retries, retain and report the absolute path as a housekeeping warning. Invalid IDs, live or unverifiable leases, and deletion failure return nonzero without widening deletion scope, while a missing or never-claimed workspace is a silent successful no-op."
 
 Dev: "Does `DebugLaunchCancellation` rewrite project source or delete the previous completed bin workbook?"
-Domain Expert: "No. Debug launch does not save project source or replace bin output. `VbaDev` removes build-internal scratch, while the debug component removes its caller-owned snapshot and session workbook after the build process exits."
+Domain Expert: "No. Debug never saves source editors or writes bin output. It imports the selected source workbook without saving and attempts code/reference recovery on failed replacement. Remove snapshot scratch only after companion terminal release is proved; unproved recovery remains retained."
 
 Dev: "Can one VS Code window run two `VbeDebugSession`s at the same time?"
 Domain Expert: "No. The initial product permits one active session per window and never ends or reuses that session implicitly for another launch."
 
 Dev: "Does Restart Debugging reuse the existing Excel process?"
-Domain Expert: "No. `DebugRestartPreparation` first captures a new `DebugSourceSnapshot` without saving project files and builds a fresh generation while the current session remains active, producing its one-shot `PreparedDebugLaunchPlan` only after build success. Plan commit rechecks the same session, restart request, document, module, and procedure binding; only then does it force-terminate the old process immediately before starting the replacement. Preparation failure, downstream snapshot revalidation failure, build failure, cancellation before the swap, or a stale request binding retains the still-live current session. If the bound session exits during the build, the new generation is cleaned and no replacement starts. If replacement startup fails after the swap, the new generation is cleaned and the terminated process is neither revived nor reused."
+Domain Expert: "Yes. Capture the latest immutable source, reconfirm a dirty workbook and capture recovery while current execution stays active. After one-shot live binding revalidation, Reset/import/Run uses the same workbook/PID, preserving cells without saving. Decline or pre-commit cancellation preserves current execution; an ended binding is not reopened or revived."
 
 Dev: "Does closing only the `DebugWorkbook` leave an empty debug Excel session running?"
-Domain Expert: "No. Once that workbook actually closes, its dedicated Excel process is force-terminated and the `VbeDebugSession` ends. Cancelling workbook close leaves both active."
+Domain Expert: "The debug connection ends on actual source close without reopening or terminating Excel. Other workbooks remain. Cancelling the normal close/save choice is not a confirmed close and leaves the session active."
 
 Dev: "Should a `VbeDebugSession` reuse the hidden Excel process that built the workbook?"
-Domain Expert: "No. It owns a fresh, visible `DebugExcelProcess` so breakpoint behavior and session lifetime are isolated from build automation and the user's existing Excel sessions."
+Domain Expert: "No hidden copied build is involved in source Debug. Reuse the exact already-open source process; otherwise open the source visibly on the caller's desktop. Exact binding and native behavior must be verified without assuming disposable ownership."
 
 Dev: "Does debug launch lower macro security in the user's existing Excel sessions?"
-Domain Expert: "No. Macro enablement is scoped to the dedicated `DebugExcelProcess` while it opens the generated `DebugWorkbook`, and the setting is restored after open."
+Domain Expert: "No persistent setting change is allowed. Existing source sessions keep user settings. Any temporary open-time event/security setting is restored immediately, and native access/compile/runtime requirements remain."
 
 Dev: "Can the target open another workbook in its `DebugExcelProcess`?"
-Domain Expert: "Yes, but every workbook in that process is session-owned and is lost if the process is force-terminated. Unrelated workbooks must stay in the user's other Excel sessions."
+Domain Expert: "Yes. No workbook in that source process acquires disposable debug lifetime ownership. Stop and cleanup operate only on the exact selected VBA project and borrowed connection; unrelated workbooks are never saved, closed or killed."
 
 Dev: "Should a `DebugExcelProcess` open the manifest-defined bin workbook?"
-Domain Expert: "No. It opens a session-temporary `DebugWorkbook` built from the launch snapshot in a temporary directory. Reusing the normal bin file name preserves `ThisWorkbook.Name`, while persistent bin output remains unchanged and `ThisWorkbook.Path` identifies the temporary location."
+Domain Expert: "No. It uses manifest `templatePath`, normally `src/<document>/<document>.xlsm`, and imports the captured source there without saving. ThisWorkbook.Name/Path describe the actual source workbook. Bin and publish output are untouched."
 
 Dev: "Does opening a `DebugWorkbook` run `Workbook_Open` before breakpoints are ready?"
 Domain Expert: "No. Excel events are suppressed while the workbook opens and re-enabled before the explicit `DebugTargetProcedure` runs. Startup logic must be exposed through an eligible wrapper to debug it."
@@ -5490,7 +5509,7 @@ Dev: "Does `VbeDebugLaunch` time out while an Excel open prompt is waiting?"
 Domain Expert: "No. It reports that Excel input is required and waits until the user answers or stops the session. Cancelling a prompt that prevents open makes the launch fail."
 
 Dev: "Can a `VbeDebugLaunch` skip the build and use an older workbook?"
-Domain Expert: "No. The debug component supplies the current snapshot to `vba-dev build` and opens the fresh caller-owned `DebugWorkbook`, so VS Code source locations and VBE statement locations describe the same source."
+Domain Expert: "It skips copied Build, not source preparation. Import the current admitted snapshot into the exact source workbook and verify source maps against that imported state before native Run; never silently execute stale code."
 
 Dev: "How does a `VbeDebugLaunch` choose its `DebugTargetProcedure`?"
 Domain Expert: "It uses the procedure containing the active source position by default. A launch configuration may explicitly identify the document, module, and procedure; ambiguous partial selection fails instead of guessing."
@@ -5547,13 +5566,13 @@ Dev: "Can a VS Code breakpoint select the second colon-separated statement on on
 Domain Expert: "No. `VbeBreakpoint` is line-level. The VBE chooses the first stoppable position on that line; a continuation line that the VBE rejects invalidates launch rather than moving the breakpoint."
 
 Dev: "Should a breakpoint in an inactive conditional-compilation branch move to the active branch?"
-Domain Expert: "No. `DebugCompilationContext` comes from the snapshot-generated temporary workbook in its actual Excel host. An inactive target or breakpoint makes setup fail, and launch configuration cannot replace compiler constants."
+Domain Expert: "No. It requires proved live compilation context. Inactive or unprovable target/breakpoint branches fail closed; launch settings, a stale saved package and assumed-zero unknown globals cannot replace that authority."
 
 Dev: "Does a `BreakpointSourceMap` compare `VERSION 1.0 CLASS`, its `BEGIN`/`END` block, and `Attribute VB_Name` as code?"
 Domain Expert: "No. Those are export-only serialization records. The map projects each exported source kind onto its VBE code lines, models only the known UserForm leading blank, and requires the projected code to match exactly."
 
 Dev: "Can a `VbeDebugLaunch` use unsaved editor source without changing project files?"
-Domain Expert: "Yes. The client captures one immutable `DebugSourceSnapshot`; the separate adapter uses its debug metadata for target and breakpoint mapping and passes its build-neutral source inventory to `vba-dev build`."
+Domain Expert: "Yes. Dirty file-backed selected-document editors contribute unsaved bytes to the immutable snapshot; other sources use saved disk bytes. The adapter prepares that source in the actual workbook through `prepare-debug`, never autosaving editors or workbook."
 
 Dev: "Should the extension create a temporary source directory and let `VbaDebugAdapter` delete it?"
 Domain Expert: "No. The extension sends losslessly encoded source and sidecar bytes through DAP. The adapter validates them, materializes its own session directory, and alone owns that directory's lifecycle."

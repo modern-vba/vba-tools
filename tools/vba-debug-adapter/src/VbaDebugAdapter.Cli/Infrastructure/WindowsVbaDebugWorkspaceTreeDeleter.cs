@@ -208,6 +208,17 @@ internal sealed class WindowsVbaDebugWorkspaceTreeDeleter
         }
     }
 
+    internal static void DeletePinnedWorkspaceFile(SafeFileHandle handle, string path)
+    {
+        var attributes = GetAttributes(handle, path);
+        if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+        {
+            throw new IOException($"The pinned VBA debug workspace marker is not a physical file: {path}");
+        }
+        ClearReadOnlyAttribute(handle, path, attributes);
+        MarkDelete(handle, path);
+    }
+
     private static IOException CreateHandleIOException(string message)
         => new(message, new Win32Exception(Marshal.GetLastPInvokeError()));
 

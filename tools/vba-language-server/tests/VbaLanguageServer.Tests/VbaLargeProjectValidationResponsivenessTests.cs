@@ -12,6 +12,8 @@ namespace VbaLanguageServer.Tests;
 [Collection(VbaDocumentAnalysisPerformanceTestCollection.Name)]
 public sealed class VbaLargeProjectValidationResponsivenessTests(ITestOutputHelper output)
 {
+    // Reaching the validation barrier is fixture setup, not the editor-read budget.
+    private static readonly TimeSpan SetupTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
 
     [Fact]
@@ -44,7 +46,7 @@ public sealed class VbaLargeProjectValidationResponsivenessTests(ITestOutputHelp
         try
         {
             await validationObserver.ValidationStarted.Task
-                .WaitAsync(TestTimeout);
+                .WaitAsync(SetupTimeout);
             semanticRead = Task.Run(() =>
             {
                 var projectSnapshot = workspace.CreateProjectSnapshot(
