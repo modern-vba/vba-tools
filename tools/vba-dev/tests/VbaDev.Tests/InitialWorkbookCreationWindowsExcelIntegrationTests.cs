@@ -34,7 +34,9 @@ public sealed class InitialWorkbookCreationWindowsExcelIntegrationTests
             var failure = await Record.ExceptionAsync(() =>
                 creator.CreateInitialWorkbookAsync(workbookPath, cancellation.Token));
 
-            Assert.True(lifecycle.SavedBaselineObserved);
+            Assert.True(lifecycle.SavedBaselineObserved,
+                $"Saved baseline was not observed. Saved path: {lifecycle.SavedWorkbookPath ?? "<none>"}; " +
+                $"saved file existed: {lifecycle.SavedWorkbookExisted}. Captured failure: {failure?.ToString() ?? "<none>"}");
             Assert.True(lifecycle.SavedWorkbookExisted);
             Assert.IsAssignableFrom<OperationCanceledException>(failure);
             Assert.NotNull(lifecycle.SavedWorkbookPath);
@@ -70,10 +72,12 @@ public sealed class InitialWorkbookCreationWindowsExcelIntegrationTests
             var failure = await Record.ExceptionAsync(() =>
                 creator.CreateInitialWorkbookAsync(workbookPath, cancellation.Token));
 
-            Assert.True(lifecycle.SavedBaselineObserved);
+            Assert.True(lifecycle.SavedBaselineObserved,
+                $"Saved baseline was not observed. Saved path: {lifecycle.SavedWorkbookPath ?? "<none>"}; " +
+                $"saved file existed: {lifecycle.SavedWorkbookExisted}. Captured failure: {failure?.ToString() ?? "<none>"}");
             Assert.True(lifecycle.SavedWorkbookExisted);
-            Assert.IsAssignableFrom<InvalidOperationException>(failure);
-            Assert.Contains(injectedFailure.Message, failure.ToString(), StringComparison.Ordinal);
+            var observedFailure = Assert.IsAssignableFrom<InvalidOperationException>(failure);
+            Assert.Contains(injectedFailure.Message, observedFailure.ToString(), StringComparison.Ordinal);
             Assert.NotNull(lifecycle.SavedWorkbookPath);
             Assert.False(File.Exists(workbookPath));
             Assert.False(File.Exists(lifecycle.SavedWorkbookPath));

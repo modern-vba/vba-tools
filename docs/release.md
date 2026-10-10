@@ -486,36 +486,57 @@ Excel installed and without a separately installed .NET runtime.
 4. Confirm completion or document symbols are served by the bundled C# language
    server.
 5. Run `Format Document` on a VBA file.
-6. Open a workbook-backed sample workspace that contains `vba-project.json`.
+6. Open a disposable workbook-backed sample workspace that contains
+   `vba-project.json`. Its `templatePath` selects the exact source workbook,
+   normally `src/<document>/<document>.xlsm`; do not use a valuable user workbook.
 7. Enable trusted access to the VBA project object model in Excel.
 8. Run `VBA Tools: Doctor`.
 9. Run `VBA Tools: Refresh UserForm Events`. Confirm it presents no document
    chooser, a clean refresh leaves healthy status quiet, and VBA Tools Output
    records the environment catalog revision and Event count. Confirm no project
    source template opens and the generated workbook is not saved.
-10. Run `VBA Tools: Build`.
-11. Run `VBA Tools: Test`.
+10. Run `VBA Tools: Build` with the source workbook closed. Confirm it imports
+    into that source file, saves it in place, and closes the hidden workbook.
+    Repeat with that exact workbook already open: its existing window stays
+    open and Build saves after import. Build can also persist other unsaved
+    workbook edits; accept its dirty-workbook confirmation only in this fixture.
+    Record the saved source workbook's disk hash as the no-save baseline.
+11. Manually close the sample without saving and run `VBA Tools: Test`. Confirm
+    the selected source workbook is used, not a
+    bin or temporary execution copy. A previously closed workbook opens hidden
+    and closes without saving. Reopen the same sample manually and repeat Test;
+    the borrowed open workbook keeps its existing Excel PID and window.
 12. Confirm Test Explorer shows workbook-backed test nodes.
-13. Run the Test Explorer default `Run Tests` profile.
-14. Create or open a debug sample whose standard module contains `Option Private
-    Module` and a public parameterless `Sub` that records a harmless completion
-    marker.
+13. Run the Test Explorer default `Run Tests` profile. Then manually close the
+    sample without saving and compare its disk hash with step 10's baseline;
+    the hash must be unchanged before any later Build resets that baseline.
+14. In the disposable sample, use a standard module containing `Option Private
+    Module` and a public parameterless `Sub` that records a harmless cell marker
+    without saving. Save its baseline using Build, record the source workbook
+    disk hash again, and close the sample before the first debug launch.
 15. Set an enabled ordinary line breakpoint on an executable statement in that
     procedure.
 16. Make an unsaved edit in the target source, then press F5 without a saved
     launch configuration. Confirm the packaged dynamic configuration captures
-    the dirty editor content without saving, opens a same-filename workbook from
-    the adapter-owned temporary directory in a dedicated visible Excel/VBE
-    process, transfers the breakpoint, and stops in native VBE Break mode.
+    the dirty editor content without saving, opens the exact source workbook
+    visibly, transfers the breakpoint, and stops in native VBE Break mode.
+    Record the source workbook's full path, Excel PID and workbook window.
 17. Continue from the VBE. Confirm the completion marker is recorded and VS Code
     keeps the debug session active after procedure completion.
-18. Exit the owned Excel process. Confirm VS Code displays the final process-exit
-    termination message and no owned Excel process remains.
-19. Exit without saving and confirm the project source, source template, bin,
-    and publish outputs are unchanged. Repeat with a saved `launch.json` target
-    after another dirty edit and confirm a new F5 captures the fresh editor
-    content without saving it.
-20. Run the bundled language-server executable directly from the installed
+18. Stop Debugging. Confirm native Reset succeeds and Stop leaves the workbook open
+    without saving, closing, quitting or force-terminating its Excel session.
+19. Make an unsaved cell change in that open workbook and another dirty source
+    edit. Launch F5 again, then Restart after a further edit. Confirm both reuse
+    the same Excel PID and workbook window without a dirty-workbook confirmation,
+    import fresh dirty editor content, and preserve the existing cell change.
+    Repeat with a saved `launch.json` target. Debug skips only its independent
+    source-analysis gate; native VBE compile/runtime errors still apply.
+20. Stop, then manually close only the disposable sample without saving. Confirm
+    the baseline source workbook disk hash and exported source files are unchanged,
+    and Debug did not create bin or publish output. VBA Tools never initiates Save
+    in Debug or Test, but VBA itself can save or cause other irreversible effects;
+    the fixture must not do so. Test, unlike Debug, retains dirty-workbook consent.
+21. Run the bundled language-server executable directly from the installed
     extension directory, not from the smoke workspace. Confirm the printed
     directory belongs to the VSIX just installed, especially if more than one
     version remains:

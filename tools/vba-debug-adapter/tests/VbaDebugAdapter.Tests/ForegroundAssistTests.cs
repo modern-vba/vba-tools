@@ -1,5 +1,6 @@
 using VbaDebugAdapter.ForegroundAssist;
 using Xunit;
+using System.Collections.Concurrent;
 using System.Globalization;
 
 namespace VbaDebugAdapter.Tests;
@@ -26,21 +27,32 @@ public sealed class ForegroundAssistTests
         Assert.Empty(probe.Attempts);
     }
 
-    [Fact]
-    public async Task ProtocolSignalsReadyAndRunsAProbeWhileInputReadIsBlocked()
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    public async Task ProtocolSignalsReadyAndRunsAProbeWhileInputReadIsBlocked(int minimumAttempts)
     {
         using var input = new BlockingLineReader();
         using var output = new StringWriter(CultureInfo.InvariantCulture);
-        var probe = new RecordingProbe([84], new HashSet<int> { 84 });
+        var probe = new RecordingProbe([84], new HashSet<int> { 84 }, minimumAttempts);
         var assist = new ForegroundAssistLoop(new HashSet<int>(), probe);
 
         var run = ForegroundAssistProtocol.RunAsync(input, output, assist);
-        Assert.Equal($"READY{Environment.NewLine}", output.ToString());
-        await input.WaitForReadAsync();
-        Assert.Equal([84], probe.Attempts);
-
-        input.Release();
-        await run;
+        try
+        {
+            Assert.Equal($"READY{Environment.NewLine}", output.ToString());
+            await input.WaitForReadAsync();
+            await probe.WaitForAttemptsAsync();
+            Assert.False(run.IsCompleted);
+            var attempts = probe.Attempts;
+            Assert.True(attempts.Count >= minimumAttempts);
+            Assert.All(attempts, processId => Assert.Equal(84, processId));
+        }
+        finally
+        {
+            input.Release();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        }
     }
 
     [Fact]
@@ -67,10 +79,19 @@ public sealed class ForegroundAssistTests
         Assert.False(DebugWorkbookIdentity.Matches(root, "Book1.xlsm", workbook, "not-a-token"));
     }
 
-    private sealed class RecordingProbe(IReadOnlyList<int> processIds, IReadOnlySet<int> matches)
+    private sealed class RecordingProbe(
+        IReadOnlyList<int> processIds,
+        IReadOnlySet<int> matches,
+        int minimumAttempts = 1)
         : IForegroundAssistProbe
     {
-        public List<int> Attempts { get; } = [];
+        private readonly ConcurrentQueue<int> attempts = new();
+        private readonly TaskCompletionSource attemptsReady = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IReadOnlyList<int> Attempts => attempts.ToArray();
+
+        public Task WaitForAttemptsAsync() => attemptsReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         public IReadOnlyList<int> CaptureExcelProcessIds() => processIds;
 
@@ -78,7 +99,11 @@ public sealed class ForegroundAssistTests
 
         public bool TryBringVbeToForeground(int processId)
         {
-            Attempts.Add(processId);
+            attempts.Enqueue(processId);
+            if (attempts.Count >= minimumAttempts)
+            {
+                attemptsReady.TrySetResult();
+            }
             return true;
         }
     }

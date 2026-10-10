@@ -857,6 +857,53 @@ test('release workflow pins secretless least-privilege publish and fail-closed r
   assert.doesNotMatch(releaseGuide, /gh workflow run release\.yml --ref main/);
 });
 
+test('clean Windows smoke verifies source-workbook debug retention and no automatic Save', async () => {
+  const releaseGuide = await fs.readFile(path.resolve('docs/release.md'), 'utf8');
+  const smoke = releaseGuide.split('## Clean Windows Smoke\n')[1]?.split('\n## Commit, Tag, and Push')[0];
+  assert.ok(smoke, 'The clean Windows smoke must remain an explicit release gate.');
+  assert.match(smoke, /exact source workbook/);
+  assert.match(smoke, /same Excel PID and workbook window/);
+  assert.match(smoke, /without a dirty-workbook confirmation/);
+  assert.match(smoke, /Stop[\s\S]*Reset[\s\S]*leaves the workbook open/);
+  assert.match(smoke, /Restart[\s\S]*fresh dirty editor content/);
+  assert.match(smoke, /disk hash[\s\S]*unchanged/);
+  assert.match(smoke, /VBA itself can save/);
+  const testSmoke = smoke.split('11. ')[1]?.split('14. ')[0];
+  assert.match(testSmoke, /close the sample without saving/);
+  assert.match(testSmoke, /compare its disk hash with step 10/);
+  assert.doesNotMatch(smoke, /adapter-owned temporary directory|dedicated visible Excel|Exit the owned Excel process/);
+});
+
+test('first public release notes explain source-workbook migration and snapshot compatibility', async () => {
+  const changelog = await fs.readFile('CHANGELOG.md', 'utf8');
+  const extensionNotes = changelog.split('## [0.1.1]')[1]?.split('\n## [')[0];
+  assert.ok(extensionNotes, 'The first published extension needs migration notes.');
+  assert.match(extensionNotes, /### Changed/);
+  assert.match(extensionNotes, /Build[\s\S]*other unsaved workbook edits/);
+  assert.match(extensionNotes, /Test[\s\S]*without initiating Save/);
+  assert.match(extensionNotes, /Debug[\s\S]*without dirty-workbook confirmation/);
+  assert.match(extensionNotes, /binPath[\s\S]*deprecated/);
+  assert.match(extensionNotes, /Publish and standalone Import remain unchanged/);
+
+  const cliChangelog = await fs.readFile('tools/vba-dev/CHANGELOG.md', 'utf8');
+  const cliNotes = cliChangelog.split('## [0.1.0]')[1]?.split('\n## [')[0];
+  assert.ok(cliNotes, 'The first published CLI needs independent release notes.');
+  for (const feature of ['build.sourceSnapshot', 'test.sourceSnapshot', 'debug.sourceWorkbookPreparation']) {
+    assert.ok(cliNotes.includes(`\`${feature}\` 2.0`),
+      `${feature} must record the first release's compatibility version.`);
+  }
+});
+
+test('packaged debug guidance distinguishes provider compatibility from VBA side effects', async () => {
+  const readme = await fs.readFile('README.md', 'utf8');
+  const contract = JSON.parse(await fs.readFile('vba-dev-contract.json', 'utf8'));
+  assert.ok(readme.includes(`\`debug.sourceWorkbookPreparation\` ${contract.featureVersions['debug.sourceWorkbookPreparation']}`));
+  const debug = readme.split('### Debug in the VBE\n')[1]?.split('\n### Test\n')[0];
+  assert.ok(debug);
+  assert.match(debug, /VBA itself can save/);
+  assert.match(debug, /VBA Tools does not initiate Save/);
+});
+
 function writeZip(filePath, entries) {
   return new Promise((resolve, reject) => {
     const zipFile = new yazl.ZipFile();

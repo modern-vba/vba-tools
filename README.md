@@ -599,6 +599,9 @@ still be representable in the VBE's active code page.
 
 Update VBA Tools and its bundled tools together. A separately configured
 `vba-dev` or debug adapter must support the same snapshot v2 requirements.
+Source-workbook debugging additionally requires the CLI feature
+`debug.sourceWorkbookPreparation` 2.0; its older 1.0 behavior is incompatible
+and is not silently admitted by a matching result schema or tool version.
 Ordinary Build and project Export also require a companion that advertises
 their source-workbook behavior; an older bin-workbook provider is not silently
 used for those commands.
@@ -695,9 +698,11 @@ Restart does not undo prior cell changes or save. A closed/replaced binding is
 never automatically reopened or retargeted.
 
 The opened workbook is the selected source workbook, not a disposable execution
-copy. Imported VBA and execution changes remain unsaved after debugging; save or
-discard them explicitly in Excel. Exported source editors are never automatically
-saved. Debug does not write bin or publish output.
+copy. VBA Tools does not initiate Save; imported VBA and execution changes remain
+in the live workbook for you to save or discard explicitly in Excel. VBA itself can save
+or cause other irreversible effects, which Debug does not suppress or roll back.
+Exported source editors are never automatically saved. Debug does not write bin
+or publish output.
 
 When Debug opens a closed source workbook, open-time events such as
 `Workbook_Open` do not run automatically. Reusing an already-open workbook does

@@ -1585,7 +1585,8 @@ public sealed class CliSurfaceTests
             standardOutput,
             standardError,
             CancellationToken.None);
-        var completed = await Task.WhenAny(invocation, Task.Delay(TimeSpan.FromSeconds(1)));
+        // Bound this framing fixture against hangs, not product cancellation latency.
+        var completed = await Task.WhenAny(invocation, Task.Delay(TimeSpan.FromSeconds(10)));
 
         Assert.Same(invocation, completed);
         Assert.Equal(130, await invocation);

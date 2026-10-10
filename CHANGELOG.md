@@ -4,7 +4,7 @@ All notable user-facing changes to the VBA Tools extension are recorded here.
 The extension history is versioned independently from the bundled `vba-dev`
 CLI history.
 
-## [0.1.1] - 2026-10-07
+## [0.1.1] - 2026-10-10
 
 This is the first publicly available VBA Tools pre-release. Version 0.1.0 was
 tagged but was not published to the VS Code Marketplace or as a GitHub Release.
@@ -20,6 +20,43 @@ tagged but was not published to the VS Code Marketplace or as a GitHub Release.
   diagnostics, and an environment-scoped UserForm Event catalog.
 - Self-contained companion executables and a standalone `vba-dev` 0.1.0 ZIP;
   no separately installed .NET runtime is required.
+
+### Changed
+
+- Ordinary Build imports saved source into the exact manifest-selected source
+  workbook and saves it in place, including other unsaved workbook edits after
+  required consent. An already-open workbook retains its Excel process/window;
+  a closed workbook opens hidden and closes after processing.
+- Test runs in that same source workbook without initiating Save. An already-open
+  workbook remains open; a closed workbook opens hidden and closes without saving
+  remaining import/test changes. Dirty-workbook consent still applies to Build
+  and Test, including execution-only no-build Test.
+- Debug F5 and Restart reuse the exact source workbook and Excel process/window
+  without dirty-workbook confirmation or automatic workbook/editor saving.
+  Debug alone omits the independent pre-launch source-analysis gate; immutable
+  capture, encoding, target/breakpoint safety, recovery, and native VBE checks
+  remain. Stop resets execution without closing or saving the workbook.
+- Project Export reads the selected source workbook, including live VBE changes
+  when it is already open, without saving or closing that session.
+
+### Breaking Changes
+
+- Ordinary Build no longer creates a disposable workbook-bin output. Review the
+  saved exported source before building: `templatePath`, conventionally
+  `src/<document>/<document>.xlsm`, now identifies the workbook changed and saved.
+- Debug replaces unsaved VBE-direct code with captured source without an extra
+  confirmation. Cell edits remain, but neither Test nor Debug is a sandbox or
+  whole-workbook rollback: VBA itself can explicitly save or cause other effects.
+- Legacy `binPath` is optional, deprecated, and scheduled for removal. Supported
+  existing values emit a warning; remove only the property to retire the setting.
+  New projects omit it, and commands do not automatically delete or move old
+  workbook-bin files or the configured source workbook.
+- Update the extension and companion tools together. Source-workbook features
+  and no-confirmation Debug preparation must pass capability admission; the same
+  tool release version or unchanged result schema does not prove compatibility.
+
+Publish and standalone Import remain unchanged. Explicit snapshot-output Build
+and explicit-workbook Export retain their separate output and lifetime contracts.
 
 ### Fixed
 
