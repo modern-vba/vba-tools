@@ -10,6 +10,12 @@ status: accepted
   and the ordinary Build/project Export portions of the
   [workbook-backed project command model](https://github.com/modern-vba/vba-tools/blob/main/tools/vba-dev/docs/adr/0001-workbook-backed-project-command-model.md).
 
+Issue #449 subsequently reuses this source-workbook replacement and flat import
+mirror contract for prepared Test, without ordinary Build's Save. The legacy
+Test/snapshot transition statements below describe the #447 integration point;
+current Test input, execution and cleanup are governed by the
+[#449 follow-up in ADR 0026](0026-run-tests-from-command-owned-snapshot-workbooks.md#issue-449-follow-up-source-workbook-test).
+
 ## Context
 
 Ordinary Build previously copied a saved template, imported saved source, and

@@ -27,9 +27,9 @@ discovery error or showing a popup.
 
 Under ADR 0026, a default Test Explorer run materializes unsaved editor state in
 a complete snapshot directory whose paths preserve the original
-`DocumentSourceSet`-relative layout. Ordinary build-before-test and snapshot
-test both receive the exact `VbaSourceAdmission` returned with the workbook
-materialization that succeeded. Before test execution, `VbaDev` copies only its
+`DocumentSourceSet`-relative layout. Ordinary and snapshot Test both consume the
+exact `VbaSourceAdmission` used for verified import into the selected source
+workbook under the #449 follow-up to ADR 0026. `VbaDev` copies only its
 module identities, callable declaration-name ranges, and safely mapped
 persistent source URIs into an immutable `ExecutedSourceIndex`. The index is the
 sole location authority for that workbook. It retains no path-backed content
@@ -42,14 +42,14 @@ For snapshot input, declaration ranges come from the admitted snapshot bytes
 while persistent URIs are derived from their preserved
 `DocumentSourceSet`-relative provenance; internal workspace paths never appear
 in results. For ordinary build-before-test, both ranges and persistent URIs are
-derived from the saved-source admission that produced the committed bin
-workbook. Unsafe, missing, or ambiguous module, procedure, or provenance
+derived from the saved-source admission imported into the source workbook under
+the #449 follow-up to ADR 0026. Unsafe, missing, or ambiguous module, procedure, or provenance
 mapping omits only the optional location. The executed identity and outcome
 remain unchanged, and the completed built run reports a deterministic
 non-failing source-location warning for each distinct unresolved test identity.
 
-`test --no-build` intentionally has no proved source capture for the existing
-bin workbook. It never constructs an `ExecutedSourceIndex`, never inspects the
+`test --no-build` intentionally has no proved source capture for the selected
+source workbook's current VBA. It never constructs an `ExecutedSourceIndex`, never inspects the
 current project source for navigation, and always omits every optional source
 location, whether the working source is clean, dirty, changed, or absent. Each
 completed no-build invocation emits exactly one fixed non-failing warning:
@@ -77,3 +77,25 @@ runnable, but procedure discovery and navigation are not committed. Test Run
 output receives a non-failing stale-source warning without a popup, and a later
 run may create a fresh discovery snapshot. The initial implementation does not
 attempt per-file partial reuse.
+
+## Issue #449 follow-up: execution target and current-VBA navigation
+
+The source snapshot is input capture, not an execution workbook. Ordinary and
+snapshot Test import their exact admitted generation into manifest `templatePath`
+and execute there without tool-initiated Save. CLI/Command Palette uses saved disk
+sources; default Test Explorer retains participating dirty editor inputs and the
+frozen authoring-origin projection. The declaration ranges identify the verified
+import generation, not a later disk read or a separate bin artifact.
+
+No-build runs current live VBE code when the source workbook is open, or its saved
+code when closed, without importing external editor changes. Therefore it remains
+locationless regardless of clean/dirty external editors. The fixed public warning
+above is unchanged: an existing source workbook still has no proved external
+source capture. No-build also cannot clear source-analysis Problems or publish
+stale navigation from an earlier imported run. Workbook-owned outcomes remain
+available while the source/workbook lifetime follows ADR 0026's #449 follow-up.
+
+NDJSON `1.2` and the optional location shape are unchanged. Source-workbook Test
+requires `test.sourceWorkbook: 1.0` in addition to its unchanged result schema;
+snapshot Test uses the seven-feature CLI projection described in ADR 0026.
+Debug's exact five-feature adapter dependency declaration is unchanged.

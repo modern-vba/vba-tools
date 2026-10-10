@@ -18,6 +18,7 @@ internal sealed class ExcelComWorkbookBuildSession :
     private readonly ExcelComWorkbookSession session;
     private readonly Action? beforeNativeSave;
     private readonly Action? afterNativeSave;
+    private readonly Action? beforeNativeTest;
     private readonly List<(VbeImportVerification Expected, string ImportedComponentName)>
         pendingImportVerifications = [];
 
@@ -28,11 +29,13 @@ internal sealed class ExcelComWorkbookBuildSession :
     public ExcelComWorkbookBuildSession(
         ExcelComWorkbookSession session,
         Action? beforeNativeSave = null,
-        Action? afterNativeSave = null)
+        Action? afterNativeSave = null,
+        Action? beforeNativeTest = null)
     {
         this.session = session;
         this.beforeNativeSave = beforeNativeSave;
         this.afterNativeSave = afterNativeSave;
+        this.beforeNativeTest = beforeNativeTest;
     }
 
     /// <summary>
@@ -738,7 +741,10 @@ internal sealed class ExcelComWorkbookBuildSession :
     internal void ReleaseBorrowed() => session.ReleaseBorrowed();
 
     public IReadOnlyList<WorkbookTestResultRow> RunTests(WorkbookTestSelector selector)
-        => ExcelComWorkbookTestRunner.RunTests(session, selector);
+    {
+        beforeNativeTest?.Invoke();
+        return ExcelComWorkbookTestRunner.RunTests(session, selector);
+    }
 
     internal void DisposeOwnedGeneration(TimeSpan cleanupGrace)
         => session.DisposeOwnedGeneration(cleanupGrace);

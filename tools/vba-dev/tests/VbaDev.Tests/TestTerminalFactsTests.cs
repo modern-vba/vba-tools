@@ -88,15 +88,25 @@ public sealed class TestTerminalFactsTests
         Assert.Equal(category == "process-release" ? OwnedProcessReleaseProof.Unproven
             : OwnedProcessReleaseProof.ProvenOrNotStarted, result.OwnedProcessReleaseProof);
         Assert.Contains(stage.Description, result.StandardError, StringComparison.Ordinal);
-        if (category != "process-release")
+        var expectedPrimary = (category == "com"
+            ? CommandErrorMessages.ExcelComAutomationFailed("test", error)
+            : error.Message) + Environment.NewLine;
+        var hasUnprovedRelease = category is "process-release" or "dispatcher";
+        if (hasUnprovedRelease)
         {
-            Assert.Equal((category == "com"
-                ? CommandErrorMessages.ExcelComAutomationFailed(phase == "preparation" ? "build" : "test", error)
-                : error.Message) + Environment.NewLine, result.StandardError);
+            Assert.StartsWith(expectedPrimary, result.StandardError, StringComparison.Ordinal);
+            Assert.Contains(category == "process-release" ? "Excel process release" : "STA retirement",
+                result.StandardError, StringComparison.Ordinal);
+            Assert.Contains(mode == "no-build" ? "No import or recovery staging was allocated"
+                : "staging were retained", result.StandardError, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Equal(expectedPrimary, result.StandardError);
         }
         Assert.Equal(phase == "execution", runnerReached);
         Assert.True(File.Exists(Path.Combine(fixture.SnapshotPath, "Test_Module.bas")));
-        if (mode == "snapshot" && category == "process-release")
+        if (mode == "snapshot" && hasUnprovedRelease)
         {
             var retained = Assert.Single(Directory.GetDirectories(fixture.ScratchRoot));
             Assert.Contains(retained, result.StandardError, StringComparison.OrdinalIgnoreCase);
@@ -133,7 +143,7 @@ public sealed class TestTerminalFactsTests
         Assert.Equal(scenario == "caller-cancellation" ? 130 : 1, result.ExitCode);
         Assert.Empty(result.StandardOutput);
         Assert.Equal((scenario == "caller-cancellation"
-            ? "Workbook automation was cancelled during the active test stage."
+            ? "Workbook automation was cancelled during source Test preparation or execution."
             : error.Message) + Environment.NewLine, result.StandardError);
         Assert.Equal(OwnedProcessReleaseProof.ProvenOrNotStarted, result.OwnedProcessReleaseProof);
         Assert.Equal("previous-bin", File.ReadAllText(fixture.Context.BinDocumentPath, Encoding.UTF8));
@@ -212,7 +222,7 @@ public sealed class TestTerminalFactsTests
         Assert.Empty(runner.Workbooks);
         var retained = Assert.Single(Directory.GetDirectories(fixture.ScratchRoot));
         Assert.Contains(retained, result.StandardError, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(failure == "cancel" ? "snapshot test preparation" : "Primary capture",
+        Assert.Contains(failure == "cancel" ? "source Test preparation or execution" : "Primary capture",
             result.StandardError, StringComparison.Ordinal);
         Assert.Contains("workspace could not be removed", result.StandardError, StringComparison.Ordinal);
         Assert.Single(cleanup.WorkspacePaths);
@@ -302,8 +312,10 @@ public sealed class TestTerminalFactsTests
         {
             var retained = Assert.Single(Directory.GetDirectories(fixture.ScratchRoot));
             Assert.Contains(retained, result.StandardError, StringComparison.OrdinalIgnoreCase);
-            Assert.True(File.Exists(Path.Combine(retained, "Book1.xlsm")));
+            Assert.Empty(Directory.EnumerateFiles(retained, "*.xlsm", SearchOption.AllDirectories));
         }
+        Assert.Equal("template", File.ReadAllText(fixture.Context.TemplateDocumentPath, Encoding.UTF8));
+        Assert.Equal("previous-bin", File.ReadAllText(fixture.Context.BinDocumentPath, Encoding.UTF8));
     }
 
     private sealed record Fixture(VbaDevCommandLine Application, TestCommand Command,
@@ -340,10 +352,12 @@ public sealed class TestTerminalFactsTests
         var snapshot = temp.CreateDirectory("caller-snapshot");
         File.WriteAllText(Path.Combine(snapshot, "Test_Module.bas"), module, new UTF8Encoding(false));
         var scratch = temp.CreateDirectory("snapshot-test-scratch");
+        var selectedGeneration = generation ?? new FakeWorkbookGenerationAutomation();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(root,
-            workbookGenerationAutomation: generation ?? new FakeWorkbookGenerationAutomation(),
+            workbookGenerationAutomation: selectedGeneration,
             workbookTestRunner: runner,
-            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty);
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
+            sourceWorkbookAutomation: new SourceWorkbookTestAutomation(selectedGeneration, runner));
         var command = new TestCommand(composition.BuildCommand, runner,
             new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratch,

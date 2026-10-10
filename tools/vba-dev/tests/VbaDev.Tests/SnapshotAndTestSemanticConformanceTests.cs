@@ -57,7 +57,8 @@ public sealed class SnapshotAndTestSemanticConformanceTests
         var application = CommandLineTestFactory.Create(project,
             workbookGenerationAutomation: automation,
             workbookTestRunner: runner,
-            projectSemanticInputProvider: new LiteralSemanticInputProvider(ReadInputs(corpus)));
+            projectSemanticInputProvider: new LiteralSemanticInputProvider(ReadInputs(corpus)),
+            sourceWorkbookAutomation: new SourceWorkbookTestAutomation(automation, runner));
         string[] arguments = route switch
         {
             "snapshot-build" => ["build", "--source-snapshot", sourceRoot, "--output", output],
@@ -86,12 +87,22 @@ public sealed class SnapshotAndTestSemanticConformanceTests
         {
             Assert.Equal(0, result.ExitCode);
             Assert.Empty(result.StandardError);
-            var stagingWorkbook = Assert.Single(automation.OpenedWorkbooks);
-            Assert.False(File.Exists(stagingWorkbook));
+            var operatedWorkbook = Assert.Single(automation.OpenedWorkbooks);
+            if (test)
+            {
+                Assert.Equal(template, operatedWorkbook);
+                Assert.True(File.Exists(operatedWorkbook));
+            }
+            else
+            {
+                Assert.False(File.Exists(operatedWorkbook));
+            }
             Assert.Equal(1, automation.VerifyCalls);
-            Assert.Equal(1, automation.SaveCalls);
+            Assert.Equal(test ? 0 : 1, automation.SaveCalls);
             Assert.Equal(sourcePaths.Keys.Order(StringComparer.Ordinal),
-                automation.ImportedSources.Select(source => Path.GetFileName(source.SourcePath)).Order(StringComparer.Ordinal));
+                automation.ImportedSources.Select(source => Path.GetFileName(source.DiagnosticSourcePath)).Order(StringComparer.Ordinal));
+            Assert.Equal(sourcePaths.Values.Order(StringComparer.Ordinal),
+                automation.ImportedSources.Select(source => source.DiagnosticSourcePath).Order(StringComparer.Ordinal));
             Assert.All(automation.ImportedSources, source => Assert.False(File.Exists(source.SourcePath)));
             if (test)
             {
@@ -103,19 +114,11 @@ public sealed class SnapshotAndTestSemanticConformanceTests
                     events.Select(item => item.GetProperty("type").GetString()));
                 Assert.Equal("passed", events[^1].GetProperty("outcome").GetString());
                 Assert.Equal(0, events[^1].GetProperty("total").GetInt32());
-                if (snapshot)
-                {
-                    Assert.NotEqual(bin, testedWorkbook);
-                    Assert.Equal("Book1.xlsm", Path.GetFileName(testedWorkbook));
-                    Assert.False(File.Exists(testedWorkbook));
-                    AssertFilesUnchanged(originalFiles);
-                }
-                else
-                {
-                    Assert.Equal(bin, testedWorkbook);
-                    Assert.Equal(originalFiles[template], File.ReadAllBytes(bin));
-                    AssertFilesUnchanged(originalFiles, bin);
-                }
+                Assert.Equal(template, testedWorkbook);
+                Assert.NotEqual(bin, testedWorkbook);
+                Assert.Equal("Book1.xlsm", Path.GetFileName(testedWorkbook));
+                Assert.True(File.Exists(testedWorkbook));
+                AssertFilesUnchanged(originalFiles);
             }
             else
             {

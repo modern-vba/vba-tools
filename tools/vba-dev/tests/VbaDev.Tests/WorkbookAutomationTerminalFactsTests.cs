@@ -6,6 +6,37 @@ namespace VbaDev.Tests;
 
 public sealed class WorkbookAutomationTerminalFactsTests
 {
+    [Fact]
+    public void ProvedProcessAndDispatcherReleaseCannotEraseIndependentReaderReleaseUncertainty()
+    {
+        var stage = new WorkbookAutomationStage(WorkbookAutomationStageKind.TestExecution);
+        var primary = new WorkbookAutomationCanceledException(stage, CancellationToken.None);
+        var sheetRelease = new InvalidOperationException("Sheet release failed");
+        var worksheetsRelease = new InvalidOperationException("Worksheets release failed");
+        var reader = new WorkbookAutomationComReferenceReleaseException(primary,
+            [new("result worksheet", sheetRelease), new("workbook worksheets", worksheetsRelease)]);
+        var released = new WorkbookAutomationReleasedProcessCleanupException("Exact process release proved", reader);
+        ((IWorkbookAutomationLifecycleFailure)released).LifecycleEvidence = new(stage, true, true, false);
+
+        var facts = WorkbookAutomationTerminalFacts.Analyze(released);
+
+        Assert.False(facts.ComReferenceReleaseProven);
+        Assert.True(facts.ProcessReleaseProven);
+        Assert.True(facts.DispatcherRetired);
+        Assert.False(facts.HasUnprovedLifecycle);
+        Assert.Equal(WorkbookAutomationDisposition.Failed, facts.Disposition);
+        Assert.Contains(facts.Failures, failure =>
+            failure.Category == WorkbookAutomationFailureCategory.UnprovedComReferenceRelease
+            && ReferenceEquals(failure.Error, reader));
+        Assert.Same(primary, reader.OperationError);
+        var causes = Assert.IsType<AggregateException>(reader.InnerException).InnerExceptions;
+        Assert.Same(primary, causes[0]);
+        Assert.Same(sheetRelease, causes[1]);
+        Assert.Same(worksheetsRelease, causes[2]);
+        Assert.Equal(["result worksheet", "workbook worksheets"],
+            reader.ReleaseFailures.Select(failure => failure.ReferenceName));
+    }
+
     [Theory]
     [InlineData("typed-cancellation")]
     [InlineData("caller-requested-cancellation")]

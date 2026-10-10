@@ -4,6 +4,14 @@ status: accepted
 
 # Run tests from command-owned snapshot workbooks
 
+Issue #449 supersedes only this ADR's execution-workbook/output-generation
+decision. Production Test now imports into and executes the exact selected source
+workbook without tool-initiated Save. The historical decision below explains the
+former execution-copy route; the [#449 follow-up](#issue-449-follow-up-source-workbook-test)
+is authoritative for the current execution target and lifetime. Snapshot capture,
+encoding, provenance, optional locations, cancellation and caller cleanup
+principles remain applicable.
+
 `vba-dev test` accepts an optional caller-owned complete source directory through
 `--source-snapshot <snapshot-directory>`. It uses the same recursive source
 inventory, flat exported-file identity, form-sidecar, byte-preservation, and
@@ -148,3 +156,69 @@ the `vba-dev` process exits. It applies bounded deletion retries. If only that
 post-exit deletion still fails, it reports the retained absolute path in Test
 Run output as a housekeeping warning and does not change the completed test
 states, CLI-derived run outcome, or error-notification behavior.
+
+## Issue #449 follow-up: source-workbook Test
+
+Ordinary, snapshot and no-build Test all run manifest `templatePath`, normally
+`src/<document>/<document>.xlsm`. Neither production route generates bin output
+or a disposable execution workbook. `SnapshotTestExecutionWorkspace` is a legacy
+execution-copy abstraction, not the current production route. Source snapshots
+remain immutable input captures, with the byte admission, ACP projection,
+UserForm pairing and original-URI provenance specified above.
+
+Ordinary CLI/Command Palette Test imports admitted saved disk sources. Default
+Test Explorer captures the complete selected document, including participating
+dirty editors, and imports those captured bytes into the same source workbook.
+Neither saves editors. `BuildFirst` now means admission, required source analysis,
+reference normalization and verified import, not ordinary Build's Save or output
+commitment. Debug's separate pre-launch analysis exemption does not apply to Test.
+`--source-snapshot` remains incompatible with `--no-build`, and Test still has no
+`--output` option.
+
+An already-open source workbook is borrowed in its exact Excel process and keeps
+its displayed window. Release closes automation handles and retires their STA,
+not the workbook or user's process; Test never hides, quits or force-kills it.
+A closed source file opens hidden in an owned lifetime and closes with
+`SaveChanges=false`. No preparation, execution or cleanup stage initiates Save.
+Remaining unsaved import/test changes are discarded only for the newly opened
+hidden workbook. Test VBA can explicitly save, alter workbook/code state or
+perform external side effects; these are not suppressed or guaranteed reversible.
+
+An already-open unsaved workbook requires one explicit confirmation before import
+or execution. Normal/snapshot consent explains live code replacement and possible
+test-time changes; no-build consent is execution-only and states that no external
+source is imported. Direct CLI defaults `--interactive` to true and asks terminal
+`[y/N]`; EOF or no affirmative answer declines. Explicit `--interactive false`
+never waits or approves: required consent fails before import or Run. There is no
+interactive-mode detection or CLI GUI dialog. Managed callers with UI callbacks
+use true plus the declared `stdin-v1` transport and a schema-`1.0`, request-ID-bound
+confirmation; absent callbacks use false. Cancellation and late/duplicate replies
+cannot authorize a different or already-ended invocation.
+
+Before replacement, existing modules, UserForm sidecars and references are
+captured. Preparation/import failure or cancellation attempts recovery of a
+borrowed workbook without Save, reporting and retaining incomplete recovery.
+A newly opened file instead closes without saving. Once VBA may have begun, Test
+does not claim rollback of its effects or replay execution. Owned release and STA
+retirement remain necessary terminal proofs before dependent scratch cleanup;
+unproved release retains scratch and is an infrastructure failure, not an
+assertion result. Caller snapshot deletion remains after child close and its
+isolated deletion failure remains a housekeeping warning.
+
+No-build imports, captures and analyzes no external source. It runs current live
+VBE state when open or the saved source workbook state when closed. It creates no
+`ExecutedSourceIndex`, emits no optional locations even for clean editors, and
+preserves the fixed non-failing completed-run warning in ADR 0023. Normal and
+snapshot runs derive navigation only from the exact source admission used for
+their verified import; later source changes cannot redefine that generation.
+Document-revision staleness and original-URI projection rules remain unchanged.
+
+Test NDJSON `1.2`, sourceAnalysis `3.0`, snapshot features `2.0` and result identity
+are unchanged. `test.sourceWorkbook: 1.0` distinguishes the execution semantics.
+Snapshot Test's projected CLI matrix now has seven entries:
+`build.sourceSnapshot: 2.0`, `build.sourceSnapshotAnalysis: 1.0`,
+`test.sourceSnapshot: 2.0`, `test.sourceWorkbook: 1.0`,
+`invocation.stdinCancellation: 1.0`, `invocation.stdinWorkbookConfirmation: 1.0`,
+and `sourceSnapshot.activeWindowsCodePage: 1.0`, with Test schema `1.2`.
+Debug's exact five-entry adapter dependency map is unchanged. Publish, explicit
+snapshot-output Build and standalone Import remain outside this follow-up.

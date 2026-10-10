@@ -83,8 +83,9 @@ internal static class CommandLineTestFactory
             projectSemanticInputProvider: projectSemanticInputProvider ?? new FakeProjectSemanticInputProvider(vbaProjectReferenceResolver),
             persistSourceAnalysisFailureEvidence: false,
             sourceWorkbookAutomation: sourceWorkbookAutomation ??
-                (workbookGenerationAutomation is null ? null :
-                    new SourceWorkbookTestAutomation(workbookGenerationAutomation)));
+                (workbookGenerationAutomation is null && workbookTestRunner is null ? null :
+                    new SourceWorkbookTestAutomation(workbookGenerationAutomation
+                        ?? new FakeWorkbookGenerationAutomation(), workbookTestRunner)));
         return generatingExecutablePath is null
             ? VbaDevCommandLine.Create(composition)
             : VbaDevCommandLine.Create(composition, generatingExecutablePath);
@@ -93,7 +94,8 @@ internal static class CommandLineTestFactory
 
 /// <summary>Adapts the external Excel test double without restoring legacy Build routing.</summary>
 internal sealed class SourceWorkbookTestAutomation(
-    IWorkbookGenerationAutomation automation) : ISourceWorkbookAutomation
+    IWorkbookGenerationAutomation automation,
+    IWorkbookTestRunner? testRunner = null) : ISourceWorkbookAutomation
 {
     public Task<TResult> RunAsync<TResult>(
         string workbookPath,
@@ -104,12 +106,16 @@ internal sealed class SourceWorkbookTestAutomation(
         if (!File.Exists(workbookPath))
             throw new FileNotFoundException($"The source workbook was not found: {workbookPath}", workbookPath);
         return automation.RunAsync(workbookPath, timeouts,
-            (session, token) => operation(new SourceWorkbookTestSession(session), token),
+            (session, token) => operation(new SourceWorkbookTestSession(session, workbookPath,
+                timeouts, testRunner), token),
             cancellationToken);
     }
 
     private sealed class SourceWorkbookTestSession(
-        IWorkbookGenerationSession session) : ISourceWorkbookSession
+        IWorkbookGenerationSession session,
+        string workbookPath,
+        WorkbookAutomationTimeouts timeouts,
+        IWorkbookTestRunner? testRunner) : ISourceWorkbookSession, IWorkbookTestExecutionSession
     {
         private readonly HashSet<string> removed = new(StringComparer.OrdinalIgnoreCase);
         private readonly List<WorkbookModule> imported = [];
@@ -117,6 +123,14 @@ internal sealed class SourceWorkbookTestAutomation(
         public bool WasAlreadyOpen => false;
 
         public SourceWorkbookSaveState SaveState { get; private set; }
+
+        public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
+            WorkbookTestSelector selector, TimeSpan executionTimeout, CancellationToken cancellationToken)
+            => testRunner is not null
+                ? testRunner.RunTestsAsync(workbookPath, selector, executionTimeout, timeouts, cancellationToken)
+                : session is IWorkbookTestExecutionSession tests
+                    ? tests.RunTestsAsync(selector, executionTimeout, cancellationToken)
+                    : throw new NotSupportedException("The test double lacks a bound test execution session.");
 
         public Task<bool> IsSavedAsync(CancellationToken cancellationToken)
         {

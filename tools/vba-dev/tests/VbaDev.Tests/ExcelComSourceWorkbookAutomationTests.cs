@@ -1,3 +1,4 @@
+using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
 using VbaDev.Infrastructure.Workbooks;
@@ -7,6 +8,125 @@ namespace VbaDev.Tests;
 
 public sealed class ExcelComSourceWorkbookAutomationTests
 {
+    [Fact]
+    public async Task TimedOutBorrowedTestRetainsLateReaderReleaseFailureAfterStaRetirement()
+    {
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var readFailure = new InvalidDataException("Late result read failed");
+        var readerFailure = new WorkbookAutomationComReferenceReleaseException(readFailure,
+            [new("result cell", new InvalidOperationException("Late result-cell release failed"))]);
+        var workbook = new RecordingWorkbookBuildSession
+        {
+            OnRunTests = () =>
+            {
+                entered.Set();
+                if (!release.Wait(TimeSpan.FromSeconds(5)))
+                    throw new TimeoutException("Fixture did not release the bounded Test call.");
+                throw readerFailure;
+            }
+        };
+        var binding = new SourceWorkbookBorrowedBinding(workbook, () => workbook.IsSaved,
+            () => workbook.Releases++);
+        var automation = new ExcelComSourceWorkbookAutomation(new StaComDispatcherFactory(),
+            new RecordingSourceWorkbookOpenLocator(binding), new UnexpectedClosedSourceAutomation());
+        WorkbookAutomationTimeoutException? originalTimeout = null;
+        try
+        {
+            var error = await Assert.ThrowsAnyAsync<Exception>(() => automation.RunAsync(
+                "C:\\project\\src\\Book1\\Book1.xlsm", WorkbookAutomationTimeouts.Default,
+                async (session, token) =>
+                {
+                    var pending = ((IWorkbookTestExecutionSession)session).RunTestsAsync(
+                        new WorkbookTestSelector("Test_Source", "Test_BoundWorkbook"),
+                        TimeSpan.FromMilliseconds(50), token);
+                    Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+                    try { return await pending; }
+                    catch (WorkbookAutomationTimeoutException timeout)
+                    {
+                        originalTimeout = timeout;
+                        release.Set();
+                        throw;
+                    }
+                }, CancellationToken.None));
+
+            var facts = WorkbookAutomationTerminalFacts.Analyze(error);
+            Assert.Contains(facts.Failures, failure => ReferenceEquals(failure.Error, readerFailure));
+            Assert.NotNull(originalTimeout);
+            Assert.Contains(facts.Failures, failure => ReferenceEquals(failure.Error, originalTimeout));
+            Assert.StartsWith(originalTimeout.Message, error.Message, StringComparison.Ordinal);
+            Assert.False(facts.ComReferenceReleaseProven);
+            Assert.True(facts.ProcessReleaseProven);
+            Assert.True(facts.DispatcherRetired);
+            Assert.Equal(1, workbook.TestCalls);
+            Assert.Equal(1, workbook.Releases);
+            Assert.Equal(0, workbook.SaveCalls);
+        }
+        finally
+        {
+            release.Set();
+        }
+    }
+
+    [Fact]
+    public async Task BorrowedReferenceReleaseFailureDoesNotInventProcessOrDispatcherUncertainty()
+    {
+        var workbook = new RecordingWorkbookBuildSession();
+        var releaseFailure = new WorkbookAutomationComReferenceReleaseException(null,
+            [new("borrowed workbook", new InvalidOperationException("Workbook release failed"))]);
+        var binding = new SourceWorkbookBorrowedBinding(workbook, () => workbook.IsSaved, () =>
+        {
+            workbook.Releases++;
+            throw releaseFailure;
+        });
+        var automation = new ExcelComSourceWorkbookAutomation(new StaComDispatcherFactory(),
+            new RecordingSourceWorkbookOpenLocator(binding), new UnexpectedClosedSourceAutomation());
+
+        var error = await Assert.ThrowsAnyAsync<Exception>(() => automation.RunAsync(
+            "C:\\project\\src\\Book1\\Book1.xlsm", WorkbookAutomationTimeouts.Default,
+            async (session, token) => await ((IWorkbookTestExecutionSession)session).RunTestsAsync(
+                new WorkbookTestSelector(), TimeSpan.FromSeconds(42), token), CancellationToken.None));
+
+        var facts = WorkbookAutomationTerminalFacts.Analyze(error);
+        Assert.True(facts.ProcessReleaseProven);
+        Assert.True(facts.DispatcherRetired);
+        Assert.False(facts.ComReferenceReleaseProven);
+        Assert.False(facts.HasUnprovedLifecycle);
+        Assert.Equal(WorkbookAutomationDisposition.Failed, facts.Disposition);
+        Assert.Contains(facts.Failures, failure => ReferenceEquals(failure.Error, releaseFailure));
+        Assert.Equal(1, workbook.TestCalls);
+        Assert.Equal(1, workbook.Releases);
+        Assert.Equal(0, workbook.SaveCalls);
+    }
+
+    [Fact]
+    public async Task AlreadyOpenSourceTestsRunOnTheBoundWorkbookWithoutSavingOrReopening()
+    {
+        var workbook = new RecordingWorkbookBuildSession();
+        var binding = new SourceWorkbookBorrowedBinding(workbook, () => workbook.IsSaved,
+            () => workbook.Releases++);
+        var locator = new RecordingSourceWorkbookOpenLocator(binding);
+        var automation = new ExcelComSourceWorkbookAutomation(
+            new StaComDispatcherFactory(), locator, new UnexpectedClosedSourceAutomation());
+        var selector = new WorkbookTestSelector("Test_Source", "Test_BoundWorkbook");
+
+        var rows = await automation.RunAsync(
+            "C:\\project\\src\\Book1\\Book1.xlsm", WorkbookAutomationTimeouts.Default,
+            async (session, token) =>
+            {
+                Assert.True(session.WasAlreadyOpen);
+                var tests = Assert.IsAssignableFrom<IWorkbookTestExecutionSession>(session);
+                return await tests.RunTestsAsync(selector, TimeSpan.FromSeconds(42), token);
+            }, CancellationToken.None);
+
+        Assert.Equal([new WorkbookTestResultRow("Test_Source", "Test_BoundWorkbook", "OK", "")], rows);
+        Assert.Equal(1, workbook.TestCalls);
+        Assert.Same(selector, workbook.TestSelector);
+        Assert.Equal(0, workbook.SaveCalls);
+        Assert.Equal(1, workbook.Releases);
+        Assert.Equal("C:\\project\\src\\Book1\\Book1.xlsm", locator.SelectedPath);
+    }
+
     [Fact]
     public async Task AlreadyOpenSourceWorkbookIsSavedWithoutClosingItsExcelSession()
     {
@@ -224,7 +344,7 @@ public sealed class ExcelComSourceWorkbookAutomationTests
             => throw new Xunit.Sdk.XunitException("The already-open workbook must not be opened again.");
     }
 
-    private sealed class RecordingWorkbookBuildSession : IWorkbookBuildSession
+    private sealed class RecordingWorkbookBuildSession : IWorkbookBuildSession, IExcelComWorkbookTestSession
     {
         public bool FailSave { get; init; }
 
@@ -234,9 +354,15 @@ public sealed class ExcelComSourceWorkbookAutomationTests
 
         public Action? OnGetModules { get; init; }
 
+        public Action? OnRunTests { get; init; }
+
         public bool IsSaved { get; private set; }
 
         public int SaveCalls { get; private set; }
+
+        public int TestCalls { get; private set; }
+
+        public WorkbookTestSelector? TestSelector { get; private set; }
 
         public int Releases { get; set; }
 
@@ -260,6 +386,14 @@ public sealed class ExcelComSourceWorkbookAutomationTests
 
         public VbeImportVerificationReport VerifyImportedModules()
             => VbeImportVerificationReport.Empty;
+
+        public IReadOnlyList<WorkbookTestResultRow> RunTests(WorkbookTestSelector selector)
+        {
+            TestCalls++;
+            TestSelector = selector;
+            OnRunTests?.Invoke();
+            return [new WorkbookTestResultRow(selector.ModuleName!, selector.ProcedureName!, "OK", "")];
+        }
 
         public void Save()
         {

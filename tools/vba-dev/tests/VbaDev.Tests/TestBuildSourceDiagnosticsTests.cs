@@ -69,7 +69,7 @@ public sealed class TestBuildSourceDiagnosticsTests
         var noBuild = await app.RunAsync(["test", "--no-build", "--format", "ndjson"]);
         Assert.Equal(0, noBuild.ExitCode);
         Assert.Equal(1, macros);
-        Assert.Equal(bin, Assert.Single(runner.Workbooks));
+        Assert.Equal(template, Assert.Single(runner.Workbooks));
         Assert.DoesNotContain("sourceAnalysis", noBuild.StandardError, StringComparison.Ordinal);
         Assert.DoesNotContain("\"location\"", noBuild.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("without a proved source capture", noBuild.StandardError, StringComparison.Ordinal);
@@ -83,8 +83,11 @@ public sealed class TestBuildSourceDiagnosticsTests
         Assert.DoesNotContain("sourceAnalysis", succeeded.StandardOutput, StringComparison.Ordinal);
         Assert.DoesNotContain("sourceAnalysis", succeeded.StandardError, StringComparison.Ordinal);
         Assert.Equal(new WorkbookTestSelector("Test_Module", "Test_Passes"), runner.Selectors[^1]);
+        Assert.All(runner.Workbooks, path => Assert.Equal(template, path));
+        Assert.All(automation.OpenedWorkbooks, path => Assert.Equal(template, path));
+        Assert.Equal(0, automation.SaveCalls);
         Assert.Equal(bytes[template], File.ReadAllBytes(template));
-        if (snapshot) Assert.Equal(bytes[bin], File.ReadAllBytes(bin));
+        Assert.Equal(bytes[bin], File.ReadAllBytes(bin));
     }
 
     [Theory]

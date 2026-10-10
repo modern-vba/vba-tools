@@ -150,11 +150,13 @@ between Build and Publish on the single `VbaDevCommandGrammar` graph. It owns
 the leaf's descriptions, symbols, static completion, grammar rules, accepted
 explicit formats, closed command-intent binding, action connection, and
 capability registration. One cached command intent contains an independent
-closed source intent for persistent build, source-snapshot build, or existing-
-workbook no-build, and a closed selector intent for all tests, one module, or
+closed source intent for saved-source preparation, source-snapshot preparation,
+or current-source-workbook no-build, and a closed selector intent for all tests, one module, or
 one procedure with its module. Manifest format and timeout defaults remain
 Application concerns after project resolution; the family action projects the
 closed cases to the established Application and workbook-runner contracts.
+`--interactive` defaults to true; explicit false refuses required unsaved-workbook
+consent without waiting. No terminal/GUI auto-detection changes that policy.
 _Avoid_: Boolean CLI source mode, nullable CLI selector pair, Application option parsing, second command root
 
 **VbaDevReferenceCommandFamily**:
@@ -552,10 +554,10 @@ also consume these facts through their shared output-command owner, retaining
 existing validation, warnings, output text, recovery, and atomic commitment.
 Ordinary and snapshot Test use the same facts for preparation and execution.
 Without a completed result, cancellation is `130` only after both release proofs;
-unproved process release is `1` and retains the dependent snapshot workspace.
+unproved process release is `1` and retains dependent import/recovery scratch.
 Completed test outcomes, NDJSON order, and source-location warnings remain Test's
 authority and survive later cancellation. Preparation errors and independent
-workspace-cleanup warnings remain separate evidence. Manifest-selected and
+caller snapshot-cleanup warnings remain separate evidence. Manifest-selected and
 explicit Export share one terminal-fact projection and preserve their destination
 replacement, recovery, and commitment policy. Cancellation after completed
 destination commitment cannot undo the export. Remaining command surfaces
@@ -772,10 +774,10 @@ materialization but does not own the caller's directory. Snapshot Build pairs
 subtree and every manifest document's `DocumentSourceSet`, and distinct from the
 resolved `vba-project.json` and every document's source template, bin workbook,
 and publish workbook; neither option is valid alone, and the caller owns a
-successful output. Snapshot Test accepts
-`--source-snapshot` without `--output`; its workbook remains inside the
-command-owned `SnapshotTestExecutionWorkspace` and is removed with that
-workspace.
+successful output. Snapshot Test accepts `--source-snapshot` without `--output`
+as input capture for verified import into the exact manifest-selected source
+workbook. It does not create an execution copy or initiate Save; the caller's
+directory remains caller-owned. See `SourceWorkbookTestCommand`.
 Before Excel starts, `VbaDev` compares case-insensitive, filesystem-canonical
 path identities, including reparse-point aliases, and fails when it cannot
 establish that the output is safe. Any other caller-owned target, including an
@@ -799,12 +801,12 @@ mirror never changes caller-owned bytes. Its exact owned copies are eligible for
 command scratch cleanup only after the consuming workbook automation is proved
 released and its STA dispatcher retired. Owned generation additionally requires
 its Excel process to be proved released; a borrowed user's process stays open.
-Source-workbook Build uses a flat mirror of GUID-prefixed invocation-owned files
+Source-workbook Build and prepared Test use a flat mirror of GUID-prefixed invocation-owned files
 under a stable shared parent that it never deletes. Only parser-proven UserForm
 designer resource filenames are rewritten to their prefixed `.frx` basenames;
 code, unrelated literals, component identity and binary sidecar bytes do not
 change. Its cleanup targets only exact owned files, not the parent or files from
-other invocations. Publish, explicit Import and legacy Test/snapshot generation
+other invocations. Publish, explicit Import and explicit snapshot-output generation
 retain their existing invocation-owned directory mirror and cleanup policy.
 For explicit Import, project Build and Publish, and snapshot Build/Test, it
 consumes the admission's final source order, Unicode, fixed ACP, and captured
@@ -837,41 +839,63 @@ remain ordinal-exact and fail closed. This is not `CasingNormalization`.
 _Avoid_: case-insensitive line comparison, component recasing, source formatting
 
 **SnapshotTestExecutionWorkspace**:
-The command-owned temporary directory created only by
-`vba-dev test --source-snapshot`. It coordinates the invocation-fixed source
-capture and contains a test workbook whose file name matches the
-manifest-defined bin workbook. The build stage passes that capture and its
-immutable admission facts to the closed `SourceSnapshotBuild` intent. Test
-execution opens exactly the committed artifact returned by that intent and
-does not perform an independent build. The returned materialization result pairs
-that artifact with the exact admission from which `TestCommand` creates its
-`ExecutedSourceIndex`. The test command consumes and removes the workspace after
-releasing owned Excel processes on success, failed assertions, command failure,
-and cancellation; it never owns the caller's snapshot directory or mutates
-persistent bin output. Failure to prove
-owned-process release is a command-level infrastructure error even when
-cancellation was observed, and retains the dependent workspace. Test consumes
-shared terminal facts for preparation and execution; neither those facts nor
-scratch cleanup determines workbook-owned assertion outcomes. After release is
-proved, the workspace composes its create-only GUID/root source-container
-receipts, the nested source capture's immutable cleanup evidence, and the exact
-workbook receipt captured at the successful materialization handoff before
-execution. `InvocationScratch` performs bounded file-first, deepest-directory
-cleanup; the workspace never recursively deletes or adopts a later path occupant.
-The nested capture remains in the workspace ledger even after its source input
-is transferred to the materializer. Missing owned content counts as removed;
-changed, replaced, linked, reparse, foreign, or unproved content is preserved.
-Retained or inconclusive evidence is combined into stable absolute paths and
-reported as a warning without changing individual test outcomes, NDJSON ordering,
-or the test-result exit status. The command closes ownership resources without
-dependent deletion when process release is unproved. Shared scratch containers,
-caller source, and persistent bin output are never adopted into the ledger.
+The command-owned temporary ownership ledger for invocation-fixed snapshot
+inputs. Its historical name comes from the execution-copy route described in
+ADR 0026; Issue #449 supersedes that route and reuses the abstraction only for
+source input capture and cleanup. Production snapshot Test does not create,
+copy, register or execute a workbook in this directory. Its legacy
+`WorkbookPath` is a validated layout reservation, not the current execution
+target. `SourceWorkbookTestCommand` runs the exact manifest source workbook
+outside this ledger with a separate no-Save lifetime. Normal saved-source Test
+and `--no-build` do not create this snapshot input ledger.
+The ledger contains create-only GUID/root source-container receipts and the
+nested capture's immutable cleanup evidence. The nested capture remains in the
+ledger after its source input is transferred to the materializer; encoding and
+provenance stay tied to that admitted capture. After automation release and STA
+retirement are proved, `InvocationScratch` performs bounded file-first,
+deepest-directory cleanup. It never recursively deletes or adopts a later path
+occupant. Missing owned content counts as removed; changed, replaced, linked,
+reparse, foreign or unproved content is preserved. Retained or inconclusive file
+cleanup is reported with stable absolute paths as a warning without changing
+individual test outcomes, NDJSON ordering or the test-result exit status.
+Unproved automation release or STA retirement retains dependent input scratch
+and is an infrastructure failure, including during cancellation. Shared scratch
+containers, the caller's snapshot directory, the actual source workbook,
+persistent source files and legacy bin output are never adopted into the ledger.
+Caller-owned snapshot cleanup remains a separate post-command-close obligation.
 _Avoid_: BuildSourceSnapshot, caller-selected build output, persistent bin directory
+
+**SourceWorkbookTestCommand**:
+The VbaDev-owned operation that prepares and runs tests in the exact manifest
+`templatePath`, conventionally `src/<document>/<document>.xlsm`, without
+tool-initiated Save or bin/output generation. CLI and Command Palette import
+admitted saved disk sources; default Test Explorer imports its complete captured
+generation including participating dirty editors. Normal/snapshot preparation
+retains the required source-analysis/admission gate; `BuildFirst` means this
+verified import, not ordinary Build's Save. An already-open workbook is borrowed
+in its exact process with its displayed window retained and no close/quit/kill;
+a closed file opens hidden and closes without saving. Remaining unsaved changes
+are discarded only in the newly opened hidden lifetime. Test VBA's explicit Save
+and external effects are neither suppressed nor guaranteed reversible.
+An unsaved borrowed workbook requires mode-bound explicit consent before import
+or Run: normal/snapshot describes live code replacement; no-build is execution-
+only and imports no external source. Direct CLI defaults to terminal `[y/N]`,
+with EOF/no affirmative answer declining; false never waits. Managed callbacks
+use true plus declared stdin-v1, with one exact request-ID-bound answer; absent
+callbacks use false. Before replacement, modules, UserForm sidecars and references
+are captured for attempted pre-Run recovery on preparation failure/cancellation,
+without Save; incomplete recovery is reported and retained. Once VBA may have
+started, no rollback/replay claim is made. No-build runs live VBE code when open
+or saved workbook code when closed and has no external-source navigation.
+`test.sourceWorkbook: 1.0` distinguishes these semantics while Test NDJSON `1.2`
+and snapshot features `2.0` remain unchanged. Test snapshot CLI projection has
+seven features; Debug retains its separate exact five-entry dependency map.
+_Avoid_: bin test workbook, disposable execution copy, implicit Build Save, no-save-means-no-mutation
 
 **ExecutedSourceIndex**:
 The immutable VbaDev-owned navigation index copied before test execution from
-the exact `VbaSourceAdmission` paired with a successfully materialized ordinary
-or snapshot test workbook. It contains only module identities, callable
+the exact `VbaSourceAdmission` used for verified ordinary or snapshot import into
+the source workbook. It contains only module identities, callable
 declaration-name ranges, and safely mapped persistent source URIs. It is the sole
 source-location authority for that workbook and retains no path-backed content
 authority. Resolution performs no source inventory, file read, existence check,
@@ -1315,8 +1339,9 @@ state and user-owned lifetime remain authoritative. Publish and public paired
 snapshot-output Build still copy its saved package as their template. Debug
 imports its immutable captured sources through `prepare-debug` without the
 independent source-error gate, saving or taking workbook/process lifetime
-ownership. Legacy Test generation retains its existing copy semantics until
-its separate migration issue is integrated.
+ownership. Test runs the exact source workbook without a tool-initiated Save;
+prepared Test imports analyzed saved or captured source, while no-build Test
+runs the workbook's live VBA when open or its saved VBA when closed.
 _Avoid_: arbitrary active workbook, same-basename match, bin output
 
 **SourceWorkbookBuildCommand**:
@@ -1568,7 +1593,7 @@ The internal sealed VbaDev operation owner for the four closed write intents
 `WorkbookMaterializationIntent.SourceSnapshotBuild`, or
 `WorkbookMaterializationIntent.ExplicitImport`, and for the separate
 observational `ProjectInspectionIntent` used by project Doctor. The legacy
-`ProjectBuild` intent remains the ordinary Test generation route, not the
+`ProjectBuild` intent is no longer the production ordinary Test route or the
 ordinary public Build route described by `SourceWorkbookBuildCommand`. `ProjectBuild`
 and `Publish` obtain their purpose-specific, final-order admissions from
 `VbaSourceAdmission`; ordinary saved-source `ProjectBuild` additionally requires
@@ -1590,14 +1615,13 @@ Across all four intents, the materializer keeps the applicable admitted-source
 preparation, static preflight, sibling workbook staging, repeated live-authority
 inspection, source import and verification, save, owned Excel-process release,
 saved-staging validation, cancellation fence, and durable output commitment in
-one ordered workflow. Public snapshot Build and the build stage of snapshot Test
-use the same `SourceSnapshotBuild` path. Test execution consumes the exact
-`CommittedArtifactPath` returned by that intent. Successful ordinary and
-snapshot test materialization also returns the exact `SourceAdmission` paired
-with that artifact so `TestCommand` can create its `ExecutedSourceIndex` before
-execution; public Build command output is unchanged. `TestCommand` owns
-subsequent execution and `SnapshotTestExecutionWorkspace` owns post-result
-artifact cleanup.
+one ordered workflow. Public explicit snapshot-output Build retains the
+`SourceSnapshotBuild` output path and `CommittedArtifactPath`. Production ordinary
+and snapshot Test instead reuse the materializer's admitted-source preparation
+without generating or saving an output, then `SourceWorkbookTestCommand` owns
+verified import and bound execution in the actual source workbook. Its exact
+admission supplies `ExecutedSourceIndex`; import/recovery scratch does not become
+an execution workbook. Public Build/Publish output commitment is unchanged.
 
 `InspectAsync(ProjectInspectionIntent)` consumes the `CapturedDoctorSourceSet`
 already fixed for one document by the Doctor pipeline and derives independent
@@ -2143,7 +2167,7 @@ _Avoid_: macro, module, assertion
 The exported source URI and declaration-name range that identify one
 `TestProcedure` within its `DocumentSourceSet`. An unavailable or ambiguous
 location does not change the test outcome or identity. For an ordinary or
-snapshot built test, the location comes only from the `ExecutedSourceIndex`
+snapshot prepared test, the location comes only from the `ExecutedSourceIndex`
 created from the exact admission paired with the workbook that ran. Snapshot
 ranges come from invocation-fixed snapshot bytes while their URIs identify the
 corresponding persistent source paths; internal workspace URIs never appear.
@@ -2155,8 +2179,8 @@ The output-derived set of module and `TestProcedure` `TestExplorerNode`s for one
 `DocumentSourceSet`. It remains valid only while that document's exported VBA
 source and project definition remain unchanged. A normal snapshot test run may
 carry ranges derived from captured unsaved editor state while retaining stable
-persistent source URIs; an ordinary built run uses the saved-source admission
-that produced its workbook, while a no-build run has no locations.
+persistent source URIs; an ordinary prepared run uses the saved-source admission
+imported into its source workbook, while a no-build run has no locations.
 If the document-level source/project revision changes during a snapshot run,
 outcomes remain visible but the resulting discovery snapshot and locations are
 not committed. Initial invalidation is document-wide rather than per-file.
@@ -2831,9 +2855,10 @@ The workflow retains cancellation and partial-result classification, including
 cleanup failures that must override an otherwise conclusive probe result.
 If a same-name reference already exists in a fresh ambiguity-probe baseline,
 its concrete GUID, major, and minor identity is adopted instead of adding a
-duplicate. Build, publish, test-build, and Doctor build/publish materialization
-may likewise adopt a same-name reference from the cleaned disposable workbook
-they already opened; an in-session candidate restores that logical reference
+duplicate. Ordinary source Build and prepared Test may likewise adopt a
+same-name reference from the exact selected source workbook they already opened.
+Publish, explicit snapshot-output Build and Doctor build/publish materialization
+use their cleaned disposable workbook. An in-session candidate restores that logical reference
 inventory before the next candidate. `reference add`, either `reference list`
 mode, and Doctor's independent selected-reference diagnostic never open a
 source template only to search for that shortcut.
@@ -5629,19 +5654,19 @@ Dev: "Should editing source while a snapshot test runs cancel the run?"
 Domain Expert: "No. Keep outcomes for the immutable source that ran, but do not commit its module/procedure discovery or locations when the captured document revision is stale. Report a non-failing Test Run warning and let a later run refresh discovery."
 
 Dev: "Should a Test Explorer run use unsaved exported VBA source?"
-Domain Expert: "Yes, for the normal build-before-test profile. Capture a caller-owned complete `BuildSourceSnapshot` without saving source and invoke `vba-dev test --source-snapshot`; `VbaDev` owns only its internal test workspace. A no-build run intentionally executes the existing bin workbook and cannot accept a snapshot."
+Domain Expert: "Yes, for the normal profile. Capture a caller-owned complete `BuildSourceSnapshot` without saving source and invoke `vba-dev test --source-snapshot`; VbaDev imports the admitted generation into the exact source workbook without Save and owns only import/recovery scratch. A no-build run executes current live/saved VBA in the same source workbook without import and cannot accept a snapshot."
 
 Dev: "How does a build-validation failure affect Test command and Test Explorer?"
 Domain Expert: "Ordinary and snapshot build-before-test already share complete source analysis. A validation Error or incomplete analysis returns nonzero before the test runner, even if an old bin exists. Preserve collected sourceAnalysis 3.0 records on stderr, separate from Test 1.2 NDJSON results. Test Explorer projects both primary and related locations using origins frozen with the exact caller-owned snapshot bytes, reports a source-validation execution error and its incomplete reasons, and creates no assertion outcomes for unexecuted procedures. Corrected build reruns refresh only the same Test scope; no-build has no new source authority and must not clear that scope. See ADR 0059."
 
-Dev: "Should the no-build Test Explorer profile save dirty source before running the existing bin workbook?"
-Domain Expert: "No. Run the existing bin unchanged and retain its outcomes and test identities. Because that artifact has no proved source capture, `VbaDev` must inspect no project source for navigation, omit every optional location regardless of current source state, and emit exactly one fixed non-failing warning for a completed run. Never save, build, or rerun implicitly."
+Dev: "Should the no-build Test Explorer profile save dirty source before running current source-workbook VBA?"
+Domain Expert: "No. Run current live VBE state when open or saved workbook state when closed, without applying external editor contents, and retain outcomes and identities. Because current VBA has no proved external source capture, VbaDev must inspect no project source for navigation, omit every optional location regardless of current source state, and emit exactly one fixed non-failing warning for a completed run. An unsaved open workbook still requires execution-only consent. Never save, import, or replay implicitly."
 
 Dev: "Should `test --no-build` reject a module/reference name conflict found in the current source or manifest?"
-Domain Expert: "No. It executes the existing bin workbook and does not claim that current source is buildable. Ordinary and snapshot tests inherit the build-stage preflight; no-build reports only failures that prevent the existing workbook from opening or executing, while Doctor owns current source health."
+Domain Expert: "No. It executes current source-workbook VBA and does not claim that external source is buildable. Ordinary and snapshot tests retain complete preparation analysis/admission; no-build reports only failures that prevent the selected workbook from opening or executing, while Doctor owns current source health."
 
-Dev: "Should failure to delete an internal snapshot-test workspace fail a passed unit test?"
-Domain Expert: "No. Failure to release an owned Excel process is a command-level infrastructure error, but once process release is proved, a workspace that remains after bounded deletion retries is a housekeeping warning. Preserve every workbook-owned test outcome, report the retained absolute path, and do not rewrite any `testFinished` result."
+Dev: "Should failure to delete the caller-owned Test snapshot fail a passed unit test?"
+Domain Expert: "No. Unproved automation release or STA retirement is a command-level infrastructure error, but after the child closes, isolated failure of the caller's bounded snapshot deletion is a housekeeping warning. Preserve completed workbook-owned test outcomes, report the retained absolute path, and do not rewrite any testFinished result. Production Test creates no disposable execution-workbook workspace."
 
 Dev: "Should Go to Test on a module node navigate to its first procedure?"
 Domain Expert: "No. A module node is a runnable grouping scope with multiple possible targets. Precise source navigation belongs to each discovered `TestProcedure` node."
@@ -6130,10 +6155,10 @@ Dev: "Should `vba-project.json` store TypeLib GUIDs for references?"
 Domain Expert: "No. The `ProjectManifest` stores the human-visible `VbaProjectReference` name from `Reference.Description`. After discovery resolves that name, catalogs and caches may use `VbaProjectReferenceCatalogIdentity` keys such as GUID, version, LCID, and path."
 
 Dev: "What if one manifest reference name matches several TypeLib candidates?"
-Domain Expert: "Registry ambiguity alone is not an error. A reference-only caller or Doctor's independent selected-reference diagnostic probes each candidate through `References.AddFromGuid` from a fresh temporary copy of the explicitly selected document's source template, or the primary document's source template when no document is specified. Build, publish, test-build, and Doctor materialization instead use their already-open cleaned disposable workbook and restore its logical reference inventory after each candidate. Use the returned `Reference` identity rather than the requested registry identity, and coalesce candidates that VBE maps to the same result. Adopt one distinct usable result; fail as unavailable when none remains and as ambiguous only when multiple distinct usable results remain."
+Domain Expert: "Registry ambiguity alone is not an error. A reference-only caller or Doctor's independent selected-reference diagnostic probes each candidate through `References.AddFromGuid` from a fresh temporary copy of the explicitly selected document's source template, or the primary document's source template when no document is specified. Ordinary Build and prepared Test instead use the exact selected source workbook; Publish, explicit snapshot-output Build and Doctor materialization use their cleaned disposable workbook. Each in-session candidate restores that workbook's logical reference inventory. Use the returned `Reference` identity rather than the requested registry identity, and coalesce candidates that VBE maps to the same result. Adopt one distinct usable result; fail as unavailable when none remains and as ambiguous only when multiple distinct usable results remain."
 
 Dev: "Should `reference list` open the source template merely to check whether it already contains a same-name reference?"
-Domain Expert: "No. Zero registry matches are unavailable and one registry identity is adopted without Excel. Only a registry-ambiguous name starts the VBE-equivalent probe, where a same-name reference already present in the fresh baseline supplies its identity. Build, publish, test builds, and Doctor's build/publish materialization profiles may use the same shortcut because their disposable materialization workbook is already open."
+Domain Expert: "No. Zero registry matches are unavailable and one registry identity is adopted without Excel. Only a registry-ambiguous name starts the VBE-equivalent probe, where a same-name reference already present in the fresh baseline supplies its identity. Ordinary Build and prepared Test may use the inspected selected source workbook for the same shortcut. Publish, explicit snapshot-output Build and Doctor's build/publish materialization profiles use their already-open disposable workbook."
 
 Dev: "Should `reference list --available` hide or disable a resolved library when its project name conflicts with a current source module?"
 Domain Expert: "No. Both list modes are `VbaProjectReferenceResolutionInventory` operations, so they neither inspect nor annotate current source compatibility. Keep the resolved candidate selectable in CLI output, completion, and QuickPick; after dependency intent is recorded, Language Server validation, Doctor, and materialization preflight own conflict feedback."
@@ -6280,7 +6305,7 @@ Dev: "Should `new excel` always put Scripting Runtime and RegExp in the manifest
 Domain Expert: "Neither. Build the `InitialVbaProjectReferenceSelection` from the baseline workbook's actual references in VBE order, but omit `Visual Basic For Applications` because its `VbaStandardLibraryReference` is always active and is not an unlisted protected-reference warning. Then traverse the committed initial CommonModules order and each row's requirement declaration order, appending only first-seen missing VBE-equivalent canonical names. Preserve an active baseline match's spelling, position, and direct intent. With no installed CommonModules requirement, do not add Scripting Runtime or RegExp, and never infer requirements by scanning source."
 
 Dev: "Should a CommonModules-required reference used to probe VBE ambiguity remain saved in the initial source template?"
-Domain Expert: "No. Keep the source template's actual baseline reference identities and order, and persist the complete intended selection in the manifest. Probe on a disposable copy or remove temporary additions, then prove the saved template returned to baseline before manifest commit. Build, test, and publish materialize the manifest selection into their copied workbook."
+Domain Expert: "No. Keep the source template's actual baseline reference identities and order, and persist the complete intended selection in the manifest. Probe on a disposable copy or remove temporary additions, then prove the saved template returned to baseline before manifest commit. Ordinary Build and prepared Test apply the manifest selection to the exact selected source workbook; only Build initiates Save. Publish and explicit snapshot-output Build apply it to their copied output workbook."
 
 Dev: "Which CommonModules repository entries does `new excel` treat as directly requested?"
 Domain Expert: "Every `runtime-baseline` and `test-foundation` entry is an initial root with `requested: true`, even when another root reaches it first as a dependency. Expand their complete dependency closure and mark an entry `requested: false` only when it is present solely because a root depends on it. Other categories do not select roots implicitly; a smaller initial foundation requires a future explicit template or profile."

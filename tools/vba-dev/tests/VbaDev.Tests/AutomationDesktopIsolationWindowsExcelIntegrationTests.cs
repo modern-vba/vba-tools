@@ -8,6 +8,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using VbaDev.App.Cli;
+using VbaDev.App.References;
 using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
@@ -181,13 +182,17 @@ public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
 
     [WindowsExcelIntegrationFact]
     [Trait("Category", "WindowsExcelIntegration")]
-    public async Task CommandTestBuildFirstAndNoBuildUseExpectedHiddenProcessesAndPreserveNdjson()
+    public async Task CommandSourceTestAndSavedNoBuildUseSingleHiddenSessionsAndPreserveNdjson()
     {
         using var temp = TempDirectory.Create();
         var initialProcesses = CaptureExcelProcessIds();
         var initialBootstrapArtifacts = CaptureBootstrapWorkbookPaths();
         var project = CreateCommandTestProject(temp.CreateDirectory("CommandProject"));
         var application = CommandLineTestFactory.Create(project.Root);
+        var callerBytes = Directory.GetFiles(project.Root, "*", SearchOption.AllDirectories)
+            .ToDictionary(path => path, File.ReadAllBytes, StringComparer.OrdinalIgnoreCase);
+        var preparationWarning = VbaProjectReferencePlanner.FormatProtectedReferenceWarning(
+            "Book1", "Microsoft Excel 16.0 Object Library") + Environment.NewLine;
         var selectedArguments = new[]
         {
             "--format",
@@ -199,45 +204,50 @@ public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
         };
         Assert.False(File.Exists(project.BinPath));
 
-        var buildFirst = await ObserveCommandAsync(
+        var preparedTest = await ObserveCommandAsync(
             () => application.RunAsync(["test", .. selectedArguments]),
             initialProcesses,
             project.BinPath);
         AssertSuccessfulSelectedTestResult(
-            buildFirst.Result,
+            preparedTest.Result,
             project,
             expectLocation: true,
-            expectedStandardError: string.Empty);
-        var buildFirstLifetimes = buildFirst.ProcessTimeline.Lifetimes
-            .OrderBy(lifetime => lifetime.StartedAt)
-            .ToArray();
-        Assert.Equal(2, buildFirstLifetimes.Length);
-        Assert.Equal(2, buildFirstLifetimes.Select(lifetime => lifetime.ProcessId).Distinct().Count());
-        Assert.All(
-            buildFirstLifetimes,
-            lifetime => Assert.True(lifetime.HasExited, lifetime.ObservationError));
+            expectedStandardError: preparationWarning);
+        var preparedTestLifetime = Assert.Single(preparedTest.ProcessTimeline.Lifetimes);
+        Assert.True(preparedTestLifetime.HasExited, preparedTestLifetime.ObservationError);
         Assert.DoesNotContain(
-            buildFirst.ProcessTimeline.Samples,
+            preparedTest.ProcessTimeline.Samples,
             sample => sample.ProcessIds.Count > 1);
-        Assert.True(
-            buildFirstLifetimes[0].ExitedAt <= buildFirstLifetimes[1].StartedAt,
-            $"Expected build PID {buildFirstLifetimes[0].ProcessId} to exit before " +
-            $"test PID {buildFirstLifetimes[1].ProcessId} started, but the exact lifetimes were " +
-            $"{buildFirstLifetimes[0].StartedAt:o}..{buildFirstLifetimes[0].ExitedAt:o} and " +
-            $"{buildFirstLifetimes[1].StartedAt:o}..{buildFirstLifetimes[1].ExitedAt:o}.");
-        var buildProcessSamples = buildFirst.ProcessTimeline.Samples
-            .Where(sample => sample.ProcessIds.Contains(buildFirstLifetimes[0].ProcessId))
+        var preparedTestSamples = preparedTest.ProcessTimeline.Samples
+            .Where(sample => sample.ProcessIds.Contains(preparedTestLifetime.ProcessId))
             .ToArray();
-        var testProcessSamples = buildFirst.ProcessTimeline.Samples
-            .Where(sample => sample.ProcessIds.Contains(buildFirstLifetimes[1].ProcessId))
-            .ToArray();
-        Assert.NotEmpty(buildProcessSamples);
-        Assert.NotEmpty(testProcessSamples);
-        Assert.All(buildProcessSamples, sample => Assert.False(sample.OutputExists));
-        Assert.All(testProcessSamples, sample => Assert.True(sample.OutputExists));
-        AssertNoCallerDesktopWindows(buildFirst, buildFirstLifetimes);
-        Assert.True(File.Exists(project.BinPath));
-        var builtWorkbook = File.ReadAllBytes(project.BinPath);
+        Assert.NotEmpty(preparedTestSamples);
+        Assert.All(preparedTest.ProcessTimeline.Samples, sample => Assert.False(sample.OutputExists));
+        AssertNoCallerDesktopWindows(preparedTest, [preparedTestLifetime]);
+        Assert.False(File.Exists(project.BinPath));
+        Assert.Equal(callerBytes.Keys.Order(StringComparer.Ordinal),
+            Directory.GetFiles(project.Root, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal));
+        foreach (var (path, bytes) in callerBytes)
+        {
+            Assert.Equal(bytes, File.ReadAllBytes(path));
+        }
+
+        // Test discarded its hidden workbook changes. Seed saved VBA explicitly,
+        // rather than treating that unsaved import as the next no-build input.
+        var savedBuild = await application.RunAsync(["build"]);
+        Assert.True(savedBuild.ExitCode == 0, savedBuild.StandardError);
+        Assert.True(string.Equals(string.Empty, savedBuild.StandardError, StringComparison.Ordinal),
+            $"Expected empty Build stderr.{Environment.NewLine}" +
+            $"Actual Build stderr: {savedBuild.StandardError}");
+        Assert.Equal($"Built {project.SourceWorkbookPath}{Environment.NewLine}" +
+            $"Imported 2 source files.{Environment.NewLine}{preparationWarning}",
+            savedBuild.StandardOutput);
+        await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+        Assert.False(File.Exists(project.BinPath));
+        var savedCallerBytes = Directory.GetFiles(project.Root, "*", SearchOption.AllDirectories)
+            .ToDictionary(path => path, File.ReadAllBytes, StringComparer.OrdinalIgnoreCase);
+        Assert.False(callerBytes[project.SourceWorkbookPath].AsSpan()
+            .SequenceEqual(savedCallerBytes[project.SourceWorkbookPath]));
 
         var noBuild = await ObserveCommandAsync(
             () => application.RunAsync(["test", "--no-build", .. selectedArguments]),
@@ -250,14 +260,20 @@ public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
             expectedStandardError: NoBuildSourceLocationWarning);
         var noBuildLifetime = Assert.Single(noBuild.ProcessTimeline.Lifetimes);
         Assert.True(noBuildLifetime.HasExited, noBuildLifetime.ObservationError);
-        Assert.All(
-            noBuild.ProcessTimeline.Samples.Where(
-                sample => sample.ProcessIds.Contains(noBuildLifetime.ProcessId)),
-            sample => Assert.True(sample.OutputExists));
+        Assert.DoesNotContain(noBuild.ProcessTimeline.Samples, sample => sample.ProcessIds.Count > 1);
+        Assert.Contains(noBuild.ProcessTimeline.Samples,
+            sample => sample.ProcessIds.Contains(noBuildLifetime.ProcessId));
+        Assert.All(noBuild.ProcessTimeline.Samples, sample => Assert.False(sample.OutputExists));
         AssertNoCallerDesktopWindows(noBuild, [noBuildLifetime]);
 
-        Assert.Equal(buildFirst.Result.ExitCode, noBuild.Result.ExitCode);
-        Assert.Equal(builtWorkbook, File.ReadAllBytes(project.BinPath));
+        Assert.Equal(preparedTest.Result.ExitCode, noBuild.Result.ExitCode);
+        Assert.False(File.Exists(project.BinPath));
+        Assert.Equal(savedCallerBytes.Keys.Order(StringComparer.Ordinal),
+            Directory.GetFiles(project.Root, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal));
+        foreach (var (path, bytes) in savedCallerBytes)
+        {
+            Assert.Equal(bytes, File.ReadAllBytes(path));
+        }
         Assert.True(initialProcesses.SetEquals(CaptureExcelProcessIds()));
         Assert.Equal(
             initialBootstrapArtifacts.Order(StringComparer.OrdinalIgnoreCase),
@@ -323,6 +339,7 @@ public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
             ProjectManifest.CreateDefault("PrivateDesktopCommand", document, root, null));
         return new CommandTestProject(
             root,
+            templatePath,
             binPath,
             testSourcePath,
             testModule,
@@ -360,7 +377,9 @@ public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
             result.ExitCode == 0,
             $"Expected exit 0 but received {result.ExitCode}. " +
             $"stdout: {result.StandardOutput} stderr: {result.StandardError}");
-        Assert.Equal(expectedStandardError, result.StandardError);
+        Assert.True(string.Equals(expectedStandardError, result.StandardError, StringComparison.Ordinal),
+            $"Expected exact stderr: {expectedStandardError}{Environment.NewLine}" +
+            $"Actual stderr: {result.StandardError}");
         var lines = result.StandardOutput.Split(
             '\n',
             StringSplitOptions.RemoveEmptyEntries);
@@ -622,6 +641,7 @@ public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
 
     private sealed record CommandTestProject(
         string Root,
+        string SourceWorkbookPath,
         string BinPath,
         string TestSourcePath,
         string TestModule,

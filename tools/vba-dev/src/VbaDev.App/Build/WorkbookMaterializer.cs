@@ -148,6 +148,39 @@ internal sealed class WorkbookMaterializer
             plan.Timeouts);
     }
 
+    internal async Task<PreparedSourceWorkbookBuild> PrepareSourceWorkbookTestSnapshotAsync(
+        ResolvedProjectContext context,
+        BuildSourceSnapshotCapture sourceCapture,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            VbaProjectSemanticInputs? inputs = null;
+            var admission = await sourceCapture.AdmitAnalyzedAsync(async (sources, token) =>
+            {
+                var provider = semanticInputProvider
+                    ?? throw new InvalidOperationException("A required project semantic input provider was not configured for snapshot Test.");
+                var template = CapturedWorkbookTemplate.CaptureSavedOpenSource(context.TemplateDocumentPath, token);
+                inputs = await provider.AcquireAsync(context, template, sources, token).ConfigureAwait(false);
+                return inputs;
+            }, cancellationToken).ConfigureAwait(false);
+            var prepared = CreateImportSourceSetAndReleaseInput(null,
+                new AdmittedWorkbookGenerationSourceInput(admission, sourceCapture), cancellationToken,
+                forSourceWorkbookBuild: true);
+            return new PreparedSourceWorkbookBuild(prepared.SourceSet, prepared.Preflight,
+                prepared.SourceSet.Admission, inputs, ResolveTimeouts(context));
+        }
+        catch (Exception failure)
+        {
+            try { sourceCapture.Dispose(); }
+            catch (Exception cleanup)
+            {
+                throw new SourceWorkbookTestInputPreparationException(failure, cleanup);
+            }
+            throw;
+        }
+    }
+
     /// <summary>
     /// Prepares strict immutable debug snapshot bytes without a source-error analysis gate.
     /// This intent never generates output or acquires semantic-quality inputs.
@@ -1112,3 +1145,10 @@ internal sealed record PreparedSourceWorkbookBuild(
     AdmittedVbaSourceSet SourceAdmission,
     VbaProjectSemanticInputs? SemanticInputs,
     WorkbookAutomationTimeouts Timeouts);
+
+internal sealed class SourceWorkbookTestInputPreparationException(Exception preparationFailure, Exception cleanupFailure)
+    : InvalidOperationException(preparationFailure.Message, preparationFailure)
+{
+    internal Exception PreparationFailure { get; } = preparationFailure;
+    internal string CleanupWarning { get; } = $"Input capture cleanup failed: {cleanupFailure.Message}{Environment.NewLine}";
+}

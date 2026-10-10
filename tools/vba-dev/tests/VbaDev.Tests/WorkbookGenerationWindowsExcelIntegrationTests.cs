@@ -2146,12 +2146,29 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             Directory.CreateDirectory(Path.GetDirectoryName(fixture.Context.BinDocumentPath)!);
             CreateEmptyMacroEnabledWorkbook(fixture.Context.BinDocumentPath);
             var originalBin = File.ReadAllBytes(fixture.Context.BinDocumentPath);
-            var build = CreateLegacyStagedBuildCommand(sourceSet => Assert.NotNull(sourceSet.Admission));
+            var ownershipFactory = new WindowsExactFileSystemObjectOwnershipFactory();
+            var pathIdentityResolver = new FileSystemPathIdentityResolver();
+            var referenceNormalizer = new WorkbookReferenceNormalizer(
+                new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver()));
+            var materializer = new WorkbookMaterializer(
+                ownershipFactory,
+                new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get),
+                new ExcelComWorkbookGenerationAutomation(),
+                referenceNormalizer,
+                new WorkbookOutputTransactionFactory(ownershipFactory),
+                new VbeImportSourceSetFactory(ownershipFactory,
+                    sourceSet => Assert.NotNull(sourceSet.Admission)),
+                semanticInputProvider: FakeProjectSemanticInputProvider.Empty);
+            var build = new BuildCommand(new WorkbookOutputCommand(materializer),
+                pathIdentityResolver, ownershipFactory);
+            var sourceTest = new SourceWorkbookTestCommand(materializer,
+                ExcelComSourceWorkbookAutomation.CreateForTestExecution(),
+                referenceNormalizer, ownershipFactory);
             var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
             var command = new TestCommand(build, new ExcelComWorkbookTestRunner(),
                 new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
-                new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
-                    new FileSystemPathIdentityResolver(), scratchRoot));
+                new SnapshotTestExecutionWorkspaceFactory(ownershipFactory,
+                    pathIdentityResolver, scratchRoot), sourceTest);
 
             var result = await command.RunAsync(fixture.Context,
                 new TestCommandRequest("ndjson", true, new(), TimeSpan.FromMinutes(1), snapshotPath), cancellation.Token);

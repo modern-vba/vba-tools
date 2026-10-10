@@ -4,7 +4,7 @@ namespace VbaDev.App.Testing;
 /// Carries command-line inputs for a workbook-backed test run.
 /// </summary>
 /// <param name="Format">The output format, such as text or ndjson.</param>
-/// <param name="BuildFirst">Whether the selected document should be built before tests run.</param>
+/// <param name="BuildFirst">Whether admitted sources should replace source-workbook VBA before tests, without saving.</param>
 /// <param name="Selector">The optional module or procedure selector.</param>
 /// <param name="ExecutionTimeout">The macro execution deadline.</param>
 /// <param name="SourceSnapshotPath">The optional caller-owned complete source snapshot.</param>

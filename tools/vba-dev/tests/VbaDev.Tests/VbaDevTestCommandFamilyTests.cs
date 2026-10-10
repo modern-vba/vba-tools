@@ -53,7 +53,8 @@ public sealed class VbaDevTestCommandFamilyTests
                 "--source-snapshot",
                 "--timeout-seconds",
                 "--module",
-                "--procedure"
+                "--procedure",
+                "--interactive"
             ],
             family.TestCommand.Options.Select(option => option.Name));
         Assert.Same(family.ProjectOption, family.TestCommand.Options[0]);
@@ -64,6 +65,7 @@ public sealed class VbaDevTestCommandFamilyTests
         Assert.Same(family.TimeoutSecondsOption, family.TestCommand.Options[5]);
         Assert.Same(family.ModuleOption, family.TestCommand.Options[6]);
         Assert.Same(family.ProcedureOption, family.TestCommand.Options[7]);
+        Assert.Same(family.InteractiveOption, family.TestCommand.Options[8]);
         Assert.Equal(["-d"], family.DocumentOption.Aliases);
         Assert.Equal(["-f"], family.FormatOption.Aliases);
         Assert.Equal(
@@ -105,6 +107,7 @@ public sealed class VbaDevTestCommandFamilyTests
         Assert.Equal("Book1", persistentIntent.DocumentName);
         Assert.Null(persistentIntent.ExplicitFormat);
         Assert.Null(persistentIntent.ExplicitTimeoutSeconds);
+        Assert.True(persistentIntent.Interactive);
         Assert.IsType<VbaDevTestSourceIntent.PersistentBuild>(persistentIntent.Source);
         Assert.IsType<VbaDevTestSelectorIntent.AllTests>(persistentIntent.Selector);
         Assert.Same(persistentIntent, family.IntentBinding.GetRequiredIntent(persistentParse));
@@ -132,6 +135,7 @@ public sealed class VbaDevTestCommandFamilyTests
         Assert.Equal("Test_Module", moduleSelector.ModuleName);
         Assert.Equal("ndjson", snapshotIntent.ExplicitFormat);
         Assert.Equal(31, snapshotIntent.ExplicitTimeoutSeconds);
+        Assert.True(snapshotIntent.Interactive);
 
         var existingWorkbookParse = ParseSuccessfully(
             root,
@@ -142,10 +146,13 @@ public sealed class VbaDevTestCommandFamilyTests
                 "--module",
                 "Test_Module",
                 "--procedure",
-                "Test_One"
+                "Test_One",
+                "--interactive",
+                "false"
             ]);
         var existingWorkbookIntent = family.IntentBinding.GetRequiredIntent(existingWorkbookParse);
         Assert.IsType<VbaDevTestSourceIntent.ExistingWorkbook>(existingWorkbookIntent.Source);
+        Assert.False(existingWorkbookIntent.Interactive);
         var procedureSelector = Assert.IsType<VbaDevTestSelectorIntent.Procedure>(
             existingWorkbookIntent.Selector);
         Assert.Equal("Test_Module", procedureSelector.ModuleName);
@@ -195,7 +202,8 @@ public sealed class VbaDevTestCommandFamilyTests
                 "--source-snapshot",
                 "--timeout-seconds",
                 "--module",
-                "--procedure"
+                "--procedure",
+                "--interactive"
             },
             option => Assert.Contains(option, suggestions));
     }

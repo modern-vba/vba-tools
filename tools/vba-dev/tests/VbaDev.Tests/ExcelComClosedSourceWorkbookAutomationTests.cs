@@ -1,3 +1,4 @@
+using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Workbooks;
 using Xunit;
@@ -6,6 +7,30 @@ namespace VbaDev.Tests;
 
 public sealed class ExcelComClosedSourceWorkbookAutomationTests
 {
+    [Fact]
+    public void ChangedSelectedSourcePathRefusesNativeTestBeforeMacroExecution()
+    {
+        var excel = new UnexpectedTestExcel();
+        var native = ExcelComWorkbookSession.Borrow(excel, new NamedTestWorkbook(), Environment.ProcessId);
+        try
+        {
+            var tracker = new ExcelComClosedSourceWorkbookAutomation.SourceWorkbookSaveTracker();
+            var bound = ExcelComClosedSourceWorkbookAutomation.CreateTrackedBuildSession(
+                native, tracker, isStillSelected: () => false);
+
+            var error = Assert.Throws<InvalidOperationException>(() =>
+                ((IExcelComWorkbookTestSession)bound).RunTests(new WorkbookTestSelector()));
+
+            Assert.Contains("selected source workbook", error.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(0, excel.RunCalls);
+            Assert.Equal(SourceWorkbookSaveState.NotStarted, tracker.State);
+        }
+        finally
+        {
+            native.ReleaseBorrowed();
+        }
+    }
+
     [Fact]
     public void NormallyReturningCanceledSourceSaveRemainsUnknown()
     {
@@ -93,5 +118,21 @@ public sealed class ExcelComClosedSourceWorkbookAutomationTests
     public sealed class PathWorkbook
     {
         public string FullName { get; set; } = string.Empty;
+    }
+
+    public sealed class NamedTestWorkbook
+    {
+        public string Name => "Book1.xlsm";
+    }
+
+    public sealed class UnexpectedTestExcel
+    {
+        public int RunCalls { get; private set; }
+
+        public void Run(string entryPoint)
+        {
+            RunCalls++;
+            throw new InvalidOperationException("Native Run was invoked after the selected source path changed.");
+        }
     }
 }

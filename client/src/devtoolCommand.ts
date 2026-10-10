@@ -115,8 +115,13 @@ export function runCompanionCommand(
   const confirmationRequests = new Set<string>();
 
   const observeWorkbookConfirmation = (value: string): void => {
-    if (options.confirmWorkbookChanges === undefined || options.args[0] !== 'build' ||
-        options.args.includes('--source-snapshot')) return;
+    const interactiveIndex = options.args.indexOf('--interactive');
+    if (options.args[0] === 'test' && (
+      options.args.includes('--interactive=false') ||
+      (interactiveIndex >= 0 && options.args[interactiveIndex + 1] === 'false'))) return;
+    if (options.confirmWorkbookChanges === undefined ||
+        (options.args[0] !== 'test' && (options.args[0] !== 'build' ||
+          options.args.includes('--source-snapshot')))) return;
     confirmationBuffer += value;
     let newline: number;
     while ((newline = confirmationBuffer.indexOf('\n')) >= 0) {

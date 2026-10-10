@@ -67,13 +67,22 @@ public sealed class PropertyReceiverContextWindowsExcelIntegrationTests
                 End Sub
                 """);
 
+            var callerBytes = Directory.GetFiles(context.DocumentSourceSetPath, "*", SearchOption.AllDirectories)
+                .Append(context.ManifestPath)
+                .ToDictionary(path => path, File.ReadAllBytes, StringComparer.OrdinalIgnoreCase);
+            Assert.False(File.Exists(context.BinDocumentPath));
+
             var result = await composition.TestCommand.RunAsync(
                 context,
                 new TestCommandRequest("ndjson", true, new(), TimeSpan.FromMinutes(1)),
                 cancellation.Token);
 
             Assert.True(result.ExitCode == 0, result.StandardError);
-            Assert.True(File.Exists(context.BinDocumentPath));
+            Assert.False(File.Exists(context.BinDocumentPath));
+            foreach (var (path, bytes) in callerBytes)
+            {
+                Assert.Equal(bytes, File.ReadAllBytes(path));
+            }
             using var finished = JsonDocument.Parse(Assert.Single(
                 result.StandardOutput.Split('\n'),
                 line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal)));

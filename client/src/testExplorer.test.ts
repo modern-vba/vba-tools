@@ -226,7 +226,7 @@ test('Running a project node invokes vba-dev test ndjson with explicit project r
     [
       'test', '--project', projectRoot,
       '--source-snapshot', path.join('C:', 'temp', 'test-source-snapshot'),
-      '--format', 'ndjson'
+      '--format', 'ndjson', '--interactive', 'false', '--cancellation-transport', 'stdin-v1'
     ]
   ]);
   assert.deepEqual(controller.runs[0].events, [
@@ -327,7 +327,7 @@ test('Running a document node invokes vba-dev test ndjson with explicit project 
     [
       'test', '--project', projectRoot, '--document', 'Book1',
       '--source-snapshot', path.join('C:', 'temp', 'test-source-snapshot'),
-      '--format', 'ndjson'
+      '--format', 'ndjson', '--interactive', 'false', '--cancellation-transport', 'stdin-v1'
     ]
   ]);
 });
@@ -386,7 +386,7 @@ test('the default document run uses a caller-owned source snapshot without savin
       '--project', projectRoot,
       '--document', 'Book1',
       '--source-snapshot', snapshotPath,
-      '--format', 'ndjson'
+      '--format', 'ndjson', '--interactive', 'false', '--cancellation-transport', 'stdin-v1'
     ]
   ]);
 });
@@ -512,11 +512,105 @@ test('a dirty no-build run skips save and snapshot while omitting stale source n
   assert.equal(procedureItem.uriPath, undefined);
   assert.ok(controller.runs[0].events.includes(`passed:${procedureItem.id}`));
   assert.deepEqual(controller.runs[0].outputs, [
-    'Source navigation unavailable: dirty source was not built for this no-build test run.\n'
+    'Source navigation unavailable: no-build runs current workbook VBA without a proved source capture.\n'
   ]);
 });
 
-test('each selected no-build invocation captures its own dirty navigation state', async () => {
+test('a clean-editor no-build run reports outcomes without claiming live workbook source locations', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([[path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]]),
+    openTextDocuments: () => [{ uriPath: path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas'), isDirty: false }],
+    captureSourceSnapshot: async () => { throw new Error('No-build cannot capture external source.'); },
+    stdout: ndjson(testFinishedWithLocation(projectRoot, 'Book1', 'Test_Module', 'Test_Passes'))
+  });
+  await explorer.refresh();
+  const item = controller.items[0].children.items[0];
+  await controller.runProfiles[1].runHandler({ include: [item] }, uncancelledToken());
+  const procedure = item.children.items[0].children.items[0];
+  assert.equal(procedure.uriPath, undefined);
+  assert.ok(controller.runs[0].events.includes(`passed:${procedure.id}`));
+});
+
+test('Run Tests Without Build confirms current-workbook execution without applying external editor contents', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const controller = new FakeTestController();
+  const warning = 'Run current VBA in this unsaved workbook without importing or saving?';
+  const requestId = 'abcdef0123456789abcdef0123456789';
+  const prompts: Array<{ message: string; noBuild: boolean }> = [];
+  const replies: Array<{ id: string; approved: boolean }> = [];
+  let stdout: ((value: string) => void) | undefined;
+  let close: ((code: number, signal: null) => void) | undefined;
+  let captureCalls = 0;
+  let childArgs: readonly string[] = [];
+  const capabilities = { toolVersion: 'test', contractVersion: '1.0',
+    commands: { test: { outputSchemaVersion: '1.2' } }, featureVersions: {
+      'test.sourceWorkbook': '1.0', 'invocation.stdinCancellation': '1.0',
+      'invocation.stdinWorkbookConfirmation': '1.0'
+    } };
+  const explorer = createWorkbookBackedTestExplorer({
+    controller, extensionRoot: 'C:\\Extension', workspaceRoots: [projectRoot],
+    findProjectManifests: async () => [path.join(projectRoot, 'vba-project.json')],
+    readTextFile: async () => manifestJson('BookProject', ['Book1']),
+    openTextDocuments: () => [{ uriPath: path.join(projectRoot, 'src/Book1/Test_Module.bas'), isDirty: true }],
+    captureSourceSnapshot: async () => { captureCalls++; throw new Error('No-build cannot capture source.'); },
+    vbaDevResolver: { resolve: async () => ({ executablePath: 'vba-dev.exe', bundledPath: 'vba-dev.exe',
+      source: 'bundled', capabilities }) },
+    outputChannel: { append: () => {}, appendLine: () => {}, show: () => {} },
+    showErrorMessage: async () => {},
+    confirmWorkbookChanges: async (message, mode) => {
+      prompts.push({ message, noBuild: mode.noBuild }); return true;
+    },
+    startProcess: (_file, args) => {
+      childArgs = args;
+      return {
+        onStdout: listener => { stdout = listener; },
+        onStderr: listener => listener(JSON.stringify({ type: 'workbookConfirmation', schemaVersion: '1.0',
+          requestId, message: warning }) + '\n'),
+        onExit: () => {},
+        onClose: listener => { close = listener; setImmediate(() => { if (replies.length === 0) listener(1, null); }); },
+        respondToWorkbookConfirmation: async (id, approved) => {
+          replies.push({ id, approved });
+          stdout?.(ndjson(testFinishedWithLocation(projectRoot, 'Book1', 'Test_Module', 'Test_Passes')));
+          close?.(0, null);
+        },
+        requestCancellation: async () => { close?.(130, null); },
+        kill: () => { throw new Error('Source Test cannot kill its child.'); }
+      };
+    }
+  });
+  await explorer.refresh();
+  const item = controller.items[0].children.items[0];
+  await controller.runProfiles[1].runHandler({ include: [item] }, uncancelledToken());
+  assert.deepEqual(prompts, [{ message: warning, noBuild: true }]);
+  assert.deepEqual(replies, [{ id: requestId, approved: true }]);
+  assert.equal(captureCalls, 0);
+  assert.ok(childArgs.includes('--no-build'));
+  assert.equal(childArgs[childArgs.indexOf('--interactive') + 1], 'true');
+  assert.equal(item.children.items[0].children.items[0].uriPath, undefined);
+  assert.ok(controller.runs[0].events.some(event => event.startsWith('passed:')));
+});
+
+test('Run Tests Without Build rejects a cached bin-semantic provider before execution', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const controller = new FakeTestController();
+  let executions = 0;
+  const explorer = createExplorer(controller, {
+    manifests: new Map([[path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]]),
+    vbaDevResolver: { resolve: async () => ({ executablePath: 'vba-dev.exe', bundledPath: 'vba-dev.exe', source: 'bundled',
+      capabilities: { toolVersion: 'test', contractVersion: '1.0', commands: { test: { outputSchemaVersion: '1.2' } },
+        featureVersions: { 'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0' } } }) },
+    startProcess: () => { executions++; return completedProcess(); },
+    captureSourceSnapshot: async () => { throw new Error('No-build cannot capture source.'); }
+  });
+  await explorer.refresh();
+  await controller.runProfiles[1].runHandler({ include: [controller.items[0]] }, uncancelledToken());
+  assert.equal(executions, 0);
+  assert.ok(controller.runs[0].events.some(event => event.startsWith('errored:') && /test\.sourceWorkbook/.test(event)));
+});
+
+test('each selected no-build invocation omits unproved source navigation regardless of editor state', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const secondSourcePath = path.join(projectRoot, 'src', 'Book2', 'Test_Module.bas');
   let secondDirty = false;
@@ -580,7 +674,8 @@ test('each selected no-build invocation captures its own dirty navigation state'
   assert.equal(procedureItem.uriPath, undefined);
   assert.ok(controller.runs[0].events.includes(`passed:${procedureItem.id}`));
   assert.deepEqual(controller.runs[0].outputs, [
-    'Source navigation unavailable: dirty source was not built for this no-build test run.\n'
+    'Source navigation unavailable: no-build runs current workbook VBA without a proved source capture.\n',
+    'Source navigation unavailable: no-build runs current workbook VBA without a proved source capture.\n'
   ]);
 });
 
@@ -886,7 +981,7 @@ test('a later dirty edit does not restart a procedure snapshot run or mutate its
       '--module', 'Test_Module',
       '--procedure', 'Test_Passes',
       '--source-snapshot', path.join('C:', 'temp', 'procedure-snapshot-2'),
-      '--format', 'ndjson'
+      '--format', 'ndjson', '--interactive', 'false', '--cancellation-transport', 'stdin-v1'
     ]
   ]);
 });
@@ -918,7 +1013,8 @@ test('No-build Test Explorer profile invokes vba-dev test without building', asy
 
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
-    ['test', '--project', projectRoot, '--document', 'Book1', '--no-build', '--format', 'ndjson']
+    ['test', '--project', projectRoot, '--document', 'Book1', '--no-build', '--format', 'ndjson',
+      '--interactive', 'false', '--cancellation-transport', 'stdin-v1']
   ]);
 });
 
@@ -1704,6 +1800,7 @@ test('a cancelled run cannot commit completed output to an invalidated document 
   const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Test_Module.bas');
   let processCount = 0;
   let killed = false;
+  let cancellationRequests = 0;
   let cancelListener: (() => void) | undefined;
   const controller = new FakeTestController();
   const explorer = createExplorer(controller, {
@@ -1712,6 +1809,7 @@ test('a cancelled run cannot commit completed output to an invalidated document 
     ]),
     startProcess: () => {
       processCount += 1;
+      let finish: ((code: number, signal: null) => void) | undefined;
       const stdout = ndjson(testFinishedWithLocation(
         projectRoot,
         'Book1',
@@ -1724,8 +1822,12 @@ test('a cancelled run cannot commit completed output to an invalidated document 
           if (processCount === 1) {
             listener(0, null);
           } else {
-            setTimeout(() => listener(null, 'SIGTERM'), 10);
+            finish = listener;
           }
+        },
+        requestCancellation: async () => {
+          cancellationRequests++;
+          setTimeout(() => finish?.(130, null), 10);
         },
         kill: () => {
           killed = true;
@@ -1751,7 +1853,8 @@ test('a cancelled run cannot commit completed output to an invalidated document 
   cancelListener?.();
   await runPromise;
 
-  assert.equal(killed, true);
+  assert.equal(killed, false);
+  assert.equal(cancellationRequests, 1);
   assert.equal(documentItem.children.items.length, 0);
   assert.ok(controller.runs[1].events.includes(`cancelled:${documentItem.id}`));
 });
@@ -1817,7 +1920,7 @@ test('Running a discovered module node invokes vba-dev test with module selector
     [
       'test', '--project', projectRoot, '--document', 'Book1', '--module', 'Test_Module',
       '--source-snapshot', path.join('C:', 'temp', 'test-source-snapshot'),
-      '--format', 'ndjson'
+      '--format', 'ndjson', '--interactive', 'false', '--cancellation-transport', 'stdin-v1'
     ]
   ]);
 });
@@ -1856,7 +1959,7 @@ test('Running a discovered procedure node invokes vba-dev test with module and p
       'test', '--project', projectRoot, '--document', 'Book1',
       '--module', 'Test_Module', '--procedure', 'Test_Passes',
       '--source-snapshot', path.join('C:', 'temp', 'test-source-snapshot'),
-      '--format', 'ndjson'
+      '--format', 'ndjson', '--interactive', 'false', '--cancellation-transport', 'stdin-v1'
     ]
   ]);
 });
@@ -1890,7 +1993,8 @@ test('No-build Test Explorer profile preserves module and procedure selectors', 
 
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
-    ['test', '--project', projectRoot, '--document', 'Book1', '--module', 'Test_Module', '--procedure', 'Test_Passes', '--no-build', '--format', 'ndjson']
+    ['test', '--project', projectRoot, '--document', 'Book1', '--module', 'Test_Module', '--procedure', 'Test_Passes', '--no-build', '--format', 'ndjson',
+      '--interactive', 'false', '--cancellation-transport', 'stdin-v1']
   ]);
 });
 
@@ -2054,7 +2158,7 @@ test('CLI command failures are reported as project-level or document-level TestR
   assert.ok(documentController.runs[0].events.includes(`errored:${documentItem.id}:Reference was not found`));
 });
 
-test('No-build Test Explorer profile reports unusable generated output as TestRunError', async () => {
+test('No-build Test Explorer profile reports an unavailable source workbook as TestRunError', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   const controller = new FakeTestController();
@@ -2063,7 +2167,7 @@ test('No-build Test Explorer profile reports unusable generated output as TestRu
     manifests: new Map([
       [path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]
     ]),
-    stderr: 'Bin workbook was not found\n',
+    stderr: 'Source workbook was not found\n',
     exitCode: 1
   });
   await explorer.refresh();
@@ -2073,9 +2177,10 @@ test('No-build Test Explorer profile reports unusable generated output as TestRu
 
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
-    ['test', '--project', projectRoot, '--document', 'Book1', '--no-build', '--format', 'ndjson']
+    ['test', '--project', projectRoot, '--document', 'Book1', '--no-build', '--format', 'ndjson',
+      '--interactive', 'false', '--cancellation-transport', 'stdin-v1']
   ]);
-  assert.ok(controller.runs[0].events.includes(`errored:${documentItem.id}:Bin workbook was not found`));
+  assert.ok(controller.runs[0].events.includes(`errored:${documentItem.id}:Source workbook was not found`));
 });
 
 test('Cancelled no-build Test Explorer runs request cooperative CLI cancellation', async () => {
@@ -2365,9 +2470,11 @@ function createExplorer(
           contractVersion: '1.0',
           featureVersions: {
             'test.sourceSnapshot': '2.0',
+            'test.sourceWorkbook': '1.0',
+            'invocation.stdinCancellation': '1.0',
+            'invocation.stdinWorkbookConfirmation': '1.0',
             'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0',
             'sourceSnapshot.activeWindowsCodePage': '1.0',
-            ...(options.vbaDevResolver === undefined ? {} : { 'invocation.stdinCancellation': '1.0' })
           },
           activeWindowsCodePage: 932,
           commands: {
@@ -2386,6 +2493,9 @@ function createExplorer(
       contractVersion: '1.0',
       featureVersions: {
         'test.sourceSnapshot': '2.0',
+        'test.sourceWorkbook': '1.0',
+        'invocation.stdinCancellation': '1.0',
+        'invocation.stdinWorkbookConfirmation': '1.0',
         'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0',
         'sourceSnapshot.activeWindowsCodePage': '1.0'
       },
@@ -2430,7 +2540,9 @@ function stdinCancellationVbaDevResolver() {
         toolVersion: '0.1.0',
         contractVersion: '1.0',
         featureVersions: {
-          'invocation.stdinCancellation': '1.0'
+          'invocation.stdinCancellation': '1.0',
+          'invocation.stdinWorkbookConfirmation': '1.0',
+          'test.sourceWorkbook': '1.0'
         },
         commands: {
           test: { outputSchemaVersion: '1.2' }

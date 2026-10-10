@@ -1,6 +1,7 @@
 using VbaDev.App.Cli;
 using VbaDev.App.FileSystem;
 using VbaDev.App.Projects;
+using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
 
@@ -15,6 +16,8 @@ public sealed class BuildCommand
     private readonly SourceWorkbookBuildCommand? sourceWorkbookBuildCommand;
     private readonly BuildSourceSnapshotCaptureFactory snapshotCaptureFactory;
     private readonly BuildSourceSnapshotOutputSafetyValidator snapshotOutputSafetyValidator;
+
+    internal SourceWorkbookTestCommand? SourceWorkbookTestCommand { get; private set; }
 
     /// <summary>
     /// Creates the build command.
@@ -36,13 +39,15 @@ public sealed class BuildCommand
         WorkbookOutputCommand outputCommand,
         IFileSystemPathIdentityResolver pathIdentityResolver,
         IExactFileSystemObjectOwnershipFactory ownershipFactory,
-        SourceWorkbookBuildCommand sourceWorkbookBuildCommand)
+        SourceWorkbookBuildCommand sourceWorkbookBuildCommand,
+        SourceWorkbookTestCommand? sourceWorkbookTestCommand = null)
         : this(
             outputCommand,
             new BuildSourceSnapshotCaptureFactory(ownershipFactory),
             new BuildSourceSnapshotOutputSafetyValidator(pathIdentityResolver),
             sourceWorkbookBuildCommand)
     {
+        SourceWorkbookTestCommand = sourceWorkbookTestCommand;
     }
 
     internal BuildCommand(

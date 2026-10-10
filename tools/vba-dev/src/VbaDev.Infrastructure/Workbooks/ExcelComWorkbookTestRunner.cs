@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
@@ -76,11 +77,25 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
 
     internal static IReadOnlyList<WorkbookTestResultRow> RunTests(
         ExcelComWorkbookSession session,
-        WorkbookTestSelector selector)
+        WorkbookTestSelector selector,
+        Action<object?>? releaseAcquiredReference = null)
     {
         try
         {
-            using var boundary = new ExcelComWorkbookTestBoundary(session);
+            Action<object?> release = releaseAcquiredReference ?? (session.IsBorrowed
+                ? ExcelComWorkbookSession.ReleaseBorrowedAcquiredReference
+                : ComObjectReleaser.Release);
+            if (session.IsBorrowed)
+            {
+                var borrowedBoundary = new ExcelComWorkbookTestBoundary(session, release,
+                    balanceAcquiredReferences: true);
+                return CompleteAcquiredReferenceRead(
+                    () => RunTests(borrowedBoundary, selector),
+                    borrowedBoundary.ReleaseAcquiredReferences);
+            }
+
+            using var boundary = new ExcelComWorkbookTestBoundary(
+                session, release);
             return RunTests(boundary, selector);
         }
         catch (COMException ex)
@@ -93,7 +108,8 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
         IExcelComWorkbookTestBoundary boundary,
         WorkbookTestSelector selector)
     {
-        var entryPoint = $"'{boundary.WorkbookName}'!{UnitTestEntryPoint}";
+        var workbookName = boundary.WorkbookName.Replace("'", "''", StringComparison.Ordinal);
+        var entryPoint = $"'{workbookName}'!{UnitTestEntryPoint}";
         if (!string.IsNullOrEmpty(selector.ProcedureName))
         {
             boundary.RunMacro(entryPoint, [selector.ModuleName, selector.ProcedureName]);
@@ -144,10 +160,15 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
     }
 
     private sealed class ExcelComWorkbookTestBoundary(
-        ExcelComWorkbookSession session) : IExcelComWorkbookTestBoundary
+        ExcelComWorkbookSession session,
+        Action<object?> releaseAcquiredReference,
+        bool balanceAcquiredReferences = false) : IExcelComWorkbookTestBoundary
     {
         private object? worksheetsObject;
         private object? sheetObject;
+        private readonly AcquiredReferenceScope? cachedReferences = balanceAcquiredReferences
+            ? new(releaseAcquiredReference)
+            : null;
 
         public string WorkbookName
         {
@@ -179,15 +200,30 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
         }
 
         public int GetLastResultRow()
-            => ExcelComWorkbookTestRunner.GetLastResultRow(GetSheet());
+            => ExcelComWorkbookTestRunner.GetLastResultRow(
+                GetSheet(), releaseAcquiredReference, balanceAcquiredReferences);
 
         public string GetCellText(int row, int column)
-            => ExcelComWorkbookTestRunner.GetCellText(GetSheet(), row, column);
+            => ExcelComWorkbookTestRunner.GetCellText(
+                GetSheet(), row, column, releaseAcquiredReference, balanceAcquiredReferences);
 
         public void Dispose()
         {
-            ComObjectReleaser.Release(sheetObject);
-            ComObjectReleaser.Release(worksheetsObject);
+            if (cachedReferences is not null)
+            {
+                _ = CompleteAcquiredReferenceRead(() => true, ReleaseAcquiredReferences);
+                return;
+            }
+
+            releaseAcquiredReference(sheetObject);
+            releaseAcquiredReference(worksheetsObject);
+        }
+
+        internal IReadOnlyList<WorkbookAutomationComReferenceReleaseFailure> ReleaseAcquiredReferences()
+        {
+            sheetObject = null;
+            worksheetsObject = null;
+            return cachedReferences?.Release() ?? [];
         }
 
         private object GetSheet()
@@ -199,14 +235,31 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
 
             dynamic workbook = session.WorkbookObject;
             worksheetsObject = workbook.Worksheets;
+            cachedReferences?.Track(worksheetsObject, "workbook worksheets");
             dynamic worksheets = worksheetsObject;
             sheetObject = worksheets(UnitTestSheetName);
+            cachedReferences?.Track(sheetObject, "result worksheet");
             return sheetObject;
         }
     }
 
-    private static int GetLastResultRow(object sheetObject)
+    private static int GetLastResultRow(
+        object sheetObject, Action<object?> releaseAcquiredReference, bool balanceAcquiredReferences)
     {
+        if (balanceAcquiredReferences)
+        {
+            var references = new AcquiredReferenceScope(releaseAcquiredReference);
+            return CompleteAcquiredReferenceRead(() =>
+            {
+                dynamic borrowedSheet = sheetObject;
+                dynamic acquiredRows = references.Track((object)borrowedSheet.Rows, "result rows")!;
+                dynamic acquiredCells = references.Track((object)borrowedSheet.Cells, "result cells")!;
+                dynamic acquiredLastCell = references.Track((object)acquiredCells(acquiredRows.Count, 1), "last result cell")!;
+                dynamic acquiredEndCell = references.Track((object)acquiredLastCell.End(XlUp), "last populated result cell")!;
+                return (int)acquiredEndCell.Row;
+            }, references.Release);
+        }
+
         dynamic sheet = sheetObject;
         object? rowsObject = null;
         object? cellsObject = null;
@@ -226,15 +279,29 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
         }
         finally
         {
-            ComObjectReleaser.Release(endCellObject);
-            ComObjectReleaser.Release(lastCellObject);
-            ComObjectReleaser.Release(cellsObject);
-            ComObjectReleaser.Release(rowsObject);
+            releaseAcquiredReference(endCellObject);
+            releaseAcquiredReference(lastCellObject);
+            releaseAcquiredReference(cellsObject);
+            releaseAcquiredReference(rowsObject);
         }
     }
 
-    private static string GetCellText(object sheetObject, int row, int column)
+    private static string GetCellText(
+        object sheetObject, int row, int column, Action<object?> releaseAcquiredReference,
+        bool balanceAcquiredReferences)
     {
+        if (balanceAcquiredReferences)
+        {
+            var references = new AcquiredReferenceScope(releaseAcquiredReference);
+            return CompleteAcquiredReferenceRead<string>(() =>
+            {
+                dynamic borrowedSheet = sheetObject;
+                dynamic acquiredCells = references.Track((object)borrowedSheet.Cells, "result cells")!;
+                dynamic acquiredCell = references.Track((object)acquiredCells(row, column), "result cell")!;
+                return Convert.ToString(acquiredCell.Value2) ?? string.Empty;
+            }, references.Release);
+        }
+
         dynamic sheet = sheetObject;
         object? cellsObject = null;
         object? cellObject = null;
@@ -248,8 +315,48 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
         }
         finally
         {
-            ComObjectReleaser.Release(cellObject);
-            ComObjectReleaser.Release(cellsObject);
+            releaseAcquiredReference(cellObject);
+            releaseAcquiredReference(cellsObject);
+        }
+    }
+
+    private static T CompleteAcquiredReferenceRead<T>(
+        Func<T> read,
+        Func<IReadOnlyList<WorkbookAutomationComReferenceReleaseFailure>> release)
+    {
+        T? result = default;
+        Exception? operationError = null;
+        try { result = read(); }
+        catch (Exception error) { operationError = error; }
+
+        var releaseFailures = release();
+        if (releaseFailures.Count > 0)
+            throw new WorkbookAutomationComReferenceReleaseException(operationError, releaseFailures);
+        if (operationError is not null) ExceptionDispatchInfo.Capture(operationError).Throw();
+        return result!;
+    }
+
+    private sealed class AcquiredReferenceScope(Action<object?> release)
+    {
+        private readonly List<(object Reference, string Name)> acquisitions = [];
+
+        internal object? Track(object? reference, string name)
+        {
+            if (reference is not null) acquisitions.Add((reference, name));
+            return reference;
+        }
+
+        internal IReadOnlyList<WorkbookAutomationComReferenceReleaseFailure> Release()
+        {
+            var pending = acquisitions.ToArray();
+            acquisitions.Clear();
+            var failures = new List<WorkbookAutomationComReferenceReleaseFailure>();
+            for (var index = pending.Length - 1; index >= 0; index--)
+            {
+                try { release(pending[index].Reference); }
+                catch (Exception error) { failures.Add(new(pending[index].Name, error)); }
+            }
+            return failures;
         }
     }
 }

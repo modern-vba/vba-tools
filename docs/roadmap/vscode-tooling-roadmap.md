@@ -162,7 +162,10 @@ Expected capabilities:
   and invoke `vba-dev test --source-snapshot <snapshot-directory> --format
   ndjson` for the default run profile;
 - require CLI features `test.sourceSnapshot` version `2.0` and
-  `sourceSnapshot.activeWindowsCodePage` version `1.0` before snapshot capture;
+  `test.sourceWorkbook` version `1.0`, plus `build.sourceSnapshot` `2.0`,
+  `build.sourceSnapshotAnalysis`, stdin cancellation/confirmation and active
+  Windows code page `1.0` before snapshot capture; execute the exact selected
+  source workbook without tool-initiated Save, not a disposable execution copy;
 - fix debug and test snapshot inventories at capture start from one complete
   disk inventory overlaid by every then-open source-set-contained dirty
   file-backed editor, including an in-scope path not yet on disk; capture each
@@ -171,15 +174,23 @@ Expected capabilities:
   for the next invocation without adding editor awareness to `vba-dev`;
 - expose a separate non-default `Run Tests Without Build` profile that invokes
   `vba-dev test --no-build --format ndjson` for explicit fast reruns against
-  existing generated output;
+  current source-workbook VBA without external source import; use live VBE state
+  when open and saved workbook state when closed;
 - support `vba-dev test --timeout-seconds` and
   `commandDefaults.test.executionTimeoutSeconds` with CLI-over-manifest-over-600
   precedence for the test macro execution stage in every test mode;
 - add no separate VS Code test timeout or shorter watchdog; use the CLI timeout
   outcome and process cancellation contract;
 - never save or snapshot source for the no-build profile; retain outcomes and
-  test identities but omit navigation with a non-failing warning when scoped
-  source is already dirty;
+  test identities but always omit unproved external-source navigation with a
+  non-failing warning, even when editors are clean;
+- borrow an exact already-open source workbook without hiding, closing or killing
+  its session; open a closed file hidden and close without saving afterward;
+- require explicit unsaved-workbook consent before import/Run, with execution-only
+  no-build wording; terminal CLI `[y/N]` and explicit `--interactive false` refusal,
+  or one managed UI answer on declared stdin-v1, never implicit consent or replay;
+- attempt pre-Run preparation/import recovery from captured modules, UserForm
+  sidecars and references, but never claim rollback after possible VBA effects;
 - consume the initial batched `runStarted`, `testStarted`, `testFinished`, and
   `runFinished` NDJSON replay after mandatory owned-process cleanup; reserve
   true real-time streaming for a later schema revision;
@@ -274,13 +285,13 @@ Expected capabilities:
 - report unavailable or ambiguous source locations as non-failing Test Run
   output warnings without changing test outcomes or showing popup
   notifications;
-- treat failure to release an owned test Excel process as a command-level error,
-  but preserve test outcomes and report only a warning when an internal
-  workspace remains after bounded post-release deletion retries;
+- treat unproved owned-process/automation release or STA retirement as a
+  command-level error, without terminating borrowed user processes; preserve
+  completed outcomes when only caller snapshot deletion fails after child close;
 - avoid showing standalone VBA files that do not belong to a `ProjectManifest`
   in Test Explorer;
-- keep missing or unusable no-build generated output as a command error instead
-  of implicitly building.
+- keep a missing or unusable no-build source workbook as a command error instead
+  of implicitly importing or falling back to generated output.
 
 ## Phase 3: Diagnostics and Problems integration
 
