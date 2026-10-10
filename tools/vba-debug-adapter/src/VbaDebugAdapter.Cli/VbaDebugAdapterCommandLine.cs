@@ -14,7 +14,7 @@ public sealed class VbaDebugAdapterCommandLine
         featureVersions: new Dictionary<string, string>
         {
             ["build.sourceSnapshot"] = "2.0",
-            ["debug.sourceWorkbookPreparation"] = "1.0",
+            ["debug.sourceWorkbookPreparation"] = "2.0",
             ["invocation.stdinCancellation"] = "1.0",
             ["invocation.stdinWorkbookConfirmation"] = "1.0",
             ["sourceSnapshot.activeWindowsCodePage"] = "1.0"
@@ -135,7 +135,7 @@ public sealed class VbaDebugAdapterCommandLine
                 new Dictionary<string, string>(StringComparer.Ordinal)
                 {
                     ["build.sourceSnapshot"] = "2.0",
-                    ["debug.sourceWorkbookPreparation"] = "1.0",
+                    ["debug.sourceWorkbookPreparation"] = "2.0",
                     ["invocation.stdinCancellation"] = "1.0",
                     ["invocation.stdinWorkbookConfirmation"] = "1.0",
                     ["sourceSnapshot.activeWindowsCodePage"] = "1.0"
@@ -322,7 +322,7 @@ public sealed class VbaDebugAdapterCommandLine
                 await WriteLineAsync(
                     standardError,
                     "The supplied vba-dev executable is incompatible; " +
-                    "it must advertise build.sourceSnapshot 2.0, debug.sourceWorkbookPreparation 1.0, " +
+                    "it must advertise build.sourceSnapshot 2.0, debug.sourceWorkbookPreparation 2.0, " +
                     "invocation.stdinCancellation 1.0, invocation.stdinWorkbookConfirmation 1.0, " +
                     "and sourceSnapshot.activeWindowsCodePage 1.0. " +
                     $"Capability response rejected: {admission.Rejection!.Kind}.").ConfigureAwait(false);

@@ -624,7 +624,7 @@ export function assertBundledDebugAdapterCapabilities(
     contract.requiredVbaDevFeatureVersions,
     {
       'build.sourceSnapshot': '2.0',
-      'debug.sourceWorkbookPreparation': '1.0',
+      'debug.sourceWorkbookPreparation': '2.0',
       'invocation.stdinCancellation': '1.0',
       'invocation.stdinWorkbookConfirmation': '1.0',
       'sourceSnapshot.activeWindowsCodePage': '1.0'
@@ -632,7 +632,7 @@ export function assertBundledDebugAdapterCapabilities(
   )) {
     throw new Error(
       'Bundled vba-debug-adapter contract must require only build.sourceSnapshot 2.0, ' +
-      'debug.sourceWorkbookPreparation 1.0, invocation.stdinCancellation 1.0, ' +
+      'debug.sourceWorkbookPreparation 2.0, invocation.stdinCancellation 1.0, ' +
       'invocation.stdinWorkbookConfirmation 1.0, and sourceSnapshot.activeWindowsCodePage 1.0.'
     );
   }

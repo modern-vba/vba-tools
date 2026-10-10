@@ -47,7 +47,7 @@ internal sealed class VbaDevDebugPreparationCommandFamily
         };
         var interactive = new Option<bool>("--interactive")
         {
-            Description = "Allow explicit confirmation for unsaved workbook changes (default true).",
+            Description = "Compatibility option; Debug never prompts for unsaved workbook changes.",
             DefaultValueFactory = _ => true
         };
         command.Add(snapshot);
@@ -117,8 +117,7 @@ internal sealed class VbaDevDebugPreparationCommandFamily
                 composition, preparation.ProjectRoot, preparation.DocumentName,
                 (context, token) => composition.DebugWorkbookPreparationCommand.RunAsync(
                     context, request,
-                    preparation.Interactive
-                        ? VbaDevWorkbookConfirmationInput.ConfirmAsync : null,
+                    null,
                     (ready, continuationToken) => VbaDevWorkbookConfirmationInput.ContinueDebugPreparationAsync(
                         ready.GenerationId, ready.WorkbookPath, ready.ExcelProcessId,
                         ready.ExcelProcessStartUtcTicks, continuationToken), token),

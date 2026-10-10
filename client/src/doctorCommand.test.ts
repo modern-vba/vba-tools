@@ -1298,7 +1298,7 @@ test('Doctor resolves and runs the configured adapter without an injected resolv
     commandSchemaVersions: { doctor: '1.0' },
     featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
     requiredVbaDevFeatureVersions: {
-      'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '1.0',
+      'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '2.0',
       'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
       'sourceSnapshot.activeWindowsCodePage': '1.0'
     }
@@ -1727,7 +1727,7 @@ function createAggregateDoctorFixture(
           commandSchemaVersions: { doctor: '1.0' },
           featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
           requiredVbaDevFeatureVersions: {
-            'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '1.0',
+            'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '2.0',
             'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
             'sourceSnapshot.activeWindowsCodePage': '1.0'
           }
