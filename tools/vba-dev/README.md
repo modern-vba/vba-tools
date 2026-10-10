@@ -34,12 +34,20 @@ Source-workbook Build, project Export, and Test callers must additionally requir
 The unchanged command output schema alone does not distinguish an older
 bin-workbook provider from the source-workbook behavior.
 
-Debug preparation callers require `debug.sourceWorkbookPreparation: 1.0`.
+Debug preparation callers require `debug.sourceWorkbookPreparation: 2.0`.
 `prepare-debug --describe` resolves the selected source workbook without starting
 Excel. Managed preparation imports a complete immutable snapshot into an exact
 already-open source workbook bound by its Excel PID, UTC start ticks and
-generation. It uses the cancellation/confirmation transport plus a one-shot
-ready continuation after recovery capture; it never saves or closes the workbook.
+generation. Debug requests authorize live code replacement without asking for
+dirty-workbook consent: unsaved VBE-direct code is replaced by the captured
+source, while cell edits remain. It uses cooperative cancellation plus a
+one-shot ready continuation after recovery capture; it never saves or closes
+the workbook. `--interactive` remains accepted for `prepare-debug` command-line
+compatibility but has no effect: neither true nor false prompts or refuses
+preparation because the workbook is dirty. The confirmation transport remains
+compatible for other callers, but this Debug preparation emits no
+`workbookConfirmation` request. Version 2.0 distinguishes this behavior from
+older prompting providers; command result schemas are unchanged.
 This raw Debug path does not run Build/Test/Publish's independent source-analysis
 gate. The adapter separately owns safe target admission, native Reset and Run.
 
@@ -210,12 +218,14 @@ not a fallback for the private-desktop generation path.
 Interactive debugging is deliberately different. The separate adapter resolves
 the source workbook through `prepare-debug --describe`, reuses its exact existing
 Excel process or opens it visibly, and uses managed `prepare-debug` for raw
-snapshot replacement after consent, capture and bounded Reset. Native Run,
-breakpoints and later Reset stay in the adapter. Debug does not automatically
+snapshot replacement without dirty-workbook confirmation, after capture and
+bounded Reset. Native Run, breakpoints and later Reset stay in the adapter.
+Debug does not automatically
 save source editors or the workbook, close Excel, or use a temporary execution
 workbook. Build, Test, Publish and explicit snapshot-output Build retain their
 independent analysis requirements. See
-[ADR 0062](../../docs/adr/0062-debug-the-retained-source-workbook.md).
+[ADR 0062](../../docs/adr/0062-debug-the-retained-source-workbook.md) and
+[ADR 0064](../../docs/adr/0064-debug-dirty-source-workbooks-without-confirmation.md).
 
 ## Document source sets
 

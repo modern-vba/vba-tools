@@ -95,15 +95,8 @@ public sealed class DebugWorkbookPreparationCommand
                     namePreflight.ThrowIfFailed(prepared.SourcePreflight,
                         namePreflight.InspectLivePhase(sourceSet.SourceFiles,
                             retainedModules, projectName, remainingReferences));
-                    if (!await session.IsSavedAsync(token).ConfigureAwait(false))
-                    {
-                        var message = $"Debug preparation will replace VBA code in the already-open source workbook '{ready.WorkbookPath}'. Other unsaved workbook edits will not be saved or discarded. Continue?";
-                        if (confirmUnsavedChanges is null
-                            || !await confirmUnsavedChanges(message, token).ConfigureAwait(false))
-                            throw new InvalidOperationException(
-                                $"Debug preparation was declined; no VBA code was replaced: {ready.WorkbookPath}");
-                    }
-
+                    // Launch/Restart already requests Debug replacement, even for dirty workbooks.
+                    // Retain the callback parameter for callers, but never request consent or Save.
                     var narrowedSession = new SourceWorkbookReplacementSessionView(session);
                     await replacement.CaptureAsync(narrowedSession, modules, references, token)
                         .ConfigureAwait(false);

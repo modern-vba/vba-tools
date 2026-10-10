@@ -20,7 +20,7 @@ const requiredContract: RequiredVbaDebugAdapterContract = {
   featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
   requiredVbaDevFeatureVersions: {
     'build.sourceSnapshot': '2.0',
-    'debug.sourceWorkbookPreparation': '1.0',
+    'debug.sourceWorkbookPreparation': '2.0',
     'invocation.stdinCancellation': '1.0',
     'invocation.stdinWorkbookConfirmation': '1.0',
     'sourceSnapshot.activeWindowsCodePage': '1.0'
@@ -34,7 +34,7 @@ test('the extension contract requires source-workbook Debug and Doctor stdin can
 
   assert.equal(contract.featureVersions['doctor.stdinCancellation'], '1.0');
   assert.equal(contract.featureVersions['debug.sourceWorkbook'], '1.0');
-  assert.equal(contract.requiredVbaDevFeatureVersions['debug.sourceWorkbookPreparation'], '1.0');
+  assert.equal(contract.requiredVbaDevFeatureVersions['debug.sourceWorkbookPreparation'], '2.0');
 });
 
 test('a configured debug adapter accepts reordered and additional offered capabilities', async () => {

@@ -33,7 +33,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var service = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(new StandaloneVbaDebugAdapterStdioRunner(service),
             new RecordingVbaDevCapabilitiesProbe(new(0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", "")));
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", "")));
         using var output = new MemoryStream();
         Assert.Equal(0, await commandLine.InvokeAsync(
             ["--stdio", "--vba-dev", Path.GetFullPath("vba-dev.exe"), "--session", "0123456789abcdef0123456789abcdef"],
@@ -227,7 +227,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
     {
         var commandLine = CreateCommandLine(new StandaloneVbaDebugAdapterStdioRunner(service),
             new RecordingVbaDevCapabilitiesProbe(new(0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", "")));
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}", "")));
         using var input = CreateDapInput(requests);
         using var output = new MemoryStream();
         var exitCode = await commandLine.InvokeAsync(

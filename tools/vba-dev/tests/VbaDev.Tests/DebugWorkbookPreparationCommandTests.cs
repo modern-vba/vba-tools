@@ -115,31 +115,38 @@ public sealed class DebugWorkbookPreparationCommandTests
         Assert.Equal(new[] { "export:Existing" }, fixture.Automation.Session.Events);
     }
 
-    [Fact]
-    public async Task DecliningDirtyWorkbookPreservesCodeWithoutCaptureOrResetReadiness()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DirtyWorkbookIsPreparedWithoutConfirmationOrSaving(bool supplyConfirmation)
     {
         using var fixture = new PreparationFixture();
         fixture.Automation.Session.IsSaved = false;
         var continuationRequested = false;
-        string? warning = null;
+        var confirmationRequested = false;
+        var savedBytes = File.ReadAllBytes(fixture.WorkbookPath);
 
         var result = await fixture.Command.RunAsync(fixture.Context, fixture.Request,
-            (message, _) =>
+            supplyConfirmation ? (_, _) =>
             {
-                warning = message;
+                confirmationRequested = true;
                 return Task.FromResult(false);
-            }, (_, _) =>
+            } : null, (_, _) =>
             {
                 continuationRequested = true;
                 return Task.FromResult(true);
             }, CancellationToken.None);
 
-        Assert.Equal(1, result.ExitCode);
-        Assert.Contains("will not be saved or discarded", warning);
-        Assert.Contains("declined; no VBA code was replaced", result.StandardError);
-        Assert.False(continuationRequested);
-        Assert.Empty(fixture.Automation.Session.Events);
-        Assert.Equal(new[] { "ThisWorkbook", "Existing" },
+        Assert.Equal(0, result.ExitCode);
+        Assert.False(confirmationRequested);
+        Assert.True(continuationRequested);
+        Assert.Contains("export:Existing", fixture.Automation.Session.Events);
+        Assert.Contains("import:Boot.bas", fixture.Automation.Session.Events);
+        Assert.DoesNotContain("save", fixture.Automation.Session.Events);
+        Assert.Equal(SourceWorkbookSaveState.NotStarted, fixture.Automation.Session.SaveState);
+        Assert.Equal(savedBytes, File.ReadAllBytes(fixture.WorkbookPath));
+        Assert.Equal(fixture.WorkbookPath, Assert.Single(fixture.Automation.OpenedPaths));
+        Assert.Equal(new[] { "ThisWorkbook", "Boot" },
             fixture.Automation.Session.Modules.Select(module => module.Name));
     }
 

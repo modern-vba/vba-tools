@@ -5,8 +5,8 @@
 This is the developer-facing implementation and maintenance contract for the
 VS Code-to-VBE debug workflow. README documents only the user-visible workflow,
 requirements, limitations, and data-loss behavior. Decision rationale remains
-in ADR 0062 for source-workbook Debug, with historical decisions in ADRs 0019
-through 0021, 0024, 0025, 0027, 0040 and 0041. ADR 0022 is superseded.
+in ADRs 0062 and 0064 for source-workbook Debug, with historical decisions in
+ADRs 0019 through 0021, 0024, 0025, 0027, 0040 and 0041. ADR 0022 is superseded.
 
 ## Ownership boundary
 
@@ -17,9 +17,11 @@ workbook or Excel lifetime. [ADR 0062](adr/0062-debug-the-retained-source-workbo
 supersedes older disposable/copied Debug decisions only for this route.
 
 VbaDev resolves the manifest through read-only `prepare-debug --describe`.
-Managed `prepare-debug` admits raw snapshot bytes, obtains dirty-code consent,
-captures modules/forms/references and imports without Save/Close/Quit. It does
-not host DAP or generate another execution workbook. Ordinary Build, Test,
+Managed `prepare-debug` admits raw snapshot bytes, captures
+modules/forms/references and imports without dirty-workbook confirmation or
+Save/Close/Quit. The accepted Debug request authorizes replacement of live VBE
+code, including unsaved edits; cell edits remain. It does not host DAP or
+generate another execution workbook. Ordinary Build, Test,
 Publish and public paired snapshot-output Build retain their independent
 source-analysis and ownership/commit policies.
 
@@ -298,7 +300,7 @@ lowercase-hex-32 session IDs, cleanup/Doctor, Doctor schema 1.0,
 The exact required CLI feature map is:
 
 - `build.sourceSnapshot: 2.0`;
-- `debug.sourceWorkbookPreparation: 1.0`;
+- `debug.sourceWorkbookPreparation: 2.0`;
 - `invocation.stdinCancellation: 1.0`;
 - `invocation.stdinWorkbookConfirmation: 1.0`; and
 - `sourceSnapshot.activeWindowsCodePage: 1.0`.
@@ -315,6 +317,15 @@ Debug no longer invokes public snapshot Build or requires the old adapter
 Build/Test/Publish/public snapshot-output quality gates remain. Their diagnostic
 origin contracts and ADR0058 history remain valid for those consumers. Package
 tools and contracts together; do not silently accept mixed old/new providers.
+
+Preparation feature 2.0 requires confirmation-free Debug, including dirty open
+workbooks, and rejects a prompting 1.0 provider before source capture or workbook
+preparation. It changes no CLI result schema, adapter feature version or DAP
+schema. `--interactive` remains accepted by `prepare-debug` for compatibility
+only; both values have the same no-prompt, no-Save behavior. The existing
+confirmation transport and DAP compatibility handlers remain available, but
+current Debug preparation emits no `workbookConfirmation` request. Build and
+Test still use their own consent policies.
 
 The VSIX must contain the self-contained Windows x64 executables
 `bin/vba-dev/win-x64/vba-dev.exe` and
@@ -366,8 +377,9 @@ unsupported.
 4. Bind the exact caller-desktop source workbook/physical file/PID/start time,
    reusing an open workbook or opening it visibly. Fail uncertainty/ambiguity;
    neither basename nor active workbook is identity.
-5. Start managed `prepare-debug`. Obtain dirty-workbook consent, then capture
-   modules, UserForms/FRX and references. Failed capture prevents replacement.
+5. Start managed `prepare-debug` without a dirty-workbook confirmation or refusal.
+   Capture modules, UserForms/FRX and references. Failed capture prevents
+   replacement.
 6. Read the bound `debugPreparationReady` record while DAP stays responsive.
    Only a current accepted launch/Restart claims commit: recheck binding, confirm
    native Reset and answer its exact readiness nonce.
@@ -380,7 +392,7 @@ or breakpoint identification fails with an explanation. Unknown live custom
 conditional constants are neither inferred from an older saved package nor
 assumed zero.
 
-Known initial source rejection permits a corrected launch. Rejected/declined
+Known initial source rejection permits a corrected launch. Rejected
 Restart before commit preserves its usable current session; closed/stopped
 sessions cannot be revived. Unexpected parser/process/COM failures keep primary
 and cleanup evidence. Failed output is never retried. Code/reference recovery
@@ -390,8 +402,9 @@ The actual source opens read/write, not as an execution copy. Closed source
 workbooks open in a new visible application; open-time events are suppressed only
 around Open and its original settings are restored. The adapter does not borrow
 a shared application for this setting-sensitive open. Exact already-open source
-reuse leaves its application settings unchanged. Unrelated workbooks are not
-normalized or cleanup-owned. Access permissions, Trust Center and native VBE
+reuse leaves its application settings and existing window state unchanged.
+Unsaved workbook state does not request terminal or UI confirmation. Unrelated
+workbooks are not normalized or cleanup-owned. Access permissions, Trust Center and native VBE
 compile/runtime behavior remain required.
 
 ## Breakpoint transfer
@@ -494,8 +507,10 @@ ProcessExited with nullable actual code, and Detached. Procedure completion is
 not terminal; workbook close never fabricates an Excel exit.
 
 Managed source preparation drains both streams and uses exact one-shot stdin
-control frames. Schema-1.0 dirty consent and captured readiness have closed
-fields/nonces; readiness also binds generation, workbook, PID and UTC start.
+control frames. Schema-1.0 captured readiness has closed fields/nonces and binds
+generation, workbook, PID and UTC start. Current Debug emits no dirty-workbook
+confirmation. Retained schema-1.0 confirmation handlers are compatibility-only;
+they do not authorize a new production dirty-workbook prompt.
 Malformed, duplicate, stale or out-of-order records confer no authority.
 Pending callbacks do not block stderr/DAP reads. Cancellation sends one
 `cancel` frame then awaits recovery/terminal exit. Independent twelve-minute
@@ -510,11 +525,13 @@ paths. Lease disposal and public/stale cleanup refuse whole-tree deletion on
 any marker or uncertain inspection, not incidental file-sharing failure.
 Existing create-new, pinned-parent and bounded-deletion authority remains.
 
-Restart captures latest source for the original document/target, reconfirms a
-dirty workbook and captures recovery while current execution stays active.
+Restart captures latest source for the original document/target without asking
+for dirty-workbook confirmation and captures recovery while current execution
+stays active.
 After readiness and binding claim, Reset/import/Run use the same workbook/PID,
-preserving cells without saving. Decline/capture failure/cancellation/stale
-identity before commit preserves current execution where proved cleanup permits.
+preserving cells without saving. Readiness rejection, capture failure,
+cancellation or stale identity before commit preserves current execution where
+proved cleanup permits.
 Failure/cancellation during the companion's replacement/verification attempts
 captured code/reference recovery, not resurrection of prior execution. After
 verified preparation releases that capsule, native breakpoint/Run failure leaves
@@ -634,8 +651,9 @@ source-snapshot payload moves to schema 2:
    and the continued existence of the same target module and procedure in the
    fresh source, then fixes that evidence for one-shot launch preparation.
 6. Preparation supplies fresh inventory to managed `vba-dev prepare-debug`.
-   Dirty consent and pre-replacement recovery capture finish while the current
-   execution remains active. Bound readiness produces a one-shot launch plan.
+   Pre-replacement recovery capture finishes without dirty-workbook confirmation
+   while current execution remains active. Bound readiness produces a one-shot
+   launch plan.
 7. After captured readiness, one-shot commit rechecks the bound session identity,
    restart request sequence, restart generation, canonical project, document,
    module, and procedure. A stale or superseded binding cleans the new
@@ -655,7 +673,7 @@ JSON syntax and DAP framing failures remain transport failures.
 Receipt acknowledgement is distinct from the original Restart response. An
 exactly correlated notification consumes its request once; a reported failure,
 invalid payload, missing or malformed launch marker, wrong launch binding,
-wrong document or target, target removal, snapshot/consent/capture failure,
+wrong document or target, target removal, snapshot/capture failure,
 or restart-only cancellation before commit fails that restart,
 cleans any new generation, and retains the still-current old session only under
 the owner-evidence rules above. If the old session exits
@@ -722,20 +740,24 @@ absence of project-file saves.
 Source Debug isolates read-only manifest resolution behind
 `VbaDevSourceWorkbookResolver`, cooperative preparation behind
 `IManagedDebugPreparationProcess`, native binding behind
-`ISourceVbeDebugSessionFactory` / `ISourceVbeDebugSession`, and lifecycle and
-workbook-consent sinks. Tests exercise immutable source capture, exact binding,
-capture/ready/Reset/import/Run ordering, refusal before replacement, same-process
+`ISourceVbeDebugSessionFactory` / `ISourceVbeDebugSession`, lifecycle and retained
+compatibility-only workbook-confirmation sinks. Tests exercise immutable source
+capture, exact binding,
+capture/ready/Reset/import/Run ordering, dirty-workbook launch and Restart without
+confirmation or Save, readiness rejection before replacement, same-process
 Restart, and typed source-workbook versus process completion. Workspace tests
 prove create-new leases/generations and durable companion retention before child
 start; unproved child release prevents snapshot deletion and stale reaping.
 Malicious paths and symlink/reparse substitutions never become ownership
 evidence. `VbaDev` preparation tests pin strict encoding, live preflight,
-consent, recovery, no independent source-quality input, and no Save/Close/Quit.
+no confirmation for either `--interactive` value, recovery, no independent
+source-quality input, and no Save/Close/Quit. Build/Test tests separately retain
+dirty-workbook consent and refusal coverage.
 Native source tests substitute exact desktop/process/file inventory, acquired
 COM references, modal-window observation, foreground activation and the STA
 dispatcher without granting process lifetime ownership. DAP tests use byte
-streams and held-open input to verify framing, ordering, confirmation during
-pending preparation, cancellation and background failures.
+streams and held-open input to verify framing, ordering, retained confirmation
+transport compatibility, cancellation and background failures.
 
 The legacy snapshot-Build and disposable `IVbeDebugSession` fixtures remain
 separate compatibility/Doctor evidence. Their Job Objects, output atomicity and

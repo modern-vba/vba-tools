@@ -989,7 +989,7 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
 
     [WindowsExcelIntegrationFact]
     [Trait("Category", "WindowsExcelIntegration")]
-    public async Task PackagedSourceRestartDeclineRetainsTheCurrentSessionAndAcceptanceUsesLatestCodeInTheSameProcess()
+    public async Task PackagedDirtySourceLaunchAndRestartUseLatestCodeWithoutConfirmationOrSavingInTheSameProcess()
     {
         var assets = ResolvePackagedDebugAssets(ResolveRepositoryRoot());
         using var temp = TempDirectory.Create();
@@ -1032,6 +1032,22 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
         };
         try
         {
+            nint existingWindow;
+            // Open the fixture first, make it dirty, then release this setup binding.
+            // The packaged adapter must borrow the retained window on its initial launch.
+            await using (var existing = await new SourceVbeDebugAutomation()
+                .AttachOrOpenAsync(paths.TemplatePath, CancellationToken.None))
+            {
+                fixtureExcel = CaptureOwnedExcelProcess(existing.ProcessId);
+                using var process = Process.GetProcessById(existing.ProcessId);
+                existingWindow = process.MainWindowHandle;
+                Assert.NotEqual(0, existingWindow);
+                Assert.DoesNotContain(fixtureExcel.ProcessId, baseline);
+                await WriteSourceCellAsync(existingWindow, paths.TemplatePath, "A2", "retained-cell");
+                Assert.False((await existing.InspectAsync(CancellationToken.None)).IsSaved);
+            }
+            Assert.True(IsOwnedExcelProcessRunning(fixtureExcel));
+
             await using var adapter = PackagedDebugAdapterProcess.Start(
                 assets.DebugAdapterExecutablePath, assets.VbaDevExecutablePath, projectRoot, sessionId);
             await adapter.SendRequestAsync(1, "initialize", new { adapterID = "vba" });
@@ -1057,11 +1073,11 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
             }
             var original = await WaitForLaunchReportAsync(oldMarker, TimeSpan.FromSeconds(15));
             var window = original.ExcelWindowHandle;
-            fixtureExcel = CaptureOwnedExcelProcess(GetWindowProcessId(window));
+            Assert.Equal(existingWindow, window);
+            Assert.Equal(fixtureExcel, CaptureOwnedExcelProcess(GetWindowProcessId(window)));
             Assert.DoesNotContain(fixtureExcel.ProcessId, baseline);
             Assert.Equal(Path.GetFullPath(paths.TemplatePath), Path.GetFullPath(original.WorkbookPath), ignoreCase: true);
             await WaitForVbeModeAsync(window, VbeBreakMode, TimeSpan.FromSeconds(15));
-            await WriteSourceCellAsync(window, paths.TemplatePath, "A2", "retained-cell");
             var initialLive = await ReadSourceStateAsync(window, paths.TemplatePath);
             Assert.False(initialLive.Saved);
             Assert.Contains(oldMarker, initialLive.ModuleCode, StringComparison.Ordinal);
@@ -1074,32 +1090,10 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                 success = true, launch = Launch(1, latestSource)
             });
             AssertSuccessfulResponse(await adapter.WaitForResponseAsync(6, TimeSpan.FromSeconds(15)), "vba/restartPrepared");
-            var declinedWarning = await adapter.WaitForEventAsync("vba/workbookConfirmation", TimeSpan.FromSeconds(90));
-            await adapter.AnswerWorkbookConfirmationAsync(7, declinedWarning, accepted: false);
-            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(7, TimeSpan.FromSeconds(15)), "vba/workbookConfirmationResult");
-            var declined = await adapter.WaitForResponseAsync(5, TimeSpan.FromSeconds(90));
-            Assert.False(declined.GetProperty("success").GetBoolean());
-            Assert.Equal(fixtureExcel, CaptureOwnedExcelProcess(GetWindowProcessId(window)));
-            await WaitForVbeModeAsync(window, VbeBreakMode, TimeSpan.FromSeconds(15));
-            Assert.Equal(initialLive, await ReadSourceStateAsync(window, paths.TemplatePath));
-            Assert.False(File.Exists(freshMarker));
-            Assert.False(File.Exists(oldCompletion));
-            AssertPersistentArtifactsUnchanged(paths, persistentArtifacts);
-
-            await adapter.SendRequestAsync(8, "restart", new { });
-            await adapter.SendRequestAsync(9, "vba/restartPrepared", new
-            {
-                sessionId, restartRequestSequence = 8, preparationId, generation = 2,
-                success = true, launch = Launch(2, latestSource)
-            });
-            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(9, TimeSpan.FromSeconds(15)), "vba/restartPrepared");
-            var acceptedWarning = await adapter.WaitForWorkbookConfirmationAsync(generation: 2, TimeSpan.FromSeconds(90));
-            Assert.Equal(Path.GetFullPath(paths.TemplatePath), Path.GetFullPath(
-                acceptedWarning.GetProperty("body").GetProperty("workbookPath").GetString()!), ignoreCase: true);
-            await adapter.AnswerWorkbookConfirmationAsync(10, acceptedWarning, accepted: true);
-            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(10, TimeSpan.FromSeconds(15)), "vba/workbookConfirmationResult");
-            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(8, TimeSpan.FromSeconds(90)), "restart");
+            // Do not answer a consent event: a dirty Restart must complete without one.
+            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(5, TimeSpan.FromSeconds(90)), "restart");
             var latest = await WaitForLaunchReportAsync(freshMarker, TimeSpan.FromSeconds(15));
+            Assert.Equal(window, latest.ExcelWindowHandle);
             Assert.Equal(fixtureExcel, CaptureOwnedExcelProcess(GetWindowProcessId(latest.ExcelWindowHandle)));
             Assert.Equal(Path.GetFullPath(paths.TemplatePath), Path.GetFullPath(latest.WorkbookPath), ignoreCase: true);
             await WaitForVbeModeAsync(latest.ExcelWindowHandle, VbeBreakMode, TimeSpan.FromSeconds(15));
@@ -1119,6 +1113,9 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
             await adapter.SendRequestAsync(11, "terminate", new { });
             AssertSuccessfulResponse(await adapter.WaitForResponseAsync(11, TimeSpan.FromSeconds(30)), "terminate");
             await adapter.CompleteInputAndWaitForExitAsync(TimeSpan.FromSeconds(15));
+            Assert.DoesNotContain(adapter.Messages, message =>
+                message.TryGetProperty("event", out var name)
+                && name.GetString() == "vba/workbookConfirmation");
             Assert.True(IsOwnedExcelProcessRunning(fixtureExcel));
             Assert.False((await ReadSourceStateAsync(latest.ExcelWindowHandle, paths.TemplatePath)).Saved);
             AssertPersistentArtifactsUnchanged(paths, persistentArtifacts);

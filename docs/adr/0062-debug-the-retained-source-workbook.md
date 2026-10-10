@@ -16,6 +16,11 @@ status: accepted
 legacy `binPath` optional and deprecated without changing this source Debug
 binding, preparation, retained lifetime, or no-Save contract.
 
+[ADR 0064](0064-debug-dirty-source-workbooks-without-confirmation.md) subsequently
+supersedes this ADR's dirty-workbook consent requirement and preparation feature
+version for Debug only. The original accepted decision below remains historical;
+capture, readiness, recovery, exact binding and retained/no-Save lifetime remain.
+
 ## Context
 
 The maintainer selected one source workbook as the authoring and Debug state.
