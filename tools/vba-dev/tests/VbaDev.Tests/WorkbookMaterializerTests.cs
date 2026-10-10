@@ -542,11 +542,12 @@ public sealed class WorkbookMaterializerTests
             [("Module1.bas", "Attribute VB_Name = \"Module1\"\r\n")]);
         File.Delete(fixture.TemplatePath);
         var context = fixture.Intent.Context;
+        var outputPath = Assert.IsType<string>(context.BinDocumentPath);
         var sourcePath = Path.Combine(context.DocumentSourceSetPath, "Module1.bas");
         var sourceBytes = File.ReadAllBytes(sourcePath);
         var outputBytes = Encoding.UTF8.GetBytes("previous-workbook");
-        Directory.CreateDirectory(Path.GetDirectoryName(context.BinDocumentPath)!);
-        File.WriteAllBytes(context.BinDocumentPath, outputBytes);
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+        File.WriteAllBytes(outputPath, outputBytes);
         var events = new List<string>();
         var pipeline = CreatePipeline(
             new RecordingWorkbookGenerationAutomation(events),
@@ -565,7 +566,7 @@ public sealed class WorkbookMaterializerTests
             Assert.True(Directory.Exists(capture.StagingPath));
 
             var error = await Assert.ThrowsAsync<VbaSourceAnalysisException>(() => pipeline.MaterializeAsync(
-                new WorkbookMaterializationIntent.SourceSnapshotBuild(context, capture, context.BinDocumentPath),
+                new WorkbookMaterializationIntent.SourceSnapshotBuild(context, capture, outputPath),
                 CancellationToken.None));
 
             Assert.Equal(fixture.TemplatePath, Assert.IsType<FileNotFoundException>(error.OperationalFailure).FileName);
@@ -573,9 +574,9 @@ public sealed class WorkbookMaterializerTests
             Assert.Contains(fixture.TemplatePath, Assert.Single(error.Report.Failures).Message, StringComparison.Ordinal);
             Assert.False(Directory.Exists(capture.StagingPath));
             Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
-            Assert.Equal(outputBytes, File.ReadAllBytes(context.BinDocumentPath));
+            Assert.Equal(outputBytes, File.ReadAllBytes(outputPath));
             Assert.Empty(events);
-            Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(context.BinDocumentPath)!, ".Book1.*.tmp.xlsm"));
+            Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(outputPath)!, ".Book1.*.tmp.xlsm"));
         }
         finally
         {
@@ -597,11 +598,12 @@ public sealed class WorkbookMaterializerTests
             [("Module1.bas", "Attribute VB_Name = \"Module1\"\r\n")]);
         File.Delete(fixture.TemplatePath);
         var context = fixture.Intent.Context;
+        var outputPath = Assert.IsType<string>(context.BinDocumentPath);
         var sourcePath = Path.Combine(context.DocumentSourceSetPath, "Module1.bas");
         var sourceBytes = File.ReadAllBytes(sourcePath);
         var outputBytes = Encoding.UTF8.GetBytes("previous-workbook");
-        Directory.CreateDirectory(Path.GetDirectoryName(context.BinDocumentPath)!);
-        File.WriteAllBytes(context.BinDocumentPath, outputBytes);
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+        File.WriteAllBytes(outputPath, outputBytes);
         var events = new List<string>();
         var pipeline = CreatePipeline(
             new RecordingWorkbookGenerationAutomation(events),
@@ -621,7 +623,7 @@ public sealed class WorkbookMaterializerTests
             sourceLock = File.Open(capturedSource.SourcePath, FileMode.Open, FileAccess.Read, FileShare.None);
 
             var error = await Assert.ThrowsAsync<VbaSourceAnalysisException>(() => pipeline.MaterializeAsync(
-                new WorkbookMaterializationIntent.SourceSnapshotBuild(context, capture, context.BinDocumentPath),
+                new WorkbookMaterializationIntent.SourceSnapshotBuild(context, capture, outputPath),
                 CancellationToken.None));
 
             var causes = Assert.IsType<AggregateException>(error.OperationalFailure).InnerExceptions;
@@ -637,9 +639,9 @@ public sealed class WorkbookMaterializerTests
             Assert.Contains(capture.StagingPath, error.OperationalFailure.Message, StringComparison.Ordinal);
             Assert.True(Directory.Exists(capture.StagingPath));
             Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
-            Assert.Equal(outputBytes, File.ReadAllBytes(context.BinDocumentPath));
+            Assert.Equal(outputBytes, File.ReadAllBytes(outputPath));
             Assert.Empty(events);
-            Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(context.BinDocumentPath)!, ".Book1.*.tmp.xlsm"));
+            Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(outputPath)!, ".Book1.*.tmp.xlsm"));
         }
         finally
         {

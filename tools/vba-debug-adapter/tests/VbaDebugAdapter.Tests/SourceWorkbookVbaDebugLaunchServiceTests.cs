@@ -10,6 +10,76 @@ namespace VbaDebugAdapter.Tests;
 public sealed class SourceWorkbookVbaDebugLaunchServiceTests
 {
     [Fact]
+    public async Task SuccessfulSourceLaunchDisplaysALegacyWorkbookBinWarningExactlyOnce()
+    {
+        const string warning = "[WARN] project-workbook-bin-deprecated: The binPath setting for document 'Book' "
+            + "is deprecated and scheduled for removal. Remove binPath from vba-project.json; "
+            + "ordinary Build, Debug, Test, and project Export use templatePath. Existing bin files are left unchanged.";
+        await using var fixture = await Fixture.CreateAsync();
+        fixture.Description.StandardError = warning + Environment.NewLine;
+        fixture.Process.StandardError = warning + Environment.NewLine;
+        var sink = new RecordingLifecycleSink();
+
+        await using var plan = await fixture.PrepareAsync(sink);
+        var running = await plan.CommitAsync(null, CancellationToken.None);
+        await running.TerminateAsync();
+        await running.DisposeAsync();
+
+        Assert.Equal(warning, Assert.Single(sink.Messages).Output);
+        Assert.Contains("run:Boot.Start", fixture.Events);
+        Assert.Equal("detach", fixture.Events[^1]);
+        Assert.DoesNotContain("save", fixture.Events);
+        Assert.DoesNotContain("close", fixture.Events);
+        Assert.DoesNotContain("kill", fixture.Events);
+        Assert.False(Directory.Exists(plan.Snapshot.GenerationWorkspacePath));
+    }
+
+    [Fact]
+    public async Task BinFreeSourceLaunchDoesNotDisplayUnrelatedOrControlChildStderr()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        fixture.Description.StandardError = "An unrelated description diagnostic.\n"
+            + "[WARN] unrelated-warning: This is not a workbook-bin compatibility warning.\n"
+            + "[WARN] project-workbook-bin-deprecated: \n"
+            + "{\"type\":\"workbookConfirmation\",\"message\":\"Not console output.\"}\n";
+        fixture.Process.StandardError = "An unrelated preparation diagnostic.\n"
+            + "{\"type\":\"debugPreparationReady\",\"generationId\":\"Not console output.\"}\n";
+        var sink = new RecordingLifecycleSink();
+
+        await using var plan = await fixture.PrepareAsync(sink);
+        var running = await plan.CommitAsync(null, CancellationToken.None);
+        await running.TerminateAsync();
+        await running.DisposeAsync();
+
+        Assert.Empty(sink.Messages);
+        Assert.Contains("run:Boot.Start", fixture.Events);
+        Assert.Equal("detach", fixture.Events[^1]);
+    }
+
+    [Fact]
+    public async Task MismatchedSourceDescriptionDoesNotDisplayItsWarningOrAcquireExcel()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        fixture.Description.ReportedDocumentName = "Other";
+        fixture.Description.StandardError = "[WARN] project-workbook-bin-deprecated: "
+            + "Remove binPath from vba-project.json; the setting is deprecated and scheduled for removal.\n";
+        var sink = new RecordingLifecycleSink();
+
+        var failure = await Assert.ThrowsAsync<DebugFailureException>(() => fixture.PrepareAsync(sink));
+        var cause = Assert.IsType<DebugSetupException>(failure.FailureOutcome.PrimaryFailure);
+
+        Assert.Contains("does not match the selected project and document", cause.Message,
+            StringComparison.Ordinal);
+        Assert.False(failure.FailureOutcome.HasUnprovedRelease);
+        Assert.NotEmpty(failure.FailureOutcome.Evidence);
+        Assert.All(failure.FailureOutcome.Evidence, evidence => Assert.True(evidence.Released));
+        Assert.Empty(sink.Messages);
+        Assert.Null(fixture.Factory.OpenedPath);
+        Assert.Null(fixture.Process.Arguments);
+        Assert.Empty(fixture.Events);
+    }
+
+    [Fact]
     public async Task EmptyNativeCleanupEvidenceRemainsUnprovedAfterStoppingARunningSourceSession()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -255,13 +325,16 @@ public sealed class SourceWorkbookVbaDebugLaunchServiceTests
 
     private sealed class DescriptionProcess(string project, string workbook) : IVbaDevBuildProcess
     {
+        internal string StandardError { get; set; } = "";
+        internal string ReportedDocumentName { get; set; } = "Book";
+
         public Task<VbaDevBuildProcessResult> RunAsync(string fileName,
             IReadOnlyList<string> arguments, CancellationToken cancellationToken)
             => Task.FromResult(new VbaDevBuildProcessResult(0, JsonSerializer.Serialize(new
             {
                 type = "debugWorkbookDescription", schemaVersion = "1.0",
-                projectRoot = project, documentName = "Book", workbookPath = workbook
-            }), "") { CleanupOutcome = ReleasedProcess() });
+                projectRoot = project, documentName = ReportedDocumentName, workbookPath = workbook
+            }), StandardError) { CleanupOutcome = ReleasedProcess() });
     }
 
     private sealed class PreparationProcess(List<string> events) : IManagedDebugPreparationProcess
@@ -271,6 +344,7 @@ public sealed class SourceWorkbookVbaDebugLaunchServiceTests
         internal DebugFailureOutcome? ResultOutcome { get; set; }
         internal string? RetentionMarkerPath { get; set; }
         internal bool StartObservedRetentionMarker { get; private set; }
+        internal string StandardError { get; set; } = "";
         public async Task<ManagedDebugPreparationProcessResult> RunAsync(string executable,
             IReadOnlyList<string> arguments, DebugPreparationProcessBinding binding,
             Func<string, CancellationToken, Task<bool>> confirmReplacement,
@@ -288,7 +362,18 @@ public sealed class SourceWorkbookVbaDebugLaunchServiceTests
                 excelProcessId = binding.ExcelProcessId,
                 excelProcessStartUtcTicks = binding.ExcelProcessStartUtcTicks,
                 importedSourceFileCount = 1, warnings = Array.Empty<string>()
-            })) : "", "", ResultOutcome ?? ReleasedProcess());
+            })) : "", StandardError, ResultOutcome ?? ReleasedProcess());
+        }
+    }
+
+    private sealed class RecordingLifecycleSink : IDebugLifecycleSink
+    {
+        internal List<DebugLifecycleMessage> Messages { get; } = [];
+
+        public ValueTask WriteAsync(DebugLifecycleMessage message, CancellationToken cancellationToken)
+        {
+            Messages.Add(message);
+            return ValueTask.CompletedTask;
         }
     }
 
@@ -368,6 +453,7 @@ public sealed class SourceWorkbookVbaDebugLaunchServiceTests
         internal List<string> Events { get; } = [];
         internal NativeSession Native { get; private set; } = null!;
         internal PreparationProcess Process { get; private set; } = null!;
+        internal DescriptionProcess Description { get; private set; } = null!;
         internal NativeFactory Factory { get; private set; } = null!;
         internal IVbaDebugSessionWorkspaceLease Lease => lease;
         internal bool RetainWorkspaceOnDisposal { get; set; }
@@ -383,8 +469,9 @@ public sealed class SourceWorkbookVbaDebugLaunchServiceTests
             fixture.Native = new(workbook, fixture.Events);
             fixture.Process = new(fixture.Events);
             fixture.Factory = new(fixture.Native);
+            fixture.Description = new(project, workbook);
             fixture.service = new(new DebugSourceAdmission(932),
-                new VbaDevSourceWorkbookResolver(new DescriptionProcess(project, workbook)),
+                new VbaDevSourceWorkbookResolver(fixture.Description),
                 fixture.Process, fixture.Factory);
             fixture.lease = await new VbaDebugSessionWorkspaceManager(Path.Combine(fixture.temp.Path, "Workspaces"))
                 .ClaimAsync(DebugSessionId.Parse("0123456789abcdef0123456789abcdef"), CancellationToken.None);
@@ -395,8 +482,8 @@ public sealed class SourceWorkbookVbaDebugLaunchServiceTests
             fixture.request = new(project, "Book", "Book.xlsm", "Boot", "Start", sources);
             return fixture;
         }
-        internal Task<IPreparedDebugLaunchPlan> PrepareAsync()
-            => service.PrepareAsync(executable, lease, request, null, CancellationToken.None);
+        internal Task<IPreparedDebugLaunchPlan> PrepareAsync(IDebugLifecycleSink? lifecycleSink = null)
+            => service.PrepareAsync(executable, lease, request, null, CancellationToken.None, lifecycleSink);
         public async ValueTask DisposeAsync()
         {
             try { await lease.DisposeAsync(); }

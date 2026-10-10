@@ -85,7 +85,8 @@ public sealed class CallableResultWindowsExcelIntegrationTests
             var callerBytes = Directory.GetFiles(context.DocumentSourceSetPath, "*", SearchOption.AllDirectories)
                 .Append(context.ManifestPath)
                 .ToDictionary(path => path, File.ReadAllBytes, StringComparer.OrdinalIgnoreCase);
-            Assert.False(File.Exists(context.BinDocumentPath));
+            Assert.Null(context.BinDocumentPath);
+            Assert.False(Directory.Exists(Path.Combine(projectRoot, "bin")));
 
             var result = await composition.TestCommand.RunAsync(
                 context,
@@ -93,7 +94,8 @@ public sealed class CallableResultWindowsExcelIntegrationTests
                 cancellation.Token);
 
             Assert.True(result.ExitCode == 0, result.StandardError);
-            Assert.False(File.Exists(context.BinDocumentPath));
+            Assert.Null(context.BinDocumentPath);
+            Assert.False(Directory.Exists(Path.Combine(projectRoot, "bin")));
             foreach (var (path, bytes) in callerBytes)
             {
                 Assert.Equal(bytes, File.ReadAllBytes(path));

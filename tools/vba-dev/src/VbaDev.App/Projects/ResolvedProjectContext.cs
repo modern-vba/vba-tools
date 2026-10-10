@@ -12,7 +12,7 @@ namespace VbaDev.App.Projects;
 /// <param name="Document">The selected document manifest entry.</param>
 /// <param name="DocumentSourceSetPath">The absolute document source set path.</param>
 /// <param name="TemplateDocumentPath">The absolute source template workbook path.</param>
-/// <param name="BinDocumentPath">The absolute generated build workbook path.</param>
+/// <param name="BinDocumentPath">The optional deprecated workbook path retained for compatibility.</param>
 /// <param name="PublishDocumentPath">The absolute generated publish workbook path.</param>
 /// <param name="CommonModulesRepositoryPath">The resolved CommonModulesRepository path, when configured.</param>
 public sealed record ResolvedProjectContext(
@@ -23,6 +23,6 @@ public sealed record ResolvedProjectContext(
     ProjectDocument Document,
     string DocumentSourceSetPath,
     string TemplateDocumentPath,
-    string BinDocumentPath,
+    string? BinDocumentPath,
     string PublishDocumentPath,
     string? CommonModulesRepositoryPath);

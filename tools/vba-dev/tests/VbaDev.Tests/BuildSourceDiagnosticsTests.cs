@@ -1012,14 +1012,17 @@ public sealed class BuildSourceDiagnosticsTests
         private Dictionary<string, byte[]> originalFiles = [];
         private int mirrorCreations;
         private readonly bool publish;
-        private string OutputPath => publish ? context.PublishDocumentPath : context.BinDocumentPath;
+        private string OutputPath => publish ? context.PublishDocumentPath : context.BinDocumentPath!;
 
         public BuildFixture(IReadOnlyList<VbaProjectReference>? references = null, bool publish = false)
         {
             this.publish = publish;
             var root = temp.CreateDirectory("Project");
-            new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null,
-                references: references));
+            var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null,
+                references: references);
+            // This fixture verifies the isolated legacy generation seam, not composed source-workbook Build.
+            manifest.Documents["Book1"] = manifest.Documents["Book1"] with { BinPath = "bin/Book1.xlsm" };
+            new JsonProjectManifestStore().Save(root, manifest);
             SourceDirectory = Path.Combine(root, "src", "Book1");
             Directory.CreateDirectory(SourceDirectory);
             File.WriteAllText(SourcePath("Book1.xlsm"), "source-template", new UTF8Encoding(false));

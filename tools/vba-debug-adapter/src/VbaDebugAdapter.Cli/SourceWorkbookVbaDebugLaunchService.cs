@@ -49,6 +49,12 @@ internal sealed class SourceWorkbookVbaDebugLaunchService(
                         StringComparison.OrdinalIgnoreCase))
                 throw new DebugSetupException("The selected source workbook does not match the CLI-resolved document.");
             restartBinding?.ValidateLaunch(request, description.ProjectRoot, source.Target, workspaceLease.SessionId);
+            if (lifecycleSink is not null)
+            {
+                foreach (var warning in description.Warnings)
+                    await lifecycleSink.WriteAsync(new DebugLifecycleMessage(warning), cancellationToken)
+                        .ConfigureAwait(false);
+            }
             workspace = workspaceLease.CreateGenerationWorkspace(source.GenerationId,
                 Path.GetFileName(description.WorkbookPath));
             source.BuildSources.MaterializeInto(workspace);

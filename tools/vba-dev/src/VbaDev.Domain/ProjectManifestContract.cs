@@ -90,6 +90,19 @@ public static class ProjectManifestReader
             }
         }
 
+        if (root.TryGetProperty("documents", out var documents)
+            && documents.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var document in documents.EnumerateObject())
+            {
+                if (document.Value.ValueKind == JsonValueKind.Object)
+                {
+                    RejectExplicitNullProperties(document.Value,
+                        $"documents.{document.Name}", ["binPath"], manifestName);
+                }
+            }
+        }
+
         if (root.TryGetProperty("commandDefaults", out var commandDefaults)
             && commandDefaults.ValueKind == JsonValueKind.Object)
         {
@@ -267,10 +280,14 @@ public static class ProjectManifestValidator
 
         if (string.IsNullOrWhiteSpace(document.SourcePath)
             || string.IsNullOrWhiteSpace(document.TemplatePath)
-            || string.IsNullOrWhiteSpace(document.BinPath)
             || string.IsNullOrWhiteSpace(document.PublishPath))
         {
-            throw new VbaProjectManifestException($"Document '{name}' must define sourcePath, templatePath, binPath, and publishPath: {manifestName}");
+            throw new VbaProjectManifestException($"Document '{name}' must define sourcePath, templatePath, and publishPath: {manifestName}");
+        }
+
+        if (document.BinPath is not null && string.IsNullOrWhiteSpace(document.BinPath))
+        {
+            throw new VbaProjectManifestException($"Document '{name}' binPath must be a non-empty path when present: {manifestName}");
         }
 
         if (document.CommonModules is null)

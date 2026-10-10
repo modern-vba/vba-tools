@@ -101,7 +101,6 @@ public sealed class ProjectManifestTests
               "kind": "excel",
               "sourcePath": "src/Book1",
               "templatePath": "src/Book1/Book1.xlsm",
-              "binPath": "bin/Book1.xlsm",
               "publishPath": "publish/Book1.xlsm",
               "commonModules": [],
               "references": []
@@ -427,7 +426,7 @@ public sealed class ProjectManifestTests
         Assert.Equal(root, context.ProjectRoot);
         Assert.Equal("SecondBook", context.DocumentName);
         Assert.Equal(Path.Combine(root, "src", "SecondBook"), context.DocumentSourceSetPath);
-        Assert.Equal(Path.Combine(root, "bin", "SecondBook.xlsm"), context.BinDocumentPath);
+        Assert.Null(context.BinDocumentPath);
         Assert.Equal(Path.Combine(root, "publish", "SecondBook.xlsm"), context.PublishDocumentPath);
     }
 
@@ -649,6 +648,7 @@ public sealed class ProjectManifestTests
 
     [Theory]
     [InlineData("primary-document.json", "PrimaryDocumentProject", "Book1", 1)]
+    [InlineData("bin-free-source-workbook.json", "BinFreeSourceWorkbookProject", "Book1", 1)]
     [InlineData("document-source-set.json", "DocumentSourceSetProject", "Book1", 1)]
     [InlineData("references.json", "ReferencesProject", "Book1", 1)]
     [InlineData("source-template.json", "SourceTemplateProject", "Book1", 1)]
@@ -704,6 +704,7 @@ public sealed class ProjectManifestTests
     [InlineData("invalid-missing-selection-arrays.json", "commonModules")]
     [InlineData("invalid-missing-template-path.json", "templatePath")]
     [InlineData("invalid-null-optional-property.json", "commonModulesRepository")]
+    [InlineData("invalid-null-bin-path.json", "binPath")]
     [InlineData("invalid-null-command-default.json", "test")]
     [InlineData("invalid-null-document.json", "Book1")]
     [InlineData("invalid-null-reference.json", "null")]
@@ -750,7 +751,8 @@ public sealed class ProjectManifestTests
 internal static class ProjectManifestTestData
 {
     public static ProjectManifest FullManifest(string projectRoot)
-        => ProjectManifest.CreateDefault(
+    {
+        var manifest = ProjectManifest.CreateDefault(
             "CanonicalProject",
             "Book1",
             projectRoot,
@@ -766,6 +768,9 @@ internal static class ProjectManifestTestData
                     WorkbookOpenTimeoutSeconds: 120,
                     WorkbookSaveTimeoutSeconds: 180))
         };
+        manifest.Documents["Book1"] = manifest.Documents["Book1"] with { BinPath = "bin/Book1.xlsm" };
+        return manifest;
+    }
 
     public static byte[] ExpectedFullCanonicalBytes()
     {

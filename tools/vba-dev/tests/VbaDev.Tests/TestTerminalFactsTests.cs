@@ -146,7 +146,8 @@ public sealed class TestTerminalFactsTests
             ? "Workbook automation was cancelled during source Test preparation or execution."
             : error.Message) + Environment.NewLine, result.StandardError);
         Assert.Equal(OwnedProcessReleaseProof.ProvenOrNotStarted, result.OwnedProcessReleaseProof);
-        Assert.Equal("previous-bin", File.ReadAllText(fixture.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Null(fixture.Context.BinDocumentPath);
+        Assert.Equal("previous-bin", File.ReadAllText(fixture.LegacyBinPath, Encoding.UTF8));
         Assert.Empty(Directory.GetDirectories(fixture.ScratchRoot));
     }
 
@@ -315,11 +316,12 @@ public sealed class TestTerminalFactsTests
             Assert.Empty(Directory.EnumerateFiles(retained, "*.xlsm", SearchOption.AllDirectories));
         }
         Assert.Equal("template", File.ReadAllText(fixture.Context.TemplateDocumentPath, Encoding.UTF8));
-        Assert.Equal("previous-bin", File.ReadAllText(fixture.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Null(fixture.Context.BinDocumentPath);
+        Assert.Equal("previous-bin", File.ReadAllText(fixture.LegacyBinPath, Encoding.UTF8));
     }
 
     private sealed record Fixture(VbaDevCommandLine Application, TestCommand Command,
-        ResolvedProjectContext Context, string SnapshotPath, string ScratchRoot);
+        ResolvedProjectContext Context, string SnapshotPath, string ScratchRoot, string LegacyBinPath);
 
     private static Task<CommandResult> RunCommandAsync(Fixture fixture, string mode, CancellationToken token)
         => fixture.Command.RunAsync(fixture.Context,
@@ -348,7 +350,8 @@ public sealed class TestTerminalFactsTests
         File.WriteAllText(Path.Combine(source, "Test_Module.bas"), module, Encoding.UTF8);
         var bin = Path.Combine(root, "bin");
         Directory.CreateDirectory(bin);
-        File.WriteAllText(Path.Combine(bin, "Book1.xlsm"), "previous-bin", Encoding.UTF8);
+        var legacyBinPath = Path.Combine(bin, "Book1.xlsm");
+        File.WriteAllText(legacyBinPath, "previous-bin", Encoding.UTF8);
         var snapshot = temp.CreateDirectory("caller-snapshot");
         File.WriteAllText(Path.Combine(snapshot, "Test_Module.bas"), module, new UTF8Encoding(false));
         var scratch = temp.CreateDirectory("snapshot-test-scratch");
@@ -363,6 +366,6 @@ public sealed class TestTerminalFactsTests
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratch,
                 sourceCaptureFactory: sourceCapture, afterWorkspaceCreated: cleanupFileSystem is null ? null : cleanupFileSystem.AddForeignContent));
         var context = composition.ProjectContextResolver.Resolve(new ProjectResolutionRequest(root, null, root));
-        return new(VbaDevCommandLine.Create(composition with { TestCommand = command }), command, context, snapshot, scratch);
+        return new(VbaDevCommandLine.Create(composition with { TestCommand = command }), command, context, snapshot, scratch, legacyBinPath);
     }
 }

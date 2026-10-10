@@ -17,6 +17,32 @@ namespace VbaDev.Tests;
 public sealed class NewProjectCommandTests
 {
     [Fact]
+    public void NewExcelCreatesAReadableProjectWithoutWorkbookBinConfigurationOrArtifacts()
+    {
+        using var temp = TempDirectory.Create();
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            initialWorkbookCreator: new FakeInitialWorkbookCreator());
+
+        var result = application.Run(["new", "excel", "--name", "SampleProject", "--format", "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        var projectRoot = Path.Combine(temp.Path, "SampleProject");
+        var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
+        using var manifestJson = JsonDocument.Parse(File.ReadAllText(manifestPath, Encoding.Unicode));
+        Assert.False(manifestJson.RootElement.GetProperty("documents")
+            .GetProperty("SampleProject").TryGetProperty("binPath", out _));
+        using var receipt = JsonDocument.Parse(result.StandardOutput);
+        Assert.DoesNotContain("binPath", receipt.RootElement.GetRawText(), StringComparison.Ordinal);
+        Assert.False(Directory.Exists(Path.Combine(projectRoot, "bin")));
+        Assert.True(File.Exists(Path.Combine(projectRoot, "src", "SampleProject", "SampleProject.xlsm")));
+        Assert.True(Directory.Exists(Path.Combine(projectRoot, "publish")));
+        var manifest = new JsonProjectManifestStore().Load(manifestPath);
+        Assert.Equal("src/SampleProject/SampleProject.xlsm", manifest.Documents["SampleProject"].TemplatePath);
+        Assert.Equal("publish/SampleProject.xlsm", manifest.Documents["SampleProject"].PublishPath);
+    }
+
+    [Fact]
     public void NewProjectRequestRequiresExplicitOptionPresenceFlags()
     {
         var parameters = Assert.Single(typeof(NewProjectCommandRequest).GetConstructors())
@@ -826,7 +852,7 @@ public sealed class NewProjectCommandTests
             StringComparison.Ordinal);
         var projectRoot = Path.Combine(temp.Path, "SampleProject");
         Assert.True(Directory.Exists(Path.Combine(projectRoot, "src", "SampleProject")));
-        Assert.True(Directory.Exists(Path.Combine(projectRoot, "bin")));
+        Assert.False(Directory.Exists(Path.Combine(projectRoot, "bin")));
         Assert.True(Directory.Exists(Path.Combine(projectRoot, "publish")));
         Assert.True(File.Exists(Path.Combine(projectRoot, "src", "SampleProject", "SampleProject.xlsm")));
         Assert.False(Directory.Exists(Path.Combine(projectRoot, "src", "SampleProject", "common-modules")));
@@ -842,7 +868,7 @@ public sealed class NewProjectCommandTests
         Assert.Equal("SampleProject", manifest.PrimaryDocument);
         Assert.Null(manifest.CommonModulesRepository);
         Assert.Empty(manifest.Documents["SampleProject"].CommonModules);
-        Assert.Equal("bin/SampleProject.xlsm", manifest.Documents["SampleProject"].BinPath);
+        Assert.Null(manifest.Documents["SampleProject"].BinPath);
         Assert.Equal("publish/SampleProject.xlsm", manifest.Documents["SampleProject"].PublishPath);
         Assert.Equal(
             [

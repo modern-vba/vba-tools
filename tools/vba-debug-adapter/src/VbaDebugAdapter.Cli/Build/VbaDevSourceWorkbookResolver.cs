@@ -6,11 +6,16 @@ using VbaDebugAdapter.Infrastructure;
 namespace VbaDebugAdapter.Build;
 
 internal sealed record DebugSourceWorkbookDescription(
-    string ProjectRoot, string DocumentName, string WorkbookPath);
+    string ProjectRoot, string DocumentName, string WorkbookPath)
+{
+    internal IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
+}
 
 /// <summary>The public CLI, not the adapter, resolves the project document's source workbook.</summary>
 internal sealed class VbaDevSourceWorkbookResolver(IVbaDevBuildProcess process)
 {
+    private const string LegacyWorkbookBinWarningPrefix = "[WARN] project-workbook-bin-deprecated: ";
+
     internal async Task<DebugSourceWorkbookDescription> ResolveAsync(string executable,
         string projectRoot, string documentName, CancellationToken cancellationToken)
     {
@@ -56,7 +61,15 @@ internal sealed class VbaDevSourceWorkbookResolver(IVbaDevBuildProcess process)
                 || !Path.IsPathFullyQualified(values["workbookPath"])
                 || !Path.GetExtension(values["workbookPath"]).Equals(".xlsm", StringComparison.OrdinalIgnoreCase))
                 throw new DebugSetupException("The source workbook description does not match the selected project and document.");
-            return new(canonicalProject, documentName, Path.GetFullPath(values["workbookPath"]));
+            var warnings = result.StandardError.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                .Where(line => line.StartsWith(LegacyWorkbookBinWarningPrefix, StringComparison.Ordinal)
+                    && !string.IsNullOrWhiteSpace(line[LegacyWorkbookBinWarningPrefix.Length..]))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            return new(canonicalProject, documentName, Path.GetFullPath(values["workbookPath"]))
+            {
+                Warnings = warnings.Length == 0 ? Array.Empty<string>() : warnings
+            };
         }
         catch (Exception failure)
         {

@@ -980,7 +980,10 @@ public sealed class TestCommandTests
         ]);
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Empty(result.StandardError);
+        Assert.Equal(
+            $"[WARN] {LegacyWorkbookBinConfiguration.WarningCode}: " +
+            LegacyWorkbookBinConfiguration.GetWarning("Book1") + Environment.NewLine,
+            result.StandardError);
         var testWorkbookPath = Assert.Single(runner.Workbooks);
         var openedSourcePath = Assert.Single(buildAutomation.OpenedWorkbooks);
         Assert.Equal("Book1.xlsm", Path.GetFileName(testWorkbookPath));

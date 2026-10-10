@@ -1,5 +1,6 @@
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
+using VbaDev.Domain;
 
 namespace VbaDev.App.Diagnostics;
 
@@ -23,10 +24,23 @@ public sealed class ProjectConfigurationDiagnosticProvider : IDoctorProjectDiagn
         {
             var sourceSetPath = project.ResolvePath(document.SourcePath);
             var templatePath = project.ResolvePath(document.TemplatePath);
-            var binPath = project.ResolvePath(document.BinPath);
             var publishPath = project.ResolvePath(document.PublishPath);
-            var binDirectory = Path.GetDirectoryName(binPath) ?? project.ProjectRoot;
             var publishDirectory = Path.GetDirectoryName(publishPath) ?? project.ProjectRoot;
+
+            if (document.BinPath is not null)
+            {
+                results.Add(DiagnosticResult.Warn(
+                    $"project.configuration.{Uri.EscapeDataString(documentName)}.{LegacyWorkbookBinConfiguration.WarningCode}",
+                    $"Legacy binPath ({documentName})",
+                    LegacyWorkbookBinConfiguration.GetWarning(documentName)) with
+                {
+                    Details = new Dictionary<string, object?>
+                    {
+                        ["code"] = LegacyWorkbookBinConfiguration.WarningCode,
+                        ["document"] = documentName
+                    }
+                });
+            }
 
             var sourceExists = sources?.GetDocument(documentName).SourceDirectoryExists ?? Directory.Exists(sourceSetPath);
             results.Add(sourceExists
@@ -40,9 +54,6 @@ public sealed class ProjectConfigurationDiagnosticProvider : IDoctorProjectDiagn
                 AddDocumentSourceIdentityDiagnostics(results, documentName, sourceSetPath, sources?.GetInventory(documentName));
             }
 
-            results.Add(Directory.Exists(binDirectory)
-                ? DiagnosticResult.Pass($"Bin output directory ({documentName})", $"Found {binDirectory}.")
-                : DiagnosticResult.Warn($"Bin output directory ({documentName})", $"Will be created by build when needed: {binDirectory}."));
             results.Add(Directory.Exists(publishDirectory)
                 ? DiagnosticResult.Pass($"Publish output directory ({documentName})", $"Found {publishDirectory}.")
                 : DiagnosticResult.Warn($"Publish output directory ({documentName})", $"Will be created by publish when needed: {publishDirectory}."));

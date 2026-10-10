@@ -4,6 +4,32 @@ status: accepted
 
 # Workbook-backed project command model
 
+## Source-workbook and bin-retirement follow-up (2026-10-10)
+
+Repository [ADR 0061](../../../../docs/adr/0061-build-and-export-the-source-workbook-in-place.md)
+supersedes ordinary Build/project Export's copied-bin targets;
+[ADR 0062](../../../../docs/adr/0062-debug-the-retained-source-workbook.md) supersedes
+disposable Debug execution; [ADR 0026's #449 follow-up](../../../../docs/adr/0026-run-tests-from-command-owned-snapshot-workbooks.md#issue-449-follow-up-source-workbook-test)
+supersedes all production Test execution-copy/bin routes.
+[ADR 0063](../../../../docs/adr/0063-retire-project-workbook-bin-configuration.md)
+completes the configuration cutover: manifest schema `1` permits absent
+`binPath`; configured supported values receive actionable deprecation and
+scheduled-removal warnings, not an immediate rejection. Writers preserve
+absence. New creates source/Publish layout only, with no workbook-output bin
+directory or bin setting/receipt target. Its schema-`1.0` result still nests
+the exact committed manifest. `projectManifest.optionalBinPath: 1.0` advertises
+that additive capability independently of tool version.
+
+Ordinary authoring commands honor configured source paths and Doctor requires
+no workbook bin directory. Existing bin files are never automatically deleted,
+rewritten, renamed or moved. Publish, public paired source-snapshot/output
+Build and their applicable output-safety restrictions remain unchanged; a
+configured legacy bin path is still protected. Packaged executables, compiler
+outputs and generated-directory exclusions are not workbook-bin artifacts.
+Contrary target/layout passages below remain migration history, not current
+authoring requirements; independent ownership and transaction decisions retain
+their own applicability.
+
 Repository ADR 0036 supersedes every `host-class list`, document-scoped host
 projection, source-template host inspection, partial/last-known-good projection,
 and related extension lifecycle passage below. The replacement is the

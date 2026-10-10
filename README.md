@@ -149,6 +149,11 @@ foundation:
    creation commits, choose the offered action if you want to open the manifest
    or project folder; VBA Tools does not change the workspace automatically.
 
+   New projects use `src/<document>/<document>.xlsm` as the source workbook and
+   `publish/<document>.xlsm` as the separate Publish output. Creation does not
+   make a workbook-output `bin` directory or emit `binPath` in the manifest or
+   creation receipt.
+
 5. Add any extra external references needed by the workbook:
 
    ```text
@@ -186,8 +191,28 @@ files and then open a VBA file.
 
 For build, test, publish, export, CommonModules, reference commands, and Test
 Explorer integration, open a workspace containing a `vba-project.json` manifest. The
-manifest defines the source folder, source workbook, legacy test output,
+manifest defines the source folder, source workbook,
 publish workbook, references, and CommonModules entries for each document.
+
+`binPath` is no longer required. Supported older manifests remain usable, but a
+configured `binPath` produces an actionable warning: it is deprecated and
+scheduled for removal. Remove that property from the manifest to retire the
+setting; this does not require deleting its workbook. Commands preserve an
+omitted property when editing the manifest and never automatically delete,
+rewrite, rename, or move existing bin files or manifest-selected source workbooks.
+Ordinary Build, Debug, Test (including no-build), and project Export use the
+exact `templatePath`; project Doctor does not require a workbook bin directory.
+Publish and paired `build --source-snapshot ... --output ...` keep their separate
+saved-input/output contracts and output-safety restrictions, including protection
+of a configured legacy bin path. Packaged executable directories such as
+`bin/vba-dev/win-x64` and compiler outputs are unrelated to workbook-bin retirement.
+
+The additive CLI capability `projectManifest.optionalBinPath: 1.0` advertises
+bin-free manifest support; manifest schema and New receipt schema remain `1`
+and `1.0`. An unchanged tool version alone does not prove this capability.
+The extension requires this feature when selecting its companion CLI, including
+an override. F5 shows the legacy warning once in the Debug Console after source
+workbook selection is validated; unrelated child diagnostics are not forwarded.
 
 ### 6 - Run Doctor
 

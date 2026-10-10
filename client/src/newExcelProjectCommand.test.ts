@@ -1161,7 +1161,6 @@ function newExcelReceiptJson(
           kind: 'excel',
           sourcePath: `src/${name}`,
           templatePath: `src/${name}/${name}.xlsm`,
-          binPath: `bin/${name}.xlsm`,
           publishPath: `publish/${name}.xlsm`,
           commonModules: [],
           references: []

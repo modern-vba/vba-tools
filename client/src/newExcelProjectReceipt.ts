@@ -30,7 +30,6 @@ export interface NewExcelProjectDocument {
   readonly kind: 'excel';
   readonly sourcePath: string;
   readonly templatePath: string;
-  readonly binPath: string;
   readonly publishPath: string;
   readonly commonModules: readonly NewExcelProjectCommonModule[];
   readonly references: readonly NewExcelProjectReference[];
@@ -192,7 +191,6 @@ export function parseNewExcelProjectReceipt(
     'kind',
     'sourcePath',
     'templatePath',
-    'binPath',
     'publishPath',
     'commonModules',
     'references'
@@ -205,7 +203,6 @@ export function parseNewExcelProjectReceipt(
   const expectedPaths: Readonly<Record<string, string>> = {
     sourcePath: `src/${request.projectName}`,
     templatePath: `src/${request.projectName}/${request.projectName}.xlsm`,
-    binPath: `bin/${request.projectName}.xlsm`,
     publishPath: `publish/${request.projectName}.xlsm`
   };
   for (const [property, expected] of Object.entries(expectedPaths)) {

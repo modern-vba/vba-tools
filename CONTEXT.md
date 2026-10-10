@@ -772,8 +772,9 @@ template and references.
 materialization but does not own the caller's directory. Snapshot Build pairs
 `--source-snapshot` with a caller-selected `--output` path outside the snapshot
 subtree and every manifest document's `DocumentSourceSet`, and distinct from the
-resolved `vba-project.json` and every document's source template, bin workbook,
-and publish workbook; neither option is valid alone, and the caller owns a
+resolved `vba-project.json` and every document's source template, configured
+legacy bin workbook and publish workbook; no bin path is invented when absent.
+Neither option is valid alone, and the caller owns a
 successful output. Snapshot Test accepts `--source-snapshot` without `--output`
 as input capture for verified import into the exact manifest-selected source
 workbook. It does not create an execution copy or initiate Save; the caller's
@@ -1344,6 +1345,20 @@ prepared Test imports analyzed saved or captured source, while no-build Test
 runs the workbook's live VBA when open or its saved VBA when closed.
 _Avoid_: arbitrary active workbook, same-basename match, bin output
 
+**LegacyWorkbookBinPath**:
+The optional deprecated document `binPath` retained for supported schema-1
+manifest compatibility, not an authoring workbook target. A configured value
+produces actionable deprecation/scheduled-removal guidance; its mere presence
+does not make a supported project unusable. New projects omit it and manifest
+edits preserve absence. Removing the setting does not authorize deleting,
+rewriting, renaming or moving user files. Ordinary Build, Debug, Test/no-build
+and project Export use `SourceWorkbook`; Doctor requires no workbook bin
+directory. A configured legacy path remains a protected manifest output for
+paired explicit snapshot-output Build. Executable packaging `bin`, compiler
+outputs and generated-directory exclusions are unrelated and unchanged.
+See [ADR 0063](docs/adr/0063-retire-project-workbook-bin-configuration.md).
+_Avoid_: source workbook, current build target, packaged executable directory
+
 **SourceWorkbookBuildCommand**:
 The VbaDev ordinary Build operation owner, distinct from staged workbook
 materialization. It consumes complete, error-free analyzed saved-source
@@ -1667,13 +1682,21 @@ The project-local manifest, stored as `vba-project.json`, that identifies a
 `VbaDev` operations. It is also the language server's source of truth for the
 `VbaProjectReferenceSelection` of each document definition; VS Code settings do
 not define project references for workbook-backed projects. It identifies each
-document's `SourceWorkbook` through `templatePath` for ordinary Build/project
-Export and as a saved template for copied-workbook operations and a request-scoped
+document's `SourceWorkbook` through `templatePath` for ordinary Build, Debug,
+Test/no-build and project Export, and as a saved template for copied-workbook
+operations and a request-scoped
 `VbaProjectIdentityRead`, but stores neither environment-discovered UserForm
 Events nor `IntrinsicHostEventCatalogSnapshot` state. A project-local
 `project.json` is not a
 `ProjectManifest` for language-server project-boundary or reference-selection
 behavior.
+Schema `1` permits absent document `binPath`; a supported legacy setting is
+deprecated and warned, not a mandatory execution/output path. Canonical writes
+and recovery serialization preserve absence. `sourcePath`/`templatePath` retain
+their configured spelling and authority, including custom layouts. CLI feature
+`projectManifest.optionalBinPath: 1.0` advertises the additive contract without
+changing the manifest or New receipt schema. The extension requires this feature
+when admitting a companion CLI, independent of its tool version.
 _Avoid_: package file, extension settings, workspace settings
 
 **ProjectResolutionRequest**:
@@ -1712,12 +1735,15 @@ encoding. Canonical bytes remain UTF-16LE with BOM, two-space indentation,
 stable property order, CRLF, and one trailing CRLF. Disk I/O, original raw-byte
 comparison, the mutation lease, recovery artifacts, and atomic commitment stay
 with their existing owners outside the codec.
+An absent legacy `binPath` is not synthesized during encoding or mutation.
 
 **ProjectManifestSchema**:
 The closed, case-sensitive schema-1 structural vocabulary of a
 **ProjectManifest**. It supports editor feedback but does not replace
 `VbaDev` authority over manifest bytes, cross-field relationships, or domain
 invariants, and it does not describe a **ProjectManifestRecoveryArtifact**.
+Document `binPath` is optional deprecated compatibility vocabulary, not a
+required property; other required fields and closed-object checks remain.
 _Avoid_: command-result schema, recovery schema, complete manifest validator
 
 **ProjectManifestRecoveryArtifact**:
@@ -1732,6 +1758,9 @@ The transition from an absent **WorkbookBackedProject** to one established by
 its initial atomic **ProjectManifest** commit. Before that boundary, only
 provably invocation-owned unchanged artifacts are rollback state; pre-existing,
 unknown, externally changed, or process-surviving unproven content never is.
+Its initial layout contains source and Publish paths only: no workbook-output
+`bin` directory, `binPath` setting or bin target in a creation receipt. New
+success schema `1.0` still nests the exact committed schema-1 manifest.
 New-project rollback authority is an opaque create-only receipt issued by the
 invocation's `ExactFileSystemObjectOwnership` session when each project file or
 directory is created. The initial-workbook creator uses that same session for
@@ -6488,7 +6517,7 @@ Dev: "Which degraded `new excel` outcomes remain successful warnings?"
 Domain Expert: "Only a conclusively absent canonical CommonModules repository, a retained non-authoritative CommonModules snapshot workspace after committed creation and proved handle release, and failure to remove an unowned lease marker after project creation and lease release are schema-`1.0` success warnings, in that fixed order. Snapshot deletion receives bounded retries and reports its normalized absolute retained path; before commit, retained staging belongs to failure or cancellation cleanup and never becomes a success warning. An absent repository commits no repository selection or CommonModules and keeps only baseline references. Repository uncertainty or invalidity, target conflict, incomplete rollback, busy ownership, reference-resolution failure, and unproved Excel or lease release are command failures. Cancellation before manifest commit rolls back; a late request after commit does not replace success or create a deferred-cancellation warning."
 
 Dev: "Should default `new excel` text output remain a one-line project-path message?"
-Domain Expert: "No. Print a human creation receipt with absolute project and manifest paths, the document and its project-relative source, template, build-target, and publish-target paths, every CommonModule and reference in committed order with its requested or dependency provenance, and a derived count summary. Label bin and publish as targets because they do not exist yet, show `(none)` for an empty collection, and keep warnings on stderr. Machine consumers use JSON instead."
+Domain Expert: "No. Print a human creation receipt with absolute project and manifest paths, the document and its project-relative source, source-template, and publish-target paths, every CommonModule and reference in committed order with its requested or dependency provenance, and a derived count summary. Label Publish as a target because it does not exist yet; emit no workbook bin target or setting. Show `(none)` for an empty collection and keep warnings on stderr. Machine consumers use JSON instead."
 
 Dev: "May guided creation trust exit code zero without validating the `new excel` result, or run follow-up commands to reconstruct it?"
 Domain Expert: "Neither. Validate the schema, request-matching project and manifest path, envelope-to-manifest agreement, and every internally provable initial-state invariant, while accepting unknown additive properties and warning codes. Do not duplicate dependency or reference resolution, reread the manifest for outcome discovery, or run List or Doctor. A malformed or mismatched exit-zero result may follow a real commit, so report completed-but-untrusted with Show Output and do not claim success, open, retry, roll back, delete, or fall back."
@@ -6545,7 +6574,7 @@ Dev: "Is the project name a VBA identifier, and may the UI silently fix an inval
 Domain Expert: "No to both. `ProjectNameLexicalContract` preserves the exact well-formed UTF-16 spelling without Unicode normalization, trimming, sanitization, or case conversion. It rejects either-end Unicode `White_Space`, Unicode control ranges, isolated surrogates, dot segments, Windows-invalid basename characters, a trailing dot, and the complete Windows reserved-device set including superscript COM/LPT digits and extension-like suffixes. It allows internal whitespace, valid surrogate pairs, and non-control format characters. `new excel` then applies `ExcelWorkbookPathContract`, so `[` and `]` are rejected inline as Excel incompatibilities rather than host-neutral name errors. MS-VBAL identifier syntax and the 31-code-point module-name limit do not apply."
 
 Dev: "Should guided creation reject every path over `MAX_PATH` or inspect an existing target before invoking `new excel`?"
-Domain Expert: "Neither. Before invocation, lexically normalize each derived source-template, bin, and publish workbook absolute path without symlink or short-name substitution. Reject `[` or `]` in any component and require at most 218 UTF-16 code units across the drive or UNC prefix, separators, basename, and extension, excluding a terminator; do not add a generic 260-character rule or extended-path workaround. The Extension and CLI are pinned to one versioned validation-vector corpus, while `new excel` remains authoritative for the complete path plan and target eligibility under `ProjectManifestMutationLease` and `InitialProjectTarget`."
+Domain Expert: "Neither. Before invocation, lexically normalize each derived source-template and Publish workbook absolute path without symlink or short-name substitution; new projects derive no workbook bin path. Reject `[` or `]` in any component and require at most 218 UTF-16 code units across the drive or UNC prefix, separators, basename, and extension, excluding a terminator; do not add a generic 260-character rule or extended-path workaround. The Extension and CLI are pinned to one versioned validation-vector corpus, while `new excel` remains authoritative for the complete path plan and target eligibility under `ProjectManifestMutationLease` and `InitialProjectTarget`."
 
 Dev: "Does requiring `new excel` result schema `1.0` prove that guided creation and the CLI validate input identically?"
 Domain Expert: "No. Require `featureVersions[\"projectCreation.pathValidation\"] == \"1.0\"` separately for exact name rules, Excel brackets, path measurement, reason precedence, and shared vectors. The command schema versions only its successful result; UI wording and project mutation belong to their own contracts."

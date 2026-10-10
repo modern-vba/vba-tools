@@ -527,7 +527,6 @@ function generatedWorkbookPaths(
 ): readonly string[] {
   return [
     path.win32.join(projectRoot, 'src', projectName, `${projectName}.xlsm`),
-    path.win32.join(projectRoot, 'bin', `${projectName}.xlsm`),
     path.win32.join(projectRoot, 'publish', `${projectName}.xlsm`)
   ];
 }
