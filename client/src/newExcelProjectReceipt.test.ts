@@ -36,6 +36,31 @@ test('accepts a request-matching complete receipt without a CommonModules reposi
   ]);
 });
 
+test('accepts a bin-free initial project receipt without inventing a workbook output', () => {
+  const candidate = createReceipt();
+
+  const receipt = parseNewExcelProjectReceipt(
+    JSON.stringify(candidate),
+    { projectName, projectRoot }
+  );
+
+  assert.equal(Object.hasOwn(receipt.manifest.documents[projectName]!, 'binPath'), false);
+  assert.equal(receipt.manifest.documents[projectName]?.templatePath,
+    `src/${projectName}/${projectName}.xlsm`);
+  assert.equal(receipt.manifest.documents[projectName]?.publishPath,
+    `publish/${projectName}.xlsm`);
+});
+
+test('rejects an initial project receipt that still configures a legacy workbook bin', () => {
+  const candidate = createReceipt();
+  documentOf(candidate).binPath = `bin/${projectName}.xlsm`;
+
+  assert.throws(
+    () => parseNewExcelProjectReceipt(JSON.stringify(candidate), { projectName, projectRoot }),
+    NewExcelProjectReceiptError
+  );
+});
+
 test('rejects a receipt with the wrong command schema version', () => {
   const candidate = createReceipt();
   candidate.schemaVersion = '2.0';
@@ -744,7 +769,6 @@ function createReceipt(): Record<string, unknown> {
           kind: 'excel',
           sourcePath: `src/${projectName}`,
           templatePath: `src/${projectName}/${projectName}.xlsm`,
-          binPath: `bin/${projectName}.xlsm`,
           publishPath: `publish/${projectName}.xlsm`,
           commonModules: [],
           references: []

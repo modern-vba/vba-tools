@@ -57,6 +57,113 @@ public sealed class DoctorCommandTests
     }
 
     [Fact]
+    public async Task DoctorInspectsBinFreeProjectWithoutInventingABinPrerequisite()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var sourceSet = Path.Combine(root, "authoring", "Vba");
+        Directory.CreateDirectory(sourceSet);
+        var sourcePath = Path.Combine(sourceSet, "Runtime.bas");
+        var workbookPath = Path.Combine(sourceSet, "Source.xlsm");
+        File.WriteAllText(sourcePath, "Attribute VB_Name = \"Runtime\"\r\n", new UTF8Encoding(false));
+        File.WriteAllText(workbookPath, "source-workbook", new UTF8Encoding(false));
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"] = manifest.Documents["Book1"] with
+        {
+            SourcePath = "authoring/Vba",
+            TemplatePath = "authoring/Vba/Source.xlsm",
+            BinPath = null
+        };
+        new JsonProjectManifestStore().Save(root, manifest);
+        var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
+        var manifestBytes = File.ReadAllBytes(manifestPath);
+        var sourceBytes = File.ReadAllBytes(sourcePath);
+        var workbookBytes = File.ReadAllBytes(workbookPath);
+        var automation = new SuccessfulEnvironmentWorkbookAutomation();
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                environmentDiagnosticPort: new FakeEnvironmentDiagnosticPort(),
+                workbookGenerationAutomation: automation,
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver()));
+
+        var result = await application.RunAsync(["doctor", "--format", "json"]);
+
+        Assert.True(result.ExitCode == 0, result.StandardOutput + result.StandardError);
+        Assert.Empty(result.StandardError);
+        using var output = JsonDocument.Parse(result.StandardOutput);
+        Assert.True(output.RootElement.GetProperty("complete").GetBoolean());
+        var checks = output.RootElement.GetProperty("checks").EnumerateArray().ToArray();
+        foreach (var profile in new[] { "build", "publish" })
+        {
+            var check = Assert.Single(checks, candidate => candidate.GetProperty("id").GetString() ==
+                $"project.workbookMaterialization/Book1/{profile}");
+            Assert.Equal("pass", check.GetProperty("status").GetString());
+        }
+        Assert.DoesNotContain(checks, check =>
+            check.GetProperty("id").GetString()!.Contains("Bin output directory", StringComparison.Ordinal) ||
+            check.GetProperty("message").GetString()!.Contains("binPath", StringComparison.Ordinal));
+        Assert.Equal(1, automation.RunCount);
+        Assert.NotEqual(workbookPath, automation.WorkbookPath);
+        Assert.False(File.Exists(automation.WorkbookPath));
+        Assert.False(Directory.Exists(Path.Combine(root, "bin")));
+        Assert.Equal(manifestBytes, File.ReadAllBytes(manifestPath));
+        Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
+        Assert.Equal(workbookBytes, File.ReadAllBytes(workbookPath));
+    }
+
+    [Fact]
+    public async Task DoctorReportsActionableStructuredLegacyBinWarningWithoutChangingExistingFiles()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        var store = new JsonProjectManifestStore();
+        var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
+        var manifest = store.Load(manifestPath);
+        manifest.Documents["Book1"] = manifest.Documents["Book1"] with
+        {
+            BinPath = "legacy-cache/Kept.xlsm"
+        };
+        store.Save(root, manifest);
+        var legacyBinPath = Path.Combine(root, "legacy-cache", "Kept.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(legacyBinPath)!);
+        File.WriteAllText(legacyBinPath, "existing-bin-workbook", new UTF8Encoding(false));
+        var manifestBytes = File.ReadAllBytes(manifestPath);
+        var legacyBinBytes = File.ReadAllBytes(legacyBinPath);
+        var workbookPath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        var workbookBytes = File.ReadAllBytes(workbookPath);
+        var application = VbaDevCommandLine.Create(
+            ToolingCompositionRoot.CreateApplicationComposition(
+                root,
+                environmentDiagnosticPort: new FakeEnvironmentDiagnosticPort(),
+                workbookGenerationAutomation: new SuccessfulEnvironmentWorkbookAutomation(),
+                vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver()));
+
+        var result = await application.RunAsync(["doctor", "--format", "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        using var output = JsonDocument.Parse(result.StandardOutput);
+        Assert.True(output.RootElement.GetProperty("complete").GetBoolean());
+        Assert.Equal("warning", output.RootElement.GetProperty("status").GetString());
+        var checks = output.RootElement.GetProperty("checks").EnumerateArray().ToArray();
+        var warning = Assert.Single(checks, check => check.GetProperty("id").GetString() ==
+            "project.configuration.Book1.project-workbook-bin-deprecated");
+        Assert.Equal("warning", warning.GetProperty("status").GetString());
+        Assert.Equal(
+            LegacyWorkbookBinConfiguration.GetWarning("Book1"),
+            warning.GetProperty("message").GetString());
+        Assert.Equal(LegacyWorkbookBinConfiguration.WarningCode,
+            warning.GetProperty("details").GetProperty("code").GetString());
+        Assert.Equal("Book1", warning.GetProperty("details").GetProperty("document").GetString());
+        Assert.DoesNotContain(checks, check =>
+            check.GetProperty("id").GetString()!.Contains("Bin output directory", StringComparison.Ordinal));
+        Assert.Equal(manifestBytes, File.ReadAllBytes(manifestPath));
+        Assert.Equal(legacyBinBytes, File.ReadAllBytes(legacyBinPath));
+        Assert.Equal(workbookBytes, File.ReadAllBytes(workbookPath));
+    }
+
+    [Fact]
     public async Task DoctorEnvironmentScopeDoesNotDiscoverAProject()
     {
         using var temp = TempDirectory.Create();

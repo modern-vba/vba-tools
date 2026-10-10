@@ -42,8 +42,11 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         var root = temp.CreateDirectory("Project");
         var manifestStore = new JsonProjectManifestStore();
-        manifestStore.Save(root, ProjectManifest.CreateDefault("StandardLibraryProject", "Book1", root, null));
+        var manifest = ProjectManifest.CreateDefault("StandardLibraryProject", "Book1", root, null);
+        manifest.Documents["Book1"] = manifest.Documents["Book1"] with { BinPath = "bin/Book1.xlsm" };
+        manifestStore.Save(root, manifest);
         var context = new ProjectContextResolver(manifestStore).Resolve(new(root, "Book1", root));
+        var legacyBinPath = Assert.IsType<string>(context.BinDocumentPath);
         Directory.CreateDirectory(context.DocumentSourceSetPath);
         CreateEmptyMacroEnabledWorkbook(context.TemplateDocumentPath);
         var sourcePath = Path.Combine(context.DocumentSourceSetPath, "StandardLibraryProbe.bas");
@@ -63,7 +66,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             Assert.DoesNotContain("Book1/Visual Basic For Applications", result.StandardError, StringComparison.Ordinal);
 
             var references = await new ExcelComWorkbookGenerationAutomation().RunAsync(
-                context.BinDocumentPath,
+                legacyBinPath,
                 WorkbookAutomationTimeouts.Default,
                 (session, token) => session.GetReferencesAsync(token),
                 cancellation.Token);
@@ -337,11 +340,13 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 environmentDiagnosticPort: new FakeEnvironmentDiagnosticPort(),
                 persistSourceAnalysisFailureEvidence: false);
 
-            Assert.False(File.Exists(context.BinDocumentPath));
+            Assert.Null(context.BinDocumentPath);
+            Assert.False(Directory.Exists(Path.Combine(root, "bin")));
             var result = await composition.BuildCommand.RunAsync(context, cancellation.Token);
             Assert.True(result.ExitCode == 0, result.StandardError);
             Assert.False(originalSource.SequenceEqual(File.ReadAllBytes(context.TemplateDocumentPath)));
-            Assert.False(File.Exists(context.BinDocumentPath));
+            Assert.Null(context.BinDocumentPath);
+            Assert.False(Directory.Exists(Path.Combine(root, "bin")));
             Assert.False((bool)other.Saved);
             Assert.Equal(otherWorkbookPath, Convert.ToString(other.FullName));
             Assert.Equal(otherVisible, (bool)otherApplication.Visible);
@@ -1032,7 +1037,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             var result = await command.RunAsync(fixture.Context, cancellation.Token);
 
             Assert.True(result.ExitCode == 0, result.StandardError);
-            Assert.Contains($"Built {fixture.Context.BinDocumentPath}", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains($"Built {fixture.LegacyBinPath}", result.StandardOutput, StringComparison.Ordinal);
             Assert.Contains("Imported 4 source files.", result.StandardOutput, StringComparison.Ordinal);
             Assert.NotNull(admittedSources);
             Assert.Equal(
@@ -1041,7 +1046,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             var reopenedVersion = await AssertOrdinaryBuildWorkbookAsync(
                 fixture, admittedSources, activeCodePage, temp.Path, cancellation.Token);
             Assert.False(Directory.Exists(stagingPath));
-            Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(fixture.Context.BinDocumentPath)!, ".AdmissionBook.*.tmp.xlsm"));
+            Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(fixture.LegacyBinPath)!, ".AdmissionBook.*.tmp.xlsm"));
             foreach (var source in fixture.CallerBytes)
             {
                 Assert.Equal(source.Value, File.ReadAllBytes(source.Key));
@@ -1134,7 +1139,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 var reopenedVersion = await AssertOrdinaryBuildWorkbookAsync(
                     fixture, admittedSources, activeCodePage, temp.CreateDirectory(phase), cancellation.Token);
                 Assert.False(Directory.Exists(stagingPath));
-                Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(fixture.Context.BinDocumentPath)!, ".AdmissionBook.*.tmp.xlsm"));
+                Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(fixture.LegacyBinPath)!, ".AdmissionBook.*.tmp.xlsm"));
                 Assert.Equal(fixture.CallerBytes[fixture.Context.TemplateDocumentPath], File.ReadAllBytes(fixture.Context.TemplateDocumentPath));
                 Assert.Equal(fixture.CallerBytes[fixture.Context.ManifestPath], File.ReadAllBytes(fixture.Context.ManifestPath));
                 output.WriteLine(
@@ -1168,7 +1173,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             var baseline = await command.RunAsync(fixture.Context, cancellation.Token);
             Assert.True(baseline.ExitCode == 0, baseline.StandardError);
             Assert.NotNull(admittedSources);
-            var completedWorkbook = File.ReadAllBytes(fixture.Context.BinDocumentPath);
+            var completedWorkbook = File.ReadAllBytes(fixture.LegacyBinPath);
             var sourcePath = Path.Combine(fixture.Context.DocumentSourceSetPath, "modules", "UnicodeModule.bas");
             var failures = new List<(byte[] Bytes, string ExpectedError)>
             {
@@ -1193,8 +1198,8 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 Assert.Contains(failure.ExpectedError, result.StandardError, StringComparison.Ordinal);
                 Assert.Equal(1, automation.StartedRuns);
                 Assert.Equal(1, automation.CompletedRuns);
-                Assert.Equal(completedWorkbook, File.ReadAllBytes(fixture.Context.BinDocumentPath));
-                Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(fixture.Context.BinDocumentPath)!, ".AdmissionBook.*.tmp.xlsm"));
+                Assert.Equal(completedWorkbook, File.ReadAllBytes(fixture.LegacyBinPath));
+                Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(fixture.LegacyBinPath)!, ".AdmissionBook.*.tmp.xlsm"));
                 foreach (var source in fixture.CallerBytes)
                 {
                     Assert.Equal(source.Key == sourcePath ? failure.Bytes : source.Value, File.ReadAllBytes(source.Key));
@@ -1234,7 +1239,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 sourceSet => previousSources = sourceSet.SourceFiles.ToArray()).RunAsync(fixture.Context, deadline.Token);
             Assert.True(baseline.ExitCode == 0, baseline.StandardError);
             Assert.NotNull(previousSources);
-            var previousWorkbook = File.ReadAllBytes(fixture.Context.BinDocumentPath);
+            var previousWorkbook = File.ReadAllBytes(fixture.LegacyBinPath);
             WriteEncodedFixtureSource(
                 Path.Combine(fixture.Context.DocumentSourceSetPath, "modules", "UnicodeModule.bas"),
                 $"Attribute VB_Name = \"UnicodeModule\"\r\nOption Explicit\r\nPublic Const NonAsciiValue As String = \"{fixture.NonAsciiText} updated\"\r\n",
@@ -1252,10 +1257,10 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             Assert.True(cancellation.IsCancellationRequested);
             Assert.Equal(1, automation.StartedRuns);
             Assert.Equal(1, automation.CompletedRuns);
-            Assert.Equal(previousWorkbook, File.ReadAllBytes(fixture.Context.BinDocumentPath));
+            Assert.Equal(previousWorkbook, File.ReadAllBytes(fixture.LegacyBinPath));
             Assert.NotNull(stagingPath);
             Assert.False(Directory.Exists(stagingPath));
-            Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(fixture.Context.BinDocumentPath)!, ".AdmissionBook.*.tmp.xlsm"));
+            Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(fixture.LegacyBinPath)!, ".AdmissionBook.*.tmp.xlsm"));
             foreach (var source in callerBytes)
             {
                 Assert.Equal(source.Value, File.ReadAllBytes(source.Key));
@@ -1288,7 +1293,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             var fixture = await CreateOrdinaryWorkbookFixtureAsync(temp, activeCodePage, deadline.Token);
             var baseline = await CreateLegacyStagedBuildCommand(_ => { }).RunAsync(fixture.Context, deadline.Token);
             Assert.True(baseline.ExitCode == 0, baseline.StandardError);
-            var previousWorkbook = File.ReadAllBytes(fixture.Context.BinDocumentPath);
+            var previousWorkbook = File.ReadAllBytes(fixture.LegacyBinPath);
             WriteEncodedFixtureSource(
                 Path.Combine(fixture.Context.DocumentSourceSetPath, "modules", "UnicodeModule.bas"),
                 $"Attribute VB_Name = \"UnicodeModule\"\r\nOption Explicit\r\nPublic Const NonAsciiValue As String = \"{fixture.NonAsciiText} updated\"\r\n",
@@ -1310,18 +1315,18 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             var result = await command.RunAsync(fixture.Context, cancellation.Token);
 
             Assert.True(result.ExitCode == 0, result.StandardError);
-            Assert.Contains($"Built {fixture.Context.BinDocumentPath}", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains($"Built {fixture.LegacyBinPath}", result.StandardOutput, StringComparison.Ordinal);
             Assert.Contains("Imported 4 source files.", result.StandardOutput, StringComparison.Ordinal);
             Assert.True(cancellation.IsCancellationRequested);
             Assert.Equal(1, automation.StartedRuns);
             Assert.Equal(1, automation.CompletedRuns);
-            Assert.False(previousWorkbook.AsSpan().SequenceEqual(File.ReadAllBytes(fixture.Context.BinDocumentPath)));
+            Assert.False(previousWorkbook.AsSpan().SequenceEqual(File.ReadAllBytes(fixture.LegacyBinPath)));
             Assert.NotNull(admittedSources);
             var reopenedVersion = await AssertOrdinaryBuildWorkbookAsync(
                 fixture, admittedSources, activeCodePage, temp.Path, deadline.Token);
             Assert.NotNull(stagingPath);
             Assert.False(Directory.Exists(stagingPath));
-            Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(fixture.Context.BinDocumentPath)!, ".AdmissionBook.*.tmp.xlsm"));
+            Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(fixture.LegacyBinPath)!, ".AdmissionBook.*.tmp.xlsm"));
             foreach (var source in callerBytes)
             {
                 Assert.Equal(source.Value, File.ReadAllBytes(source.Key));
@@ -1973,9 +1978,9 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         try
         {
             var fixture = await CreateOrdinaryWorkbookFixtureAsync(temp, activeCodePage, cancellation.Token);
-            Directory.CreateDirectory(Path.GetDirectoryName(fixture.Context.BinDocumentPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(fixture.LegacyBinPath)!);
             Directory.CreateDirectory(Path.GetDirectoryName(fixture.Context.PublishDocumentPath)!);
-            File.WriteAllBytes(fixture.Context.BinDocumentPath, Encoding.ASCII.GetBytes("existing-bin-output"));
+            File.WriteAllBytes(fixture.LegacyBinPath, Encoding.ASCII.GetBytes("existing-bin-output"));
             File.WriteAllBytes(fixture.Context.PublishDocumentPath, Encoding.ASCII.GetBytes("existing-publish-output"));
             var callerBytes = Directory.GetFiles(fixture.Context.ProjectRoot, "*", SearchOption.AllDirectories)
                 .ToDictionary(path => path, File.ReadAllBytes, StringComparer.Ordinal);
@@ -2036,9 +2041,9 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             var snapshotPath = CopySnapshotFixtureSources(temp, fixture);
             var snapshotBytes = Directory.GetFiles(snapshotPath, "*", SearchOption.AllDirectories)
                 .ToDictionary(path => path, File.ReadAllBytes, StringComparer.OrdinalIgnoreCase);
-            Directory.CreateDirectory(Path.GetDirectoryName(fixture.Context.BinDocumentPath)!);
-            CreateEmptyMacroEnabledWorkbook(fixture.Context.BinDocumentPath);
-            var originalBin = File.ReadAllBytes(fixture.Context.BinDocumentPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(fixture.LegacyBinPath)!);
+            CreateEmptyMacroEnabledWorkbook(fixture.LegacyBinPath);
+            var originalBin = File.ReadAllBytes(fixture.LegacyBinPath);
             var outputPath = Path.Combine(temp.CreateDirectory("snapshot-output"), "AdmissionBook.xlsm");
             IReadOnlyList<VbeImportSourceFile>? admittedSources = null;
             var automation = new RecordingOwnedWorkbookGenerationAutomation();
@@ -2093,7 +2098,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 Assert.Equal(invalidBytes, File.ReadAllBytes(badSourcePath));
             }
 
-            Assert.Equal(originalBin, File.ReadAllBytes(fixture.Context.BinDocumentPath));
+            Assert.Equal(originalBin, File.ReadAllBytes(fixture.LegacyBinPath));
             foreach (var source in fixture.CallerBytes)
             {
                 Assert.Equal(source.Value, File.ReadAllBytes(source.Key));
@@ -2143,9 +2148,9 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             ]), new UTF8Encoding(true, true));
             var capturedBytes = Directory.GetFiles(snapshotPath, "*", SearchOption.AllDirectories)
                 .ToDictionary(path => path, File.ReadAllBytes, StringComparer.OrdinalIgnoreCase);
-            Directory.CreateDirectory(Path.GetDirectoryName(fixture.Context.BinDocumentPath)!);
-            CreateEmptyMacroEnabledWorkbook(fixture.Context.BinDocumentPath);
-            var originalBin = File.ReadAllBytes(fixture.Context.BinDocumentPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(fixture.LegacyBinPath)!);
+            CreateEmptyMacroEnabledWorkbook(fixture.LegacyBinPath);
+            var originalBin = File.ReadAllBytes(fixture.LegacyBinPath);
             var ownershipFactory = new WindowsExactFileSystemObjectOwnershipFactory();
             var pathIdentityResolver = new FileSystemPathIdentityResolver();
             var referenceNormalizer = new WorkbookReferenceNormalizer(
@@ -2182,7 +2187,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             Assert.Equal(new Uri(persistentPath).AbsoluteUri,
                 finished.RootElement.GetProperty("location").GetProperty("uri").GetString());
             Assert.False(File.Exists(persistentPath));
-            Assert.Equal(originalBin, File.ReadAllBytes(fixture.Context.BinDocumentPath));
+            Assert.Equal(originalBin, File.ReadAllBytes(fixture.LegacyBinPath));
             Assert.Empty(Directory.EnumerateFileSystemEntries(scratchRoot));
             foreach (var source in fixture.CallerBytes.Concat(capturedBytes))
             {
@@ -2220,7 +2225,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             var legacyStagedBuild = await CreateLegacyStagedBuildCommand(_ => { })
                 .RunAsync(fixture.Context, cancellation.Token);
             Assert.True(legacyStagedBuild.ExitCode == 0, legacyStagedBuild.StandardError);
-            var workbookBytes = File.ReadAllBytes(fixture.Context.BinDocumentPath);
+            var workbookBytes = File.ReadAllBytes(fixture.LegacyBinPath);
             var explicitExporter = new RecordingModuleExporter(new ExcelComWorkbookModuleExporter());
             var projectExporter = new RecordingModuleExporter(
                 new SourceWorkbookModuleExporter(new ExcelComSourceWorkbookAutomation()));
@@ -2230,7 +2235,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             {
                 var destination = temp.CreateDirectory(explicitWorkbook ? "explicit-export" : "project-export");
                 var result = explicitWorkbook
-                    ? await command.RunExplicitAsync(new(fixture.Context.BinDocumentPath, destination, temp.Path), cancellation.Token)
+                    ? await command.RunExplicitAsync(new(fixture.LegacyBinPath, destination, temp.Path), cancellation.Token)
                     : await command.RunAsync(fixture.Context, new(destination, temp.Path), cancellation.Token);
                 Assert.True(result.ExitCode == 0, result.StandardError);
                 Assert.Empty(result.StandardError);
@@ -2244,7 +2249,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             Assert.All(explicitExporter.Paths.Concat(projectExporter.Paths),
                 path => Assert.False(Directory.Exists(path)));
             Assert.Equal(sourceWorkbookBytes, File.ReadAllBytes(fixture.Context.TemplateDocumentPath));
-            Assert.Equal(workbookBytes, File.ReadAllBytes(fixture.Context.BinDocumentPath));
+            Assert.Equal(workbookBytes, File.ReadAllBytes(fixture.LegacyBinPath));
             foreach (var source in fixture.CallerBytes.Where(source =>
                          !source.Key.Equals(fixture.Context.TemplateDocumentPath,
                              StringComparison.OrdinalIgnoreCase)))
@@ -2353,7 +2358,9 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
     {
         var root = temp.CreateDirectory("Project");
         var manifestStore = new JsonProjectManifestStore();
-        manifestStore.Save(root, ProjectManifest.CreateDefault("AdmissionProject", "AdmissionBook", root, null));
+        var manifest = ProjectManifest.CreateDefault("AdmissionProject", "AdmissionBook", root, null);
+        manifest.Documents["AdmissionBook"] = manifest.Documents["AdmissionBook"] with { BinPath = "bin/AdmissionBook.xlsm" };
+        manifestStore.Save(root, manifest);
         var context = new ProjectContextResolver(manifestStore).Resolve(new(root, "AdmissionBook", root));
         Directory.CreateDirectory(context.DocumentSourceSetPath);
         CreateEmptyMacroEnabledWorkbook(context.TemplateDocumentPath);
@@ -2428,14 +2435,14 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             "  \t'#eXcludePublish suffix\r\n' \U0001f642\r\nAttribute VB_Name = \"invalid-name\"\r\n",
             new UTF8Encoding(true, true));
         File.WriteAllBytes(Path.Combine(sourceDirectory, "MarkerExcluded.frx"), [0xff]);
-        Directory.CreateDirectory(Path.GetDirectoryName(context.BinDocumentPath)!);
-        CreateEmptyMacroEnabledWorkbook(context.BinDocumentPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(fixture.LegacyBinPath)!);
+        CreateEmptyMacroEnabledWorkbook(fixture.LegacyBinPath);
         return fixture with
         {
             CallerBytes = Directory.GetFiles(sourceDirectory)
                 .Append(context.TemplateDocumentPath)
                 .Append(context.ManifestPath)
-                .Append(context.BinDocumentPath)
+                .Append(fixture.LegacyBinPath)
                 .ToDictionary(path => path, File.ReadAllBytes, StringComparer.OrdinalIgnoreCase)
         };
     }
@@ -2450,7 +2457,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         string artifactDirectory,
         CancellationToken cancellationToken)
         => AssertOrdinaryWorkbookAsync(
-            fixture, fixture.Context.BinDocumentPath, sources, activeCodePage, artifactDirectory, cancellationToken);
+            fixture, fixture.LegacyBinPath, sources, activeCodePage, artifactDirectory, cancellationToken);
 
     private static Task<string> AssertOrdinaryWorkbookAsync(
         OrdinaryWorkbookFixture fixture,
@@ -2497,7 +2504,11 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         ResolvedProjectContext Context,
         string NonAsciiText,
         string SeedExcelVersion,
-        IReadOnlyDictionary<string, byte[]> CallerBytes);
+        IReadOnlyDictionary<string, byte[]> CallerBytes)
+    {
+        public string LegacyBinPath { get; } = Context.BinDocumentPath
+            ?? throw new InvalidOperationException("The legacy workbook fixture requires an explicit workbook bin path.");
+    }
 
     private sealed class RecordingOwnedWorkbookGenerationAutomation(
         CancellationTokenSource? cancelAfterRelease = null) : IWorkbookGenerationAutomation

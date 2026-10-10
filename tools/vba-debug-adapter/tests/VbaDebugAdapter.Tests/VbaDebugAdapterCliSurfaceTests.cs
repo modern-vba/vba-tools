@@ -4012,6 +4012,39 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
     }
 
     [Fact]
+    public async Task LegacyWorkbookBinWarningEmitsExactDapConsoleOutput()
+    {
+        const string warning = "[WARN] project-workbook-bin-deprecated: The binPath setting for document 'Book' "
+            + "is deprecated and scheduled for removal. Remove binPath from vba-project.json; "
+            + "ordinary Build, Debug, Test, and project Export use templatePath. Existing bin files are left unchanged.";
+        var probe = new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(0,
+            "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\","
+            + "\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\","
+            + "\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectManifest.optionalBinPath\":\"1.0\"}}",
+            string.Empty));
+        var launchService = new RecordingDebugLaunchService(
+            lifecycleMessage: new DebugLifecycleMessage(warning));
+        var commandLine = CreateCommandLine(new StandaloneVbaDebugAdapterStdioRunner(launchService), probe);
+        using var standardInput = CreateDapInput(
+            new { seq = 1, type = "request", command = "launch", arguments = CreateValidLaunchArguments() },
+            new { seq = 2, type = "request", command = "configurationDone", arguments = new { } });
+        using var standardOutput = new MemoryStream();
+        using var standardError = new MemoryStream();
+
+        var exitCode = await commandLine.InvokeAsync(
+            ["--stdio", "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                "--session", "0123456789abcdef0123456789abcdef"],
+            standardInput, standardOutput, standardError, CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var output = Assert.Single(ReadDapMessages(standardOutput), message =>
+            message.TryGetProperty("event", out var eventName) && eventName.GetString() == "output");
+        Assert.Equal("console", output.GetProperty("body").GetProperty("category").GetString());
+        Assert.Equal(warning + Environment.NewLine,
+            output.GetProperty("body").GetProperty("output").GetString());
+    }
+
+    [Fact]
     public async Task LaunchSetupFailureEmitsImportantOutputAndBodylessTermination()
     {
         var probe = new RecordingVbaDevCapabilitiesProbe(

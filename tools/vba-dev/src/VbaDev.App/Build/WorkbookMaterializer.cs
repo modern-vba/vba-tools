@@ -206,7 +206,11 @@ internal sealed class WorkbookMaterializer
     {
         var (context, targetPath, operationName) = intent switch
         {
-            WorkbookMaterializationIntent.ProjectBuild build => (build.Context, build.Context.BinDocumentPath, "ordinary Build"),
+            WorkbookMaterializationIntent.ProjectBuild build => (build.Context,
+                sourceWorkbookInPlace ? build.Context.TemplateDocumentPath
+                    : build.Context.BinDocumentPath ?? throw new InvalidOperationException(
+                        "Legacy generation has no output target. Use bound source-workbook Build or explicit snapshot output."),
+                "ordinary Build"),
             WorkbookMaterializationIntent.Publish publish => (publish.Context, publish.Context.PublishDocumentPath, "Publish"),
             _ => throw new ArgumentOutOfRangeException(nameof(intent), intent, null)
         };

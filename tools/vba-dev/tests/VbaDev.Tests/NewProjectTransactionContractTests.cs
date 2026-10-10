@@ -633,7 +633,7 @@ public sealed class NewProjectTransactionContractTests
         Assert.Equal(
             "src/JsonProject/JsonProject.xlsm",
             document.GetProperty("templatePath").GetString());
-        Assert.Equal("bin/JsonProject.xlsm", document.GetProperty("binPath").GetString());
+        Assert.False(document.TryGetProperty("binPath", out _));
         Assert.Equal(
             "publish/JsonProject.xlsm",
             document.GetProperty("publishPath").GetString());
@@ -683,7 +683,7 @@ public sealed class NewProjectTransactionContractTests
             "Document: TextProject",
             "Source set: src/TextProject",
             "Source template: src/TextProject/TextProject.xlsm",
-            "Build target: bin/TextProject.xlsm",
+            "Build saves source workbook: src/TextProject/TextProject.xlsm",
             "Publish target: publish/TextProject.xlsm",
             "CommonModules:",
             "  - dependency: OptionalFeature (OptionalFeature.bas)",

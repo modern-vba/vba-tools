@@ -45,14 +45,16 @@ public sealed class BuildSourceAdmissionTests
         Assert.Equal("windows-1252", imported.ImportVerification.OriginalEncoding);
         Assert.Equal(originalBytes, File.ReadAllBytes(sourcePath));
         Assert.Equal("template-workbook", File.ReadAllText(outputPath));
-        Assert.False(File.Exists(context.BinDocumentPath));
+        Assert.Null(context.BinDocumentPath);
+        Assert.False(Directory.Exists(Path.Combine(temp.Path, "bin")));
     }
 
     [Fact]
     public async Task OrdinaryBuildUsesTheActiveCodePageForAmbiguousBomlessSource()
     {
         using var temp = TempDirectory.Create();
-        var context = CreateContext(temp.Path);
+        var context = CreateContext(temp.Path, legacyStagedBuild: true);
+        var legacyBinPath = Assert.IsType<string>(context.BinDocumentPath);
         var sourcePath = Path.Combine(context.DocumentSourceSetPath, "Module1.bas");
         const string utf8Text = "Attribute VB_Name = \"Module1\"\r\n' caf\u00e9\r\n";
         var originalBytes = new UTF8Encoding(false, true).GetBytes(utf8Text);
@@ -67,14 +69,15 @@ public sealed class BuildSourceAdmissionTests
         Assert.Contains("' caf\u00c3\u00a9", imported.ImportVerification.CodeModuleLines);
         Assert.Equal("windows-1252", imported.ImportVerification.OriginalEncoding);
         Assert.Equal(originalBytes, File.ReadAllBytes(sourcePath));
-        Assert.Equal("template-workbook", File.ReadAllText(context.BinDocumentPath));
+        Assert.Equal("template-workbook", File.ReadAllText(legacyBinPath));
     }
 
     [Fact]
     public async Task OrdinaryBuildPreservesAnEmptySourceSet()
     {
         using var temp = TempDirectory.Create();
-        var context = CreateContext(temp.Path);
+        var context = CreateContext(temp.Path, legacyStagedBuild: true);
+        var legacyBinPath = Assert.IsType<string>(context.BinDocumentPath);
         var automation = new FakeWorkbookGenerationAutomation();
 
         var result = await CreateCommand(automation, 65001).RunAsync(context, CancellationToken.None);
@@ -82,14 +85,15 @@ public sealed class BuildSourceAdmissionTests
         Assert.Equal(0, result.ExitCode);
         Assert.Empty(automation.ImportedSources);
         Assert.Equal(1, automation.SaveCalls);
-        Assert.Equal("template-workbook", File.ReadAllText(context.BinDocumentPath));
+        Assert.Equal("template-workbook", File.ReadAllText(legacyBinPath));
     }
 
     [Fact]
     public async Task OrdinaryBuildKeepsItsAdmittedInventoryAfterSourcesAndSidecarsDisappear()
     {
         using var temp = TempDirectory.Create();
-        var context = CreateContext(temp.Path);
+        var context = CreateContext(temp.Path, legacyStagedBuild: true);
+        var legacyBinPath = Assert.IsType<string>(context.BinDocumentPath);
         var root = context.DocumentSourceSetPath;
         var nested = Directory.CreateDirectory(Path.Combine(root, "nested")).FullName;
         var modulePath = Path.Combine(nested, "Greeting.bas");
@@ -159,7 +163,7 @@ public sealed class BuildSourceAdmissionTests
             Assert.Equal(source.SourcePath, imported.DiagnosticSourcePath);
             Assert.Equal(source.OriginalEncoding, imported.ImportVerification.OriginalEncoding);
         }
-        Assert.Equal("template-workbook", File.ReadAllText(context.BinDocumentPath));
+        Assert.Equal("template-workbook", File.ReadAllText(legacyBinPath));
     }
 
     [Fact]
@@ -167,11 +171,12 @@ public sealed class BuildSourceAdmissionTests
     {
         using var temp = TempDirectory.Create();
         using var cancellation = new CancellationTokenSource();
-        var context = CreateContext(temp.Path);
+        var context = CreateContext(temp.Path, legacyStagedBuild: true);
+        var legacyBinPath = Assert.IsType<string>(context.BinDocumentPath);
         File.WriteAllText(Path.Combine(context.DocumentSourceSetPath, "First.bas"), "Attribute VB_Name = \"First\"\r\n");
         File.WriteAllText(Path.Combine(context.DocumentSourceSetPath, "Second.bas"), "Attribute VB_Name = \"Second\"\r\n");
-        Directory.CreateDirectory(Path.GetDirectoryName(context.BinDocumentPath)!);
-        File.WriteAllText(context.BinDocumentPath, "previous-output");
+        Directory.CreateDirectory(Path.GetDirectoryName(legacyBinPath)!);
+        File.WriteAllText(legacyBinPath, "previous-output");
         var reads = 0;
         var admission = new VbaSourceAdmission(() => 1252, readAllBytes: path =>
         {
@@ -188,8 +193,8 @@ public sealed class BuildSourceAdmissionTests
         Assert.Equal(130, result.ExitCode);
         Assert.Equal(1, reads);
         Assert.Empty(automation.OpenedWorkbooks);
-        Assert.Equal("previous-output", File.ReadAllText(context.BinDocumentPath));
-        Assert.Equal([context.BinDocumentPath], Directory.GetFiles(Path.GetDirectoryName(context.BinDocumentPath)!));
+        Assert.Equal("previous-output", File.ReadAllText(legacyBinPath));
+        Assert.Equal([legacyBinPath], Directory.GetFiles(Path.GetDirectoryName(legacyBinPath)!));
     }
 
     [Theory]
@@ -199,13 +204,14 @@ public sealed class BuildSourceAdmissionTests
         using var document = JsonDocument.Parse(caseJson);
         var item = document.RootElement;
         using var temp = TempDirectory.Create();
-        var context = CreateContext(temp.Path);
+        var context = CreateContext(temp.Path, legacyStagedBuild: true);
+        var legacyBinPath = Assert.IsType<string>(context.BinDocumentPath);
         var sourcePath = Path.Combine(context.DocumentSourceSetPath, item.GetProperty("fileName").GetString()!);
         var bytes = Convert.FromBase64String(item.GetProperty("bytesBase64").GetString()!);
         var activeCodePage = item.GetProperty("activeCodePage").GetInt32();
         File.WriteAllBytes(sourcePath, bytes);
-        Directory.CreateDirectory(Path.GetDirectoryName(context.BinDocumentPath)!);
-        File.WriteAllText(context.BinDocumentPath, "previous-output");
+        Directory.CreateDirectory(Path.GetDirectoryName(legacyBinPath)!);
+        File.WriteAllText(legacyBinPath, "previous-output");
         var automation = new FakeWorkbookGenerationAutomation();
         var mirrorObserved = false;
         var mirrorFactory = new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(), mirror =>
@@ -253,8 +259,8 @@ public sealed class BuildSourceAdmissionTests
         {
             Assert.Equal(item.GetProperty("expectedEncoding").GetString(), Assert.Single(automation.ImportedSources).ImportVerification.OriginalEncoding);
         }
-        Assert.Equal(shouldFail ? "previous-output" : "template-workbook", File.ReadAllText(context.BinDocumentPath));
-        Assert.Equal([context.BinDocumentPath], Directory.GetFiles(Path.GetDirectoryName(context.BinDocumentPath)!));
+        Assert.Equal(shouldFail ? "previous-output" : "template-workbook", File.ReadAllText(legacyBinPath));
+        Assert.Equal([legacyBinPath], Directory.GetFiles(Path.GetDirectoryName(legacyBinPath)!));
         Assert.Equal(bytes, File.ReadAllBytes(sourcePath));
     }
 
@@ -288,7 +294,8 @@ public sealed class BuildSourceAdmissionTests
         Assert.Equal([context.TemplateDocumentPath], runner.Workbooks);
         Assert.Equal([context.TemplateDocumentPath], automation.OpenedWorkbooks);
         Assert.Equal(0, automation.SaveCalls);
-        Assert.False(File.Exists(context.BinDocumentPath));
+        Assert.Null(context.BinDocumentPath);
+        Assert.False(Directory.Exists(Path.Combine(temp.Path, "bin")));
     }
 
     public static IEnumerable<object[]> SnapshotEncodingCases()
@@ -313,8 +320,9 @@ public sealed class BuildSourceAdmissionTests
         var bytes = Convert.FromBase64String(item.GetProperty("bytesBase64").GetString()!);
         var activeCodePage = item.GetProperty("activeCodePage").GetInt32();
         File.WriteAllBytes(sourcePath, bytes);
-        Directory.CreateDirectory(Path.GetDirectoryName(context.BinDocumentPath)!);
-        File.WriteAllText(context.BinDocumentPath, "persistent-bin");
+        var legacyBinPath = Path.Combine(temp.Path, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(legacyBinPath)!);
+        File.WriteAllText(legacyBinPath, "persistent-bin");
         var outputPath = Path.Combine(temp.Path, "snapshot-output.xlsm");
         File.WriteAllText(outputPath, "previous-output");
         var acpCalls = 0;
@@ -389,7 +397,8 @@ public sealed class BuildSourceAdmissionTests
             }
         }
         Assert.Equal(command == "build" && !shouldFail ? "template-workbook" : "previous-output", File.ReadAllText(outputPath));
-        Assert.Equal("persistent-bin", File.ReadAllText(context.BinDocumentPath));
+        Assert.Null(context.BinDocumentPath);
+        Assert.Equal("persistent-bin", File.ReadAllText(legacyBinPath));
         Assert.Equal(bytes, File.ReadAllBytes(sourcePath));
         Assert.Empty(Directory.EnumerateDirectories(scratchRoot));
         Assert.Empty(Directory.EnumerateFiles(context.DocumentSourceSetPath));
@@ -403,8 +412,9 @@ public sealed class BuildSourceAdmissionTests
         var sourcePath = Path.Combine(context.DocumentSourceSetPath, "Module1.bas");
         byte[] invalidUtf8 = [0xef, 0xbb, 0xbf, 0xc3];
         File.WriteAllBytes(sourcePath, invalidUtf8);
-        Directory.CreateDirectory(Path.GetDirectoryName(context.BinDocumentPath)!);
-        File.WriteAllText(context.BinDocumentPath, "previous-output");
+        var legacyBinPath = Path.Combine(temp.Path, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(legacyBinPath)!);
+        File.WriteAllText(legacyBinPath, "previous-output");
         var acpCalls = 0;
         var admission = new VbaSourceAdmission(() => { acpCalls++; return 1252; });
         var automation = new FakeWorkbookGenerationAutomation();
@@ -429,7 +439,8 @@ public sealed class BuildSourceAdmissionTests
         Assert.Empty(automation.ImportedSources);
         Assert.Equal(0, automation.SaveCalls);
         Assert.Empty(runner.Workbooks);
-        Assert.Equal("previous-output", File.ReadAllText(context.BinDocumentPath));
+        Assert.Null(context.BinDocumentPath);
+        Assert.Equal("previous-output", File.ReadAllText(legacyBinPath));
         Assert.Equal(invalidUtf8, File.ReadAllBytes(sourcePath));
     }
 
@@ -574,7 +585,8 @@ public sealed class BuildSourceAdmissionTests
         Assert.Equal([context.TemplateDocumentPath], automation.OpenedWorkbooks);
         Assert.Equal(0, automation.SaveCalls);
         Assert.False(File.Exists(sourcePath));
-        Assert.False(File.Exists(context.BinDocumentPath));
+        Assert.Null(context.BinDocumentPath);
+        Assert.False(Directory.Exists(Path.Combine(temp.Path, "bin")));
         Assert.Empty(Directory.EnumerateFiles(context.DocumentSourceSetPath));
         Assert.Empty(Directory.EnumerateDirectories(scratchRoot));
         Assert.DoesNotContain(snapshotPath, result.StandardOutput, StringComparison.OrdinalIgnoreCase);
@@ -599,9 +611,13 @@ public sealed class BuildSourceAdmissionTests
         return reason;
     }
 
-    private static ResolvedProjectContext CreateContext(string root)
+    private static ResolvedProjectContext CreateContext(string root, bool legacyStagedBuild = false)
     {
         var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        if (legacyStagedBuild)
+        {
+            manifest.Documents["Book1"] = manifest.Documents["Book1"] with { BinPath = "bin/Book1.xlsm" };
+        }
         var sourceDirectory = Directory.CreateDirectory(Path.Combine(root, "sources")).FullName;
         var templatePath = Path.Combine(root, "Template.xlsm");
         File.WriteAllText(templatePath, "template-workbook");
@@ -613,7 +629,7 @@ public sealed class BuildSourceAdmissionTests
             manifest.Documents["Book1"],
             sourceDirectory,
             templatePath,
-            Path.Combine(root, "bin", "Book1.xlsm"),
+            legacyStagedBuild ? Path.Combine(root, "bin", "Book1.xlsm") : null,
             Path.Combine(root, "publish", "Book1.xlsm"),
             null);
     }

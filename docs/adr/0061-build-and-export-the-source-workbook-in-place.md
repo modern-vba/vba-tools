@@ -16,6 +16,11 @@ Test/snapshot transition statements below describe the #447 integration point;
 current Test input, execution and cleanup are governed by the
 [#449 follow-up in ADR 0026](0026-run-tests-from-command-owned-snapshot-workbooks.md#issue-449-follow-up-source-workbook-test).
 
+[ADR 0063](0063-retire-project-workbook-bin-configuration.md) completes the #450
+configuration cutover: schema-1 `binPath` is optional deprecated compatibility
+state, New omits it, and existing files are not migrated or deleted. The staged
+compatibility statements below remain history of the #447 integration point.
+
 ## Context
 
 Ordinary Build previously copied a saved template, imported saved source, and

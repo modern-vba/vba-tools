@@ -22,7 +22,7 @@ public sealed class WorkbookOutputFailureTests
     {
         using var temp = TempDirectory.Create();
         var project = CreateProject(temp);
-        var previousBin = File.ReadAllBytes(project.Context.BinDocumentPath);
+        var previousBin = File.ReadAllBytes(project.LegacyBinPath);
         var previousPublish = File.ReadAllBytes(project.Context.PublishDocumentPath);
         var snapshot = CreateCallerSnapshot(temp);
         var previousCaller = File.ReadAllBytes(snapshot.OutputPath);
@@ -45,7 +45,7 @@ public sealed class WorkbookOutputFailureTests
             CommandErrorMessages.ExcelComAutomationFailed(commandName == "publish" ? "publish" : "build", failure)
                 + Environment.NewLine,
             result.StandardError);
-        Assert.Equal(previousBin, File.ReadAllBytes(project.Context.BinDocumentPath));
+        Assert.Equal(previousBin, File.ReadAllBytes(project.LegacyBinPath));
         Assert.Equal(previousPublish, File.ReadAllBytes(project.Context.PublishDocumentPath));
         Assert.Equal(previousCaller, File.ReadAllBytes(snapshot.OutputPath));
         Assert.Empty(EnumerateOwnedStaging(Path.GetDirectoryName(snapshot.OutputPath)!));
@@ -87,7 +87,7 @@ public sealed class WorkbookOutputFailureTests
             Assert.Same(error, actual);
         }
 
-        Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Equal("previous-bin", File.ReadAllText(project.LegacyBinPath, Encoding.UTF8));
         Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory("build")));
     }
 
@@ -149,7 +149,7 @@ public sealed class WorkbookOutputFailureTests
             : OwnedProcessReleaseProof.ProvenOrNotStarted, result.OwnedProcessReleaseProof);
         Assert.Contains(stage.Description, result.StandardError, StringComparison.Ordinal);
         Assert.Empty(result.StandardOutput);
-        Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Equal("previous-bin", File.ReadAllText(project.LegacyBinPath, Encoding.UTF8));
         Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
         Assert.Equal("previous-caller", File.ReadAllText(snapshot.OutputPath, Encoding.UTF8));
         Assert.Equal("Attribute VB_Name = \"Local\"", File.ReadAllText(Path.Combine(snapshot.SourcePath, "Local.bas")));
@@ -177,7 +177,7 @@ public sealed class WorkbookOutputFailureTests
         Assert.True(cancellation.IsCancellationRequested);
         Assert.Equal(0, result.ExitCode);
         Assert.Equal("new-template", File.ReadAllText(snapshot.OutputPath, Encoding.UTF8));
-        Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Equal("previous-bin", File.ReadAllText(project.LegacyBinPath, Encoding.UTF8));
         Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
         Assert.True(File.Exists(Path.Combine(snapshot.SourcePath, "Local.bas")));
     }
@@ -232,7 +232,7 @@ public sealed class WorkbookOutputFailureTests
         Assert.Equal(1, result.ExitCode);
         Assert.Equal(OwnedProcessReleaseProof.Unproven, result.OwnedProcessReleaseProof);
         Assert.Contains("workbook save", result.StandardError, StringComparison.Ordinal);
-        Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Equal("previous-bin", File.ReadAllText(project.LegacyBinPath, Encoding.UTF8));
         Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
         Assert.Contains(Assert.Single(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName))),
             result.StandardError, StringComparison.Ordinal);
@@ -300,7 +300,7 @@ public sealed class WorkbookOutputFailureTests
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("module import 'Local.bas'", result.StandardError, StringComparison.Ordinal);
         Assert.Contains("30 seconds", result.StandardError, StringComparison.Ordinal);
-        Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Equal("previous-bin", File.ReadAllText(project.LegacyBinPath, Encoding.UTF8));
         Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
         Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName)));
     }
@@ -322,7 +322,7 @@ public sealed class WorkbookOutputFailureTests
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("owned Excel process exited", result.StandardError, StringComparison.Ordinal);
         Assert.Contains("workbook save", result.StandardError, StringComparison.Ordinal);
-        Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Equal("previous-bin", File.ReadAllText(project.LegacyBinPath, Encoding.UTF8));
         Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
         Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName)));
     }
@@ -352,7 +352,7 @@ public sealed class WorkbookOutputFailureTests
         Assert.Equal(130, result.ExitCode);
         Assert.Empty(result.StandardOutput);
         Assert.Contains("reference attempt 'Microsoft Scripting Runtime'", result.StandardError, StringComparison.Ordinal);
-        Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Equal("previous-bin", File.ReadAllText(project.LegacyBinPath, Encoding.UTF8));
         Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
         Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName)));
     }
@@ -376,11 +376,11 @@ public sealed class WorkbookOutputFailureTests
         Assert.Empty(result.StandardError);
         Assert.True(cancellation.IsCancellationRequested);
         var selectedOutputPath = commandName == "build"
-            ? project.Context.BinDocumentPath
+            ? project.LegacyBinPath
             : project.Context.PublishDocumentPath;
         var siblingOutputPath = commandName == "build"
             ? project.Context.PublishDocumentPath
-            : project.Context.BinDocumentPath;
+            : project.LegacyBinPath;
         Assert.Equal("new-template", File.ReadAllText(selectedOutputPath, Encoding.UTF8));
         Assert.Equal(
             commandName == "build" ? "previous-publish" : "previous-bin",
@@ -420,7 +420,7 @@ public sealed class WorkbookOutputFailureTests
         Assert.Equal(0, automation.SaveCalls);
         Assert.Equal(
             "previous-bin",
-            File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+            File.ReadAllText(project.LegacyBinPath, Encoding.UTF8));
         Assert.Equal(
             "previous-publish",
             File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
@@ -446,7 +446,7 @@ public sealed class WorkbookOutputFailureTests
             CancellationToken.None);
 
         var selectedOutputPath = commandName == "build"
-            ? project.Context.BinDocumentPath
+            ? project.LegacyBinPath
             : project.Context.PublishDocumentPath;
         Assert.Equal(0, result.ExitCode);
         Assert.Equal(
@@ -489,7 +489,7 @@ public sealed class WorkbookOutputFailureTests
             StringComparison.OrdinalIgnoreCase);
         Assert.Equal(
             "previous-bin",
-            File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+            File.ReadAllText(project.LegacyBinPath, Encoding.UTF8));
         Assert.Equal(
             "previous-publish",
             File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
@@ -618,7 +618,7 @@ public sealed class WorkbookOutputFailureTests
         Assert.Equal(130, result.ExitCode);
         Assert.Empty(result.StandardOutput);
         Assert.Contains("cancelled", result.StandardError, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Equal("previous-bin", File.ReadAllText(project.LegacyBinPath, Encoding.UTF8));
         Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
         Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName)));
     }
@@ -647,7 +647,7 @@ public sealed class WorkbookOutputFailureTests
             if (inspectMirror) Assert.True(Directory.Exists(mirror));
             else Assert.True(File.Exists(workbook));
             Assert.Contains(inspectMirror ? mirror! : workbook!, result.StandardError);
-            Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+            Assert.Equal("previous-bin", File.ReadAllText(project.LegacyBinPath, Encoding.UTF8));
         }
         finally
         {
@@ -695,6 +695,7 @@ public sealed class WorkbookOutputFailureTests
     {
         var root = temp.CreateDirectory("Project");
         var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"] = manifest.Documents["Book1"] with { BinPath = "bin/Book1.xlsm" };
         new JsonProjectManifestStore().Save(root, manifest);
         var sourceDirectory = Path.Combine(root, "src", "Book1");
         Directory.CreateDirectory(sourceDirectory);
@@ -708,18 +709,22 @@ public sealed class WorkbookOutputFailureTests
             Encoding.UTF8);
         var context = new ProjectContextResolver(new JsonProjectManifestStore()).Resolve(
             new ProjectResolutionRequest(root, null, root));
-        Directory.CreateDirectory(Path.GetDirectoryName(context.BinDocumentPath)!);
+        var legacyBinPath = Assert.IsType<string>(context.BinDocumentPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(legacyBinPath)!);
         Directory.CreateDirectory(Path.GetDirectoryName(context.PublishDocumentPath)!);
-        File.WriteAllText(context.BinDocumentPath, "previous-bin", Encoding.UTF8);
+        File.WriteAllText(legacyBinPath, "previous-bin", Encoding.UTF8);
         File.WriteAllText(context.PublishDocumentPath, "previous-publish", Encoding.UTF8);
         return new ProjectFixture(context);
     }
 
     private sealed record ProjectFixture(ResolvedProjectContext Context)
     {
+        public string LegacyBinPath { get; } = Context.BinDocumentPath
+            ?? throw new InvalidOperationException("The staged-output fixture requires an explicit legacy workbook bin path.");
+
         public string SelectedOutputDirectory(string commandName)
             => Path.GetDirectoryName(commandName == "build"
-                ? Context.BinDocumentPath
+                ? LegacyBinPath
                 : Context.PublishDocumentPath)!;
     }
 

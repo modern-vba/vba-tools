@@ -45,7 +45,8 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
             Assert.Equal(0, pathRunner.Calls);
             Assert.Equal(originalWorkbook, File.ReadAllBytes(context.TemplateDocumentPath));
             Assert.Equal(originalSource, File.ReadAllBytes(sourcePath));
-            Assert.False(File.Exists(context.BinDocumentPath));
+            Assert.Null(context.BinDocumentPath);
+            Assert.False(Directory.Exists(Path.Combine(context.ProjectRoot, "bin")));
             using var unlocked = File.Open(context.TemplateDocumentPath, FileMode.Open,
                 FileAccess.ReadWrite, FileShare.None);
         },
@@ -78,7 +79,8 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
             Assert.Equal(0, pathRunner.Calls);
             Assert.False(originalWorkbook.AsSpan().SequenceEqual(File.ReadAllBytes(context.TemplateDocumentPath)));
             Assert.Equal(originalSource, File.ReadAllBytes(sourcePath));
-            Assert.False(File.Exists(context.BinDocumentPath));
+            Assert.Null(context.BinDocumentPath);
+            Assert.False(Directory.Exists(Path.Combine(context.ProjectRoot, "bin")));
             using var unlocked = File.Open(context.TemplateDocumentPath, FileMode.Open,
                 FileAccess.ReadWrite, FileShare.None);
         },
@@ -168,7 +170,8 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
             Assert.Equal(originalWorkbook, ReadOpenWorkbookBytes(context.TemplateDocumentPath));
             Assert.Equal(originalOther, ReadOpenWorkbookBytes(otherPath));
             Assert.Equal(externalBytes, File.ReadAllBytes(sourcePath));
-            Assert.False(File.Exists(context.BinDocumentPath));
+            Assert.Null(context.BinDocumentPath);
+            Assert.False(Directory.Exists(Path.Combine(context.ProjectRoot, "bin")));
         },
         () => DisposeFixtures(other, source),
         () => WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20)));
@@ -219,7 +222,8 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
             Assert.Equal(0, pathRunner.Calls);
             Assert.Equal(originalWorkbook, ReadOpenWorkbookBytes(context.TemplateDocumentPath));
             Assert.Equal(externalBytes, File.ReadAllBytes(sourcePath));
-            Assert.False(File.Exists(context.BinDocumentPath));
+            Assert.Null(context.BinDocumentPath);
+            Assert.False(Directory.Exists(Path.Combine(context.ProjectRoot, "bin")));
         },
         () => DisposeFixtures(source),
         () => WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20)));
@@ -266,7 +270,8 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
             Assert.Equal(0, pathRunner.Calls);
             Assert.Equal(originalWorkbook, File.ReadAllBytes(context.TemplateDocumentPath));
             Assert.Equal(externalBytes, File.ReadAllBytes(sourcePath));
-            Assert.False(File.Exists(context.BinDocumentPath));
+            Assert.Null(context.BinDocumentPath);
+            Assert.False(Directory.Exists(Path.Combine(context.ProjectRoot, "bin")));
         },
         () => { },
         () => WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20)));
@@ -312,7 +317,8 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
             source.AssertRetained(settings, "original-user-cell", "UNIT_TEST_SHEET");
             Assert.Equal(0, pathRunner.Calls);
             Assert.Equal(originalWorkbook, ReadOpenWorkbookBytes(context.TemplateDocumentPath));
-            Assert.False(File.Exists(context.BinDocumentPath));
+            Assert.Null(context.BinDocumentPath);
+            Assert.False(Directory.Exists(Path.Combine(context.ProjectRoot, "bin")));
         },
         () => DisposeFixtures(source),
         () => WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20)));

@@ -1081,6 +1081,28 @@ test('Packaged VbaDev contract requires project-creation path validation 1.0', (
   assert.equal(contract.commandSchemaVersions['new excel'], '1.0');
 });
 
+test('Packaged VbaDev admission rejects a provider without bin-free manifest support', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const contract = loadRequiredVbaDevContract(extensionRoot);
+  const featureVersions = { ...contract.featureVersions };
+  delete featureVersions['projectManifest.optionalBinPath'];
+  const commands = Object.fromEntries(Object.entries(contract.commandSchemaVersions)
+    .map(([command, outputSchemaVersion]) => [command, { outputSchemaVersion }]));
+
+  await assert.rejects(() => resolveCompatibleVbaDev({
+    extensionRoot,
+    configuredPath: path.join('D:', 'tools', 'older-vba-dev.exe'),
+    requiredContract: contract,
+    runProcess: async () => ({
+      stdout: JSON.stringify({
+        toolVersion: '0.1.0', contractVersion: contract.contractVersion,
+        featureVersions, activeWindowsCodePage: 65001, commands
+      }),
+      stderr: ''
+    })
+  }), /does not report required feature 'projectManifest\.optionalBinPath'/);
+});
+
 test('VbaDev compatibility invokes capabilities JSON and returns parsed versions', async () => {
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   const executablePath = path.join('D:', 'tools', 'vba-dev.exe');

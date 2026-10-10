@@ -5,6 +5,12 @@ import path from 'node:path';
 
 import { parseProjectManifest } from './projectManifest';
 
+test('ProjectManifest projection shares bin-free custom source and invalid-null-bin fixtures', () => {
+  assert.deepEqual(parseProjectManifest(readProjectManifestFixture('bin-free-source-workbook.json'))?.documents,
+    [{ name: 'Book1', sourcePath: 'authoring/custom', templatePath: 'authoring/custom/OriginalName.xlsm' }]);
+  assert.equal(parseProjectManifest(readProjectManifestFixture('invalid-null-bin-path.json')), undefined);
+});
+
 test('ProjectManifest adapter reads canonical manifest fixture for Test Explorer projection', () => {
   const manifest = parseProjectManifest(readProjectManifestFixture('document-source-set.json'));
 

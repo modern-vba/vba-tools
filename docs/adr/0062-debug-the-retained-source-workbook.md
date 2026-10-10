@@ -12,6 +12,10 @@ status: accepted
   snapshot-output and historical verification contracts remain unchanged.
 - Depends on: [ADR 0061](0061-build-and-export-the-source-workbook-in-place.md).
 
+[ADR 0063](0063-retire-project-workbook-bin-configuration.md) subsequently makes
+legacy `binPath` optional and deprecated without changing this source Debug
+binding, preparation, retained lifetime, or no-Save contract.
+
 ## Context
 
 The maintainer selected one source workbook as the authoring and Debug state.

@@ -947,7 +947,7 @@ public sealed class SourceAnalysisEvidenceStoreTests
         var document = manifest.Documents["Book1"];
         return new(root, Path.Combine(root, "vba-project.json"), manifest, "Book1", document,
             Path.Combine(root, document.SourcePath), Path.Combine(root, document.TemplatePath),
-            Path.Combine(root, document.BinPath), Path.Combine(root, document.PublishPath), null);
+            document.BinPath is null ? null : Path.Combine(root, document.BinPath), Path.Combine(root, document.PublishPath), null);
     }
 
     private sealed class UnrenderableException : Exception

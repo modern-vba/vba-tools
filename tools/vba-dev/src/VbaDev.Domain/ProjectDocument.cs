@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace VbaDev.Domain;
 
 /// <summary>
-/// Describes the source, template, build, publish, CommonModules, and reference state for one project document.
+/// Describes the source workbook, publish, legacy bin, CommonModules, and reference state for one project document.
 /// </summary>
 public sealed record ProjectDocument
 {
@@ -17,20 +17,20 @@ public sealed record ProjectDocument
     /// </summary>
     /// <param name="kind">The Office document kind stored in vba-project.json.</param>
     /// <param name="sourcePath">The source set path for exported VBA modules.</param>
-    /// <param name="templatePath">The source template workbook path.</param>
-    /// <param name="binPath">The generated build workbook path.</param>
+    /// <param name="templatePath">The source workbook path used by authoring commands.</param>
     /// <param name="publishPath">The generated publish workbook path.</param>
     /// <param name="commonModules">The CommonModules entries installed into the document source set.</param>
     /// <param name="references">The VBA project references required by this document.</param>
+    /// <param name="binPath">The optional deprecated workbook output path retained for compatibility.</param>
     [JsonConstructor]
     public ProjectDocument(
         string kind,
         string sourcePath,
         string templatePath,
-        string binPath,
         string publishPath,
         List<InstalledCommonModule>? commonModules,
-        List<VbaProjectReference>? references)
+        List<VbaProjectReference>? references,
+        string? binPath = null)
     {
         Kind = kind;
         SourcePath = sourcePath;
@@ -52,14 +52,14 @@ public sealed record ProjectDocument
     public string SourcePath { get; init; }
 
     /// <summary>
-    /// Gets the workbook template path used as the starting point for builds.
+    /// Gets the source workbook path used by ordinary Build, Debug, Test, and project Export.
     /// </summary>
     public string TemplatePath { get; init; }
 
     /// <summary>
-    /// Gets the generated workbook path used by build and test commands.
+    /// Gets the optional deprecated workbook output path. Authoring commands do not use it.
     /// </summary>
-    public string BinPath { get; init; }
+    public string? BinPath { get; init; }
 
     /// <summary>
     /// Gets the generated workbook path used by publish commands.
@@ -79,7 +79,7 @@ public sealed record ProjectDocument
     /// <summary>
     /// Creates the conventional path layout for an Excel document entry.
     /// </summary>
-    /// <param name="documentName">The document name used for source, bin, and publish paths.</param>
+    /// <param name="documentName">The document name used for source and publish paths.</param>
     /// <param name="commonModules">The initial CommonModules entries.</param>
     /// <param name="references">The initial VBA project references.</param>
     /// <returns>An Excel document entry using VbaDev's default folder layout.</returns>
@@ -91,7 +91,6 @@ public sealed record ProjectDocument
             ExcelKind,
             $"src/{documentName}",
             $"src/{documentName}/{documentName}.xlsm",
-            $"bin/{documentName}.xlsm",
             $"publish/{documentName}.xlsm",
             commonModules?.ToList() ?? [],
             references?.ToList() ?? []);

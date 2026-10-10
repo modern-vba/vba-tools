@@ -6,6 +6,18 @@ import Ajv from 'ajv';
 const schemaUrl = new URL('../schemas/project-manifest.schema.json', import.meta.url);
 const fixtureDirectoryUrl = new URL('../fixtures/project-manifest/', import.meta.url);
 
+test('ProjectManifest schema accepts absence and rejects explicitly invalid legacy workbook bin state', async () => {
+  const schema = JSON.parse(await fs.readFile(schemaUrl, 'utf8'));
+  const validate = new Ajv({ allErrors: true, strict: true }).compile(schema);
+  const fixture = JSON.parse(await fs.readFile(new URL('document-source-set.json', fixtureDirectoryUrl), 'utf8'));
+  delete fixture.documents.Book1.binPath;
+  assert.equal(validate(fixture), true, JSON.stringify(validate.errors));
+  for (const binPath of [null, '', 42]) {
+    fixture.documents.Book1.binPath = binPath;
+    assert.equal(validate(fixture), false);
+  }
+});
+
 test('ProjectManifest schema uses the bundled draft-07 vocabulary', async () => {
   const schema = JSON.parse(await fs.readFile(schemaUrl, 'utf8'));
 
@@ -30,6 +42,8 @@ test('ProjectManifest schema validates the shared structural fixture corpus', as
   const validate = new Ajv({ allErrors: true, strict: true }).compile(schema);
   const expectations = new Map([
     ['document-source-set.json', true],
+    ['bin-free-source-workbook.json', true],
+    ['invalid-null-bin-path.json', false],
     ['multi-document.json', true],
     ['primary-document.json', true],
     ['references.json', true],

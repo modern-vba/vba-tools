@@ -50,7 +50,6 @@
         "kind",
         "sourcePath",
         "templatePath",
-        "binPath",
         "publishPath",
         "commonModules",
         "references"
@@ -70,7 +69,8 @@
         },
         "binPath": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Deprecated and scheduled for removal. Remove this setting; authoring commands use templatePath and leave existing bin files unchanged."
         },
         "publishPath": {
           "type": "string",

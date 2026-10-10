@@ -4,9 +4,12 @@
 Measures ordinary workbook Builds against an already prepared, isolated project.
 .DESCRIPTION
 Prepare a complete copy of the project and any project-relative CommonModules
-package below this repository's ignored .local/performance directory. Preserve
-the manifest and every source/template byte. Reuse that exact project path for
-baseline and candidate. This script neither copies nor deletes project files.
+package below this repository's ignored .local/performance directory. Ordinary
+Build saves the exact selected templatePath source workbook in place. Its bytes
+are the mutable measured output; all other source/template and manifest bytes
+are preserved inputs. Prepare the same initial workbook bytes and reuse the exact
+project path for baseline and candidate. This script neither copies nor deletes
+project files and does not restore a previous workbook between trials or variants.
 
 Each invocation performs one excluded warm-up followed by at least three measured
 Builds. It starts Excel indirectly through vba-dev and therefore requires the
@@ -17,8 +20,10 @@ inventories and process observations remain private in .local/performance.
 Supply settled reference-catalog files/directories through CatalogPath when they
 are available. Otherwise the report explicitly records that external catalogs
 were not fingerprinted. Timings are wall-clock ordinary Build timings, not
-semantic-phase or profiler measurements. The output workbook is reused between
-trials; its existence alone is not proof that a failed Build produced it.
+semantic-phase or profiler measurements. The source workbook is reused between
+trials, with its before/after hashes recorded; its existence alone is not proof
+that a failed Build saved it. Workbook bin configuration is neither required nor
+selected. No timings from a mock executable establish real Excel performance.
 .EXAMPLE
 pwsh -File scripts/measureWorkbookBuildPerformance.ps1 -ExecutablePath .local/performance/baseline/vba-dev.exe -ProjectPath .local/performance/inputs/ces/Project -DocumentName Book -EvidenceDirectory .local/performance/evidence/ces -Variant baseline
 #>
@@ -71,7 +76,7 @@ function Get-FileIdentity([string] $Path) {
     }
 }
 
-function Get-TreeIdentity([string[]] $Paths) {
+function Get-TreeIdentity([string[]] $Paths, [string] $ExcludedFilePath = $null) {
     $files = [Collections.Generic.SortedDictionary[string, object]]::new([StringComparer]::Ordinal)
     foreach ($path in $Paths) {
         $item = Get-Item -LiteralPath $path -Force
@@ -82,7 +87,10 @@ function Get-TreeIdentity([string[]] $Paths) {
             if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
                 throw "Cannot fingerprint a tree with reparse points: $($entry.FullName)"
             }
-            if (-not $entry.PSIsContainer) { $files[$entry.FullName] = Get-FileIdentity $entry.FullName }
+            if (-not $entry.PSIsContainer -and -not [string]::Equals(
+                $entry.FullName, $ExcludedFilePath, [StringComparison]::OrdinalIgnoreCase)) {
+                $files[$entry.FullName] = Get-FileIdentity $entry.FullName
+            }
         }
     }
     $records = @($files.Values)
@@ -171,15 +179,15 @@ if ($manifest.Contains('commonModulesRepository') -and $manifest.commonModulesRe
     $inputPaths.Add($commonModules)
 }
 $selectedDocument = $manifest.documents[$DocumentName]
-if (-not $selectedDocument.Contains('binPath') -or [string]::IsNullOrWhiteSpace($selectedDocument.binPath)) {
-    throw 'The selected document must declare its ordinary Build binPath.'
+if (-not $selectedDocument.Contains('templatePath') -or [string]::IsNullOrWhiteSpace($selectedDocument.templatePath)) {
+    throw 'The selected document must declare its ordinary Build source templatePath.'
 }
-$outputPath = Get-FullMeasurementPath $selectedDocument.binPath $project
+$outputPath = Get-FullMeasurementPath $selectedDocument.templatePath $project
 Assert-PrivateMeasurementPath $outputPath
+if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf) -or $outputPath -eq $manifestPath) {
+    throw 'The selected source workbook must be an existing file distinct from the manifest.'
+}
 foreach ($inputPath in $inputPaths) {
-    if ($outputPath -eq $inputPath -or (Test-MeasurementDescendant $outputPath $inputPath)) {
-        throw "Build output overlaps a preserved input: $outputPath"
-    }
     if ($evidence -eq $inputPath -or (Test-MeasurementDescendant $evidence $inputPath)) {
         throw "Evidence overlaps a preserved input: $evidence"
     }
@@ -188,7 +196,8 @@ $catalogs = @($CatalogPath | ForEach-Object { Get-FullMeasurementPath $_ $invoca
 $runDirectory = Join-Path $evidence $Variant
 Assert-PrivateMeasurementPath $runDirectory
 if (Test-Path -LiteralPath $runDirectory) { throw "Evidence variant already exists; use a new name: $runDirectory" }
-$initialInputs = Get-TreeIdentity $inputPaths.ToArray()
+$initialInputs = Get-TreeIdentity $inputPaths.ToArray() -ExcludedFilePath $outputPath
+$initialSourceWorkbook = Get-FileIdentity $outputPath
 $initialExecutable = Get-TreeIdentity @($executableDirectory)
 $initialCatalogs = if ($catalogs.Count -gt 0) { Get-TreeIdentity $catalogs } else { $null }
 $initialExcel = @(Get-ExcelSnapshot)
@@ -200,6 +209,8 @@ Write-MeasurementJson (Join-Path $runDirectory 'catalogs-before.json') $initialC
 $report = [ordered]@{
     schemaVersion = 1; variant = $Variant; startedUtc = [DateTime]::UtcNow.ToString('O')
     projectPath = $project; documentName = $DocumentName; outputPath = $outputPath
+    sourceWorkbookBefore = $initialSourceWorkbook
+    mutableOutputPolicy = 'Only the exact selected templatePath source workbook may change; no workbook bin target.'
     executable = Get-FileIdentity $executable
     executableFileVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($executable).FileVersion
     executableTreeSha256 = $initialExecutable.sha256; inputTreeSha256 = $initialInputs.sha256
@@ -223,7 +234,7 @@ Write-MeasurementJson $reportPath $report
 try {
     for ($trialIndex = 0; $trialIndex -le $Repetitions; $trialIndex++) {
         $name = if ($trialIndex -eq 0) { 'warmup' } else { 'trial-{0:D2}' -f $trialIndex }
-        $inputsBefore = Get-TreeIdentity $inputPaths.ToArray()
+        $inputsBefore = Get-TreeIdentity $inputPaths.ToArray() -ExcludedFilePath $outputPath
         $executableBefore = Get-TreeIdentity @($executableDirectory)
         if ($inputsBefore.sha256 -ne $initialInputs.sha256 -or $executableBefore.sha256 -ne $initialExecutable.sha256) {
             throw 'Inputs or frozen executable files changed before a trial; measurement stopped.'
@@ -280,7 +291,7 @@ try {
         $stdout | Set-Content -LiteralPath (Join-Path $runDirectory "$name.stdout.txt") -Encoding utf8NoBOM
         $stderr | Set-Content -LiteralPath (Join-Path $runDirectory "$name.stderr.txt") -Encoding utf8NoBOM
         $excelAfter = @(Get-ExcelSnapshot)
-        $inputsAfter = Get-TreeIdentity $inputPaths.ToArray()
+        $inputsAfter = Get-TreeIdentity $inputPaths.ToArray() -ExcludedFilePath $outputPath
         $executableAfter = Get-TreeIdentity @($executableDirectory)
         $catalogsAfter = if ($catalogs.Count -gt 0) { Get-TreeIdentity $catalogs } else { $null }
         $outputAfter = if (Test-Path -LiteralPath $outputPath -PathType Leaf) { Get-FileIdentity $outputPath } else { $null }

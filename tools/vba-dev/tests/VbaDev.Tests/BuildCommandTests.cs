@@ -108,8 +108,8 @@ public sealed class BuildCommandTests
             ProjectDocument.ExcelKind,
             Path.GetRelativePath(root, persistentSourcePath),
             Path.GetRelativePath(root, templatePath),
-            Path.GetRelativePath(root, binPath),
-            Path.GetRelativePath(root, publishPath),
+            publishPath: Path.GetRelativePath(root, publishPath),
+            binPath: Path.GetRelativePath(root, binPath),
             commonModules:
             [
                 new InstalledCommonModule("Zeta", "Zeta.bas", Requested: true, TestOnly: true, Orphaned: true),
@@ -170,7 +170,10 @@ public sealed class BuildCommandTests
             $"Built {outputPath}{Environment.NewLine}" +
             $"Imported 3 source files.{Environment.NewLine}",
             result.StandardOutput);
-        Assert.Empty(result.StandardError);
+        Assert.Equal(
+            $"[WARN] {LegacyWorkbookBinConfiguration.WarningCode}: " +
+            LegacyWorkbookBinConfiguration.GetWarning("Book1") + Environment.NewLine,
+            result.StandardError);
         Assert.Equal("snapshot-template", File.ReadAllText(outputPath, Encoding.UTF8));
         Assert.Contains(standardLibrary, automation.References);
         Assert.Equal("existing-bin", File.ReadAllText(binPath, Encoding.UTF8));
@@ -473,8 +476,8 @@ public sealed class BuildCommandTests
             ProjectDocument.ExcelKind,
             Path.GetRelativePath(root, sourceSetPath),
             Path.GetRelativePath(root, templatePath),
-            Path.Combine("bin", "Book1.xlsm"),
-            Path.Combine("publish", "Book1.xlsm"),
+            binPath: Path.Combine("bin", "Book1.xlsm"),
+            publishPath: Path.Combine("publish", "Book1.xlsm"),
             commonModules: [],
             references: []);
         new JsonProjectManifestStore().Save(root, manifest);
@@ -543,13 +546,74 @@ public sealed class BuildCommandTests
     }
 
     [Fact]
+    public void BinFreeSnapshotBuildHonorsExplicitOutputWithoutInventingALegacyBinTarget()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var sourceDirectory = Path.Combine(root, "authoring");
+        Directory.CreateDirectory(sourceDirectory);
+        var sourcePath = Path.Combine(sourceDirectory, "Disk.bas");
+        File.WriteAllText(sourcePath, "Attribute VB_Name = \"Disk\"\r\n", new UTF8Encoding(false));
+        var templatePath = Path.Combine(root, "assets", "Source.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "source-workbook", new UTF8Encoding(false));
+        var publishPath = Path.Combine(root, "delivery", "Publish.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(publishPath)!);
+        File.WriteAllText(publishPath, "existing-publish", new UTF8Encoding(false));
+        var existingBinPath = Path.Combine(root, "bin", "Kept.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(existingBinPath)!);
+        File.WriteAllText(existingBinPath, "unselected-existing-bin", new UTF8Encoding(false));
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"] = manifest.Documents["Book1"] with
+        {
+            SourcePath = "authoring",
+            TemplatePath = "assets/Source.xlsm",
+            PublishPath = "delivery/Publish.xlsm",
+            BinPath = null
+        };
+        new JsonProjectManifestStore().Save(root, manifest);
+        var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
+        var unchangedFiles = new[] { manifestPath, sourcePath, templatePath, publishPath, existingBinPath }
+            .ToDictionary(path => path, File.ReadAllBytes);
+        var snapshotPath = temp.CreateDirectory("caller-input");
+        var snapshotSourcePath = Path.Combine(snapshotPath, "Caller.bas");
+        File.WriteAllText(snapshotSourcePath, "Attribute VB_Name = \"Caller\"\r\n", new UTF8Encoding(false));
+        var snapshotBytes = File.ReadAllBytes(snapshotSourcePath);
+        var outputPath = Path.Combine(root, "bin", "CallerChosen.xlsm");
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(root, workbookGenerationAutomation: automation);
+
+        var result = application.Run(
+            ["build", "--source-snapshot", snapshotPath, "--output", outputPath]);
+
+        Assert.True(result.ExitCode == 0, result.StandardOutput + result.StandardError);
+        Assert.Empty(result.StandardError);
+        Assert.Equal(
+            $"Built {outputPath}{Environment.NewLine}Imported 1 source files.{Environment.NewLine}",
+            result.StandardOutput);
+        Assert.Equal(unchangedFiles[templatePath], File.ReadAllBytes(outputPath));
+        Assert.Single(automation.OpenedWorkbooks);
+        Assert.Equal("Caller", Assert.Single(automation.ImportedSources).ImportVerification.ComponentName);
+        foreach (var (path, bytes) in unchangedFiles)
+        {
+            Assert.Equal(bytes, File.ReadAllBytes(path));
+        }
+        Assert.Equal(snapshotBytes, File.ReadAllBytes(snapshotSourcePath));
+        Assert.Equal(["Caller.bas"], Directory.GetFiles(snapshotPath)
+            .Select(path => Assert.IsType<string>(Path.GetFileName(path))).ToArray());
+        using var manifestJson = JsonDocument.Parse(File.ReadAllText(manifestPath));
+        Assert.False(manifestJson.RootElement.GetProperty("documents").GetProperty("Book1")
+            .TryGetProperty("binPath", out _));
+    }
+
+    [Fact]
     public void SnapshotBuildRejectsOutputThatIsAManifestBinWorkbookBeforeExcel()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
-        new JsonProjectManifestStore().Save(
-            root,
-            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"] = manifest.Documents["Book1"] with { BinPath = "bin/Book1.xlsm" };
+        new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(root, "Book1");
         var binPath = Path.Combine(root, "bin", "Book1.xlsm");
         Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
@@ -809,9 +873,9 @@ public sealed class BuildCommandTests
 
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
-        new JsonProjectManifestStore().Save(
-            root,
-            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"] = manifest.Documents["Book1"] with { BinPath = "bin/Book1.xlsm" };
+        new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(root, "Book1");
         var binDirectory = Path.Combine(root, "bin");
         Directory.CreateDirectory(binDirectory);
@@ -856,9 +920,9 @@ public sealed class BuildCommandTests
 
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
-        new JsonProjectManifestStore().Save(
-            root,
-            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        manifest.Documents["Book1"] = manifest.Documents["Book1"] with { BinPath = "bin/Book1.xlsm" };
+        new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(root, "Book1");
         var binPath = Path.Combine(root, "bin", "Book1.xlsm");
         Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);

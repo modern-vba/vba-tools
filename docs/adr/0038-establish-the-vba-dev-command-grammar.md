@@ -12,6 +12,15 @@ history below records the original seventeen/fourteen counts; its single graph,
 exact-once ownership, closed-intent binding and deterministic phase invariants
 also apply to the added family.
 
+Issue #450 subsequently retires only workbook-bin configuration through
+[ADR 0063](0063-retire-project-workbook-bin-configuration.md). It adds no command
+leaf or parsing mode. New's initial layout, help/receipts and nested manifest
+omit `binPath`; schema-1 admission and writers preserve an absent setting while
+supported legacy values produce nonfatal deprecation/removal guidance. The
+additive `projectManifest.optionalBinPath: 1.0` capability advertises support;
+New receipt schema remains `1.0`. Existing family ownership and phase ordering
+remain unchanged.
+
 ADR 0028 established `System.CommandLine` as the command model. This decision
 defines the internal ownership and deterministic validation contract used to
 complete that migration; every public leaf is now owned exactly once by a

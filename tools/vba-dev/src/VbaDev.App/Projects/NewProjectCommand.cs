@@ -190,7 +190,6 @@ public sealed class NewProjectCommand
                 operationProjectRoot,
                 "src",
                 documentName);
-            var binPath = Path.Combine(operationProjectRoot, "bin");
             var publishPath = Path.Combine(operationProjectRoot, "publish");
             var commonModulesPlan = CreateInitialCommonModulesPlan(
                 packageSnapshot,
@@ -198,7 +197,6 @@ public sealed class NewProjectCommand
             cancellationToken.ThrowIfCancellationRequested();
 
             artifacts.EnsureDirectory(sourceSetPath);
-            artifacts.EnsureDirectory(binPath);
             artifacts.EnsureDirectory(publishPath);
 
             workbookPath = Path.Combine(sourceSetPath, $"{documentName}.xlsm");
@@ -1013,10 +1011,6 @@ public sealed class NewProjectCommand
             $"{documentName}.xlsm"));
         ValidateExcelPath(Path.Combine(
             projectRoot,
-            "bin",
-            $"{documentName}.xlsm"));
-        ValidateExcelPath(Path.Combine(
-            projectRoot,
             "publish",
             $"{documentName}.xlsm"));
     }
@@ -1154,7 +1148,7 @@ public sealed class NewProjectCommand
             .AppendLine($"Document: {documentName}")
             .AppendLine($"Source set: {document.SourcePath}")
             .AppendLine($"Source template: {document.TemplatePath}")
-            .AppendLine($"Build target: {document.BinPath}")
+            .AppendLine($"Build saves source workbook: {document.TemplatePath}")
             .AppendLine($"Publish target: {document.PublishPath}");
         AppendCommonModules(output, document.CommonModules);
         AppendReferences(output, document.References);

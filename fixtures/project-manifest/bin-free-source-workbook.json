@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "projectName": "BinFreeSourceWorkbookProject",
+  "primaryDocument": "Book1",
+  "documents": {
+    "Book1": {
+      "kind": "excel",
+      "sourcePath": "authoring/custom",
+      "templatePath": "authoring/custom/OriginalName.xlsm",
+      "publishPath": "publish/Book1.xlsm",
+      "commonModules": [],
+      "references": []
+    }
+  }
+}

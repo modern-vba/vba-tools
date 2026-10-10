@@ -298,13 +298,15 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                 $"stdout:{Environment.NewLine}{createResult.StandardOutput}{Environment.NewLine}" +
                 $"stderr:{Environment.NewLine}{createResult.StandardError}");
 
-            var documentPaths = ResolveProjectDocumentPaths(projectRoot, "DebugProject");
+            AssertNewProjectOmitsWorkbookBinBeforeLegacyArtifactSetup(projectRoot, "DebugProject");
+            var documentPaths = ResolveProjectDocumentPaths(projectRoot, "DebugProject",
+                unconfiguredLegacyBinArtifactPath: Path.Combine(projectRoot, "bin", "DebugProject.xlsm"));
             var sourcePath = Path.Combine(documentPaths.SourceSetPath, "DebugModule.bas");
             var persistentSourceText = CreatePersistentSource();
             File.WriteAllText(sourcePath, persistentSourceText, new UTF8Encoding(false));
-            Directory.CreateDirectory(Path.GetDirectoryName(documentPaths.BinPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(documentPaths.LegacyBinArtifactPath)!);
             Directory.CreateDirectory(Path.GetDirectoryName(documentPaths.PublishPath)!);
-            File.Copy(documentPaths.TemplatePath, documentPaths.BinPath, overwrite: true);
+            File.Copy(documentPaths.TemplatePath, documentPaths.LegacyBinArtifactPath, overwrite: true);
             File.Copy(documentPaths.TemplatePath, documentPaths.PublishPath, overwrite: true);
             var persistentArtifacts = CapturePersistentArtifacts(documentPaths);
             Assert.True(
@@ -443,7 +445,7 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                 Path.GetFullPath(launchReport.WorkbookPath),
                 new[]
                 {
-                    documentPaths.BinPath,
+                    documentPaths.LegacyBinArtifactPath,
                     documentPaths.PublishPath
                 },
                 StringComparer.OrdinalIgnoreCase);
@@ -547,9 +549,9 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
             var documentPaths = ResolveProjectDocumentPaths(projectRoot, "DebugProject");
             var sourcePath = Path.Combine(documentPaths.SourceSetPath, "DebugModule.bas");
             File.WriteAllText(sourcePath, CreatePersistentSource(), new UTF8Encoding(false));
-            Directory.CreateDirectory(Path.GetDirectoryName(documentPaths.BinPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(documentPaths.LegacyBinArtifactPath)!);
             Directory.CreateDirectory(Path.GetDirectoryName(documentPaths.PublishPath)!);
-            File.Copy(documentPaths.TemplatePath, documentPaths.BinPath, overwrite: true);
+            File.Copy(documentPaths.TemplatePath, documentPaths.LegacyBinArtifactPath, overwrite: true);
             File.Copy(documentPaths.TemplatePath, documentPaths.PublishPath, overwrite: true);
             var persistentArtifacts = CapturePersistentArtifacts(documentPaths);
 
@@ -822,12 +824,14 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                 $"stdout:{Environment.NewLine}{createResult.StandardOutput}{Environment.NewLine}" +
                 $"stderr:{Environment.NewLine}{createResult.StandardError}");
 
-            var documentPaths = ResolveProjectDocumentPaths(projectRoot, "DebugProject");
+            AssertNewProjectOmitsWorkbookBinBeforeLegacyArtifactSetup(projectRoot, "DebugProject");
+            var documentPaths = ResolveProjectDocumentPaths(projectRoot, "DebugProject",
+                unconfiguredLegacyBinArtifactPath: Path.Combine(projectRoot, "bin", "DebugProject.xlsm"));
             var sourcePath = Path.Combine(documentPaths.SourceSetPath, "DebugModule.bas");
             File.WriteAllText(sourcePath, CreatePersistentSource(), new UTF8Encoding(false));
-            Directory.CreateDirectory(Path.GetDirectoryName(documentPaths.BinPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(documentPaths.LegacyBinArtifactPath)!);
             Directory.CreateDirectory(Path.GetDirectoryName(documentPaths.PublishPath)!);
-            File.Copy(documentPaths.TemplatePath, documentPaths.BinPath, overwrite: true);
+            File.Copy(documentPaths.TemplatePath, documentPaths.LegacyBinArtifactPath, overwrite: true);
             File.Copy(documentPaths.TemplatePath, documentPaths.PublishPath, overwrite: true);
             var persistentArtifacts = CapturePersistentArtifacts(documentPaths);
             var sourceText = CreateDebugSource(launchMarkerPath, completionMarkerPath);
@@ -994,7 +998,7 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
         var paths = ResolveProjectDocumentPaths(projectRoot, "DebugProject");
         var sourcePath = Path.Combine(paths.SourceSetPath, "DebugModule.bas");
         File.WriteAllText(sourcePath, CreatePersistentSource(), new UTF8Encoding(false));
-        File.Copy(paths.TemplatePath, paths.BinPath);
+        File.Copy(paths.TemplatePath, paths.LegacyBinArtifactPath);
         File.Copy(paths.TemplatePath, paths.PublishPath);
         var persistentArtifacts = CapturePersistentArtifacts(paths);
         var oldMarker = Path.Combine(temp.Path, "source-restart-original.txt");
@@ -1138,7 +1142,7 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
         var paths = ResolveProjectDocumentPaths(projectRoot, "DebugProject");
         var sourcePath = Path.Combine(paths.SourceSetPath, "DebugModule.bas");
         File.WriteAllText(sourcePath, CreatePersistentSource(), new UTF8Encoding(false));
-        File.Copy(paths.TemplatePath, paths.BinPath);
+        File.Copy(paths.TemplatePath, paths.LegacyBinArtifactPath);
         File.Copy(paths.TemplatePath, paths.PublishPath);
         var otherPath = Path.Combine(temp.Path, "Other.xlsm");
         File.Copy(paths.TemplatePath, otherPath);
@@ -1357,7 +1361,8 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
 
     private static ProjectDocumentPaths ResolveProjectDocumentPaths(
         string projectRoot,
-        string documentName)
+        string documentName,
+        string? unconfiguredLegacyBinArtifactPath = null)
     {
         using var manifest = JsonDocument.Parse(File.ReadAllText(
             Path.Combine(projectRoot, "vba-project.json")));
@@ -1369,13 +1374,32 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                 projectRoot,
                 document.GetProperty(propertyName).GetString()!));
 
-        var binPath = Resolve("binPath");
+        var templatePath = Resolve("templatePath");
+        // This is the fixture's legacy-artifact baseline, never selected-workbook configuration.
+        var legacyBinArtifactPath = document.TryGetProperty("binPath", out _)
+            ? Resolve("binPath")
+            : unconfiguredLegacyBinArtifactPath
+                ?? throw new InvalidOperationException(
+                    "A bin-free fixture requires an explicit test-owned legacy-bin artifact path.");
         return new ProjectDocumentPaths(
             Resolve("sourcePath"),
-            Resolve("templatePath"),
-            binPath,
+            templatePath,
+            legacyBinArtifactPath,
             Resolve("publishPath"),
-            Path.GetFileName(binPath));
+            Path.GetFileName(templatePath));
+    }
+
+    private static void AssertNewProjectOmitsWorkbookBinBeforeLegacyArtifactSetup(
+        string projectRoot,
+        string documentName)
+    {
+        using var manifest = JsonDocument.Parse(File.ReadAllText(
+            Path.Combine(projectRoot, "vba-project.json")));
+        var document = manifest.RootElement.GetProperty("documents").GetProperty(documentName);
+        Assert.False(document.TryGetProperty("binPath", out _),
+            "Public New must omit workbook-bin configuration before the fixture seeds legacy artifacts.");
+        Assert.False(Directory.Exists(Path.Combine(projectRoot, "bin")),
+            "Public New must not create a workbook-bin directory before the fixture seeds legacy artifacts.");
     }
 
     [WindowsExcelIntegrationFact]
@@ -1594,7 +1618,7 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
         foreach (var root in new[]
                  {
                      paths.SourceSetPath,
-                     Path.GetDirectoryName(paths.BinPath)!,
+                     Path.GetDirectoryName(paths.LegacyBinArtifactPath)!,
                      Path.GetDirectoryName(paths.PublishPath)!
                  })
         {
@@ -2856,7 +2880,7 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
     private sealed record ProjectDocumentPaths(
         string SourceSetPath,
         string TemplatePath,
-        string BinPath,
+        string LegacyBinArtifactPath,
         string PublishPath,
         string WorkbookFileName);
 

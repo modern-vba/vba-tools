@@ -140,7 +140,7 @@ public sealed class ExcelProjectMaterializationDiagnosticPort
             document,
             project.ResolvePath(document.SourcePath),
             project.ResolvePath(document.TemplatePath),
-            project.ResolvePath(document.BinPath),
+            document.BinPath is null ? null : project.ResolvePath(document.BinPath),
             project.ResolvePath(document.PublishPath),
             project.CommonModulesRepositoryPath);
 

@@ -6,6 +6,7 @@ using System.Reflection;
 using VbaDev.App.Cli;
 using VbaDev.App.Projects;
 using VbaDev.Composition;
+using VbaDev.Domain;
 
 namespace VbaDev.Cli;
 
@@ -306,7 +307,7 @@ internal static class VbaDevCommandGrammar
                 projectRoot,
                 documentName,
                 composition.WorkingDirectory));
-            return run(context);
+            return WithLegacyBinWarning(run(context), context.DocumentName, context.Document);
         }
         catch (ProjectManifestException ex)
         {
@@ -327,7 +328,8 @@ internal static class VbaDevCommandGrammar
                 projectRoot,
                 documentName,
                 composition.WorkingDirectory));
-            return await run(context, cancellationToken).ConfigureAwait(false);
+            return WithLegacyBinWarning(
+                await run(context, cancellationToken).ConfigureAwait(false), context.DocumentName, context.Document);
         }
         catch (ProjectManifestException ex)
         {
@@ -347,13 +349,27 @@ internal static class VbaDevCommandGrammar
                 projectRoot,
                 null,
                 composition.WorkingDirectory));
-            return await run(project, cancellationToken).ConfigureAwait(false);
+            var result = await run(project, cancellationToken).ConfigureAwait(false);
+            foreach (var (name, document) in project.Manifest.Documents)
+            {
+                result = WithLegacyBinWarning(result, name, document);
+            }
+            return result;
         }
         catch (ProjectManifestException ex)
         {
             return CommandResult.UsageError(ex.Message);
         }
     }
+
+    private static CommandResult WithLegacyBinWarning(
+        CommandResult result, string documentName, ProjectDocument document)
+        => document.BinPath is null ? result : result with
+        {
+            StandardError = result.StandardError
+                + $"[WARN] {LegacyWorkbookBinConfiguration.WarningCode}: "
+                + LegacyWorkbookBinConfiguration.GetWarning(documentName) + Environment.NewLine
+        };
 
     private sealed class CanonicalVersionAction(string version) : SynchronousCommandLineAction
     {

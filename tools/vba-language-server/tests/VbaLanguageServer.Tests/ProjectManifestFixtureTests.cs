@@ -8,6 +8,7 @@ public sealed class ProjectManifestFixtureTests
 {
     [Theory]
     [InlineData("primary-document.json", "PrimaryDocumentProject", "Book1", 1)]
+    [InlineData("bin-free-source-workbook.json", "BinFreeSourceWorkbookProject", "Book1", 1)]
     [InlineData("document-source-set.json", "DocumentSourceSetProject", "Book1", 1)]
     [InlineData("references.json", "ReferencesProject", "Book1", 1)]
     [InlineData("source-template.json", "SourceTemplateProject", "Book1", 1)]
@@ -60,6 +61,7 @@ public sealed class ProjectManifestFixtureTests
     [InlineData("invalid-missing-selection-arrays.json", "commonModules")]
     [InlineData("invalid-missing-template-path.json", "templatePath")]
     [InlineData("invalid-null-optional-property.json", "commonModulesRepository")]
+    [InlineData("invalid-null-bin-path.json", "binPath")]
     [InlineData("invalid-null-command-default.json", "test")]
     [InlineData("invalid-null-document.json", "Book1")]
     [InlineData("invalid-null-reference.json", "null")]

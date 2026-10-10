@@ -60,13 +60,16 @@ internal sealed class BuildSourceSnapshotOutputSafetyValidator
                     document.TemplatePath)),
                 $"manifest source template '{documentName}'",
                 outputPath);
-            RejectIfSame(
-                outputIdentity,
-                pathIdentityResolver.Resolve(ResolveManifestPath(
-                    context.ProjectRoot,
-                    document.BinPath)),
-                $"manifest bin workbook '{documentName}'",
-                outputPath);
+            if (document.BinPath is not null)
+            {
+                RejectIfSame(
+                    outputIdentity,
+                    pathIdentityResolver.Resolve(ResolveManifestPath(
+                        context.ProjectRoot,
+                        document.BinPath)),
+                    $"manifest bin workbook '{documentName}'",
+                    outputPath);
+            }
             RejectIfSame(
                 outputIdentity,
                 pathIdentityResolver.Resolve(ResolveManifestPath(

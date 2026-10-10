@@ -110,6 +110,7 @@ internal sealed class VbaDevContractCommandFamily
                     ["invocation.stdinWorkbookConfirmation"] = "1.0",
                     ["sourceSnapshot.activeWindowsCodePage"] = "1.0",
                     ["projectCreation.pathValidation"] = "1.0",
+                    ["projectManifest.optionalBinPath"] = "1.0",
                     ["hostEvent.list"] = "1.0"
                 },
                 GetActiveWindowsCodePage(),

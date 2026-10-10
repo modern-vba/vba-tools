@@ -66,7 +66,7 @@ public sealed class ProjectContextResolver
             Document: document,
             DocumentSourceSetPath: project.ResolvePath(document.SourcePath),
             TemplateDocumentPath: project.ResolvePath(document.TemplatePath),
-            BinDocumentPath: project.ResolvePath(document.BinPath),
+            BinDocumentPath: document.BinPath is null ? null : project.ResolvePath(document.BinPath),
             PublishDocumentPath: project.ResolvePath(document.PublishPath),
             CommonModulesRepositoryPath: project.CommonModulesRepositoryPath);
     }
