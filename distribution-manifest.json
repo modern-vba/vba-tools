@@ -93,6 +93,7 @@
       "client/src/",
       "client/out/extensionHost/",
       ".tmp/",
+      ".artifacts/",
       "temp/",
       "server/"
     ],

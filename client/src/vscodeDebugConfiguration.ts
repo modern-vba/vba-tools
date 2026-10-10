@@ -306,18 +306,17 @@ function createTransportedSnapshotConfiguration(
     );
   }
 
-  const binPath = selection.document.binPath;
-  if (binPath === undefined || path.basename(binPath).length === 0) {
-    throw new VbaDebugSelectionError(
-      `The selected VBA document '${selection.document.name}' requires a binPath for debugging.`
-    );
-  }
+  const sourceWorkbookPath = path.resolve(
+    selection.project.projectRoot,
+    selection.document.templatePath
+  );
 
   return {
     ...configuration,
     project: selection.project.projectRoot,
     document: selection.document.name,
-    __vbaDebugWorkbookFileName: path.basename(binPath),
+    __vbaDebugSourceWorkbookPath: sourceWorkbookPath,
+    __vbaDebugWorkbookFileName: path.basename(sourceWorkbookPath),
     sourceSnapshot: {
       schemaVersion: 2,
       sources,

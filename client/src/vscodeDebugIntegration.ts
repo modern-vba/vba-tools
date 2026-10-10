@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { SnapshotProviderCancellationError, SnapshotProviders, resolveSnapshotProviders, snapshotActiveWindowsCodePage } from './snapshotProviders';
 import { windowsPathKey } from './windowsPathIdentity';
 import { DebugSnapshotBuildReport, parseDebugSnapshotBuildReport } from './debugSnapshotBuildReport';
+import { DebugWorkbookConfirmationBinding } from './debugWorkbookConfirmation';
 import { ordinalIgnoreCaseKey } from './ordinalIgnoreCase';
 import { classifyAbnormalProcessTermination, formatAbnormalProcessTermination } from './companionProcessTermination';
 
@@ -183,6 +184,7 @@ export interface VscodeDebugIntegrationOptions {
   notifyDebugAdapterCrash?: ((message: string) => PromiseLike<unknown> | unknown) | undefined;
   reportSnapshotBuild?: ((report: DebugSnapshotBuildReport) => void) | undefined;
   reportSnapshotBuildWarning?: ((message: string) => void) | undefined;
+  confirmWorkbookReplacement?: ((warning: string) => Promise<boolean>) | undefined;
   reportCapabilityDiagnostic?: ((message: string) => void) | undefined;
   isWorkspaceTrusted?: (() => boolean) | undefined;
   requireTrustedWorkspace?: (() => Promise<boolean>) | undefined;
@@ -241,6 +243,11 @@ export function handleVbaDebugLifecycleRequest(
   }
   return preparation.completion.then(
     async (launch) => {
+      integration.activateWorkbookConfirmationGeneration(
+        restartConfiguration,
+        preparation.generation,
+        launch
+      );
       await notifyAdapter('vba/restartPrepared', {
         sessionId: preparation.adapterSessionId,
         generation: preparation.generation,
@@ -358,6 +365,11 @@ export function createVbaDebugAdapterTracker(
     stopDebugging: () => PromiseLike<unknown> | unknown;
   }
 ) {
+  integration.registerWorkbookConfirmationTransport(
+    session.id,
+    session.configuration,
+    (command, argumentsValue) => session.customRequest(command, argumentsValue)
+  );
   return {
     onWillReceiveMessage: (message: unknown): void => {
       integration.observeDebugAdapterRequest(session.id, message);
@@ -375,6 +387,12 @@ export function createVbaDebugAdapterTracker(
     },
     onDidSendMessage: (message: unknown): void => {
       integration.observeDebugAdapterMessage(session.configuration, message);
+      void integration.handleWorkbookConfirmationEvent(session.id, message)?.catch((error: unknown) => {
+        callbacks.reportLifecycleFailure(
+          `VBA debug workbook confirmation could not reach the adapter: ` +
+          (error instanceof Error ? error.message : String(error))
+        );
+      });
     },
     onExit: (exitCode?: number, signal?: string): Promise<void> => (
       integration.handleAdapterExit(session.id, exitCode, signal)
@@ -391,6 +409,7 @@ export class VscodeDebugIntegration {
   private readonly restartPreparations = new Map<string, VbaDebugRestartPreparationState>();
   private readonly restartPreparationIdsBySession = new Map<string, Set<string>>();
   private readonly ownedAdapterSessions = new Map<string, OwnedVbaDebugAdapterSession>();
+  private readonly workbookConfirmationTransports = new Map<string, VbaDebugWorkbookConfirmationTransport>();
 
   public constructor(private readonly options: VscodeDebugIntegrationOptions) {}
 
@@ -544,6 +563,10 @@ export class VscodeDebugIntegration {
       throw new Error('The VBA debug restart generation is exhausted.');
     }
     preparation.generation += 1;
+    const ownedSession = preparation.vscodeSessionId === undefined
+      ? undefined : this.ownedAdapterSessions.get(preparation.vscodeSessionId);
+    ownedSession?.confirmationBinding?.dispose();
+    if (ownedSession !== undefined) ownedSession.confirmationBinding = undefined;
 
     if (this.activeSessionId !== undefined) {
       const preparationIds = this.restartPreparationIdsBySession.get(this.activeSessionId)
@@ -596,7 +619,37 @@ export class VscodeDebugIntegration {
     }
     for (const preparation of this.restartPreparations.values()) {
       preparation.cancellation?.cancel();
+      const ownedSession = preparation.vscodeSessionId === undefined
+        ? undefined : this.ownedAdapterSessions.get(preparation.vscodeSessionId);
+      ownedSession?.confirmationBinding?.dispose();
+      if (ownedSession !== undefined) ownedSession.confirmationBinding = undefined;
     }
+  }
+
+  public activateWorkbookConfirmationGeneration(
+    configuration: VbaDebugConfiguration,
+    generation: number,
+    launch: VbaDebugConfiguration
+  ): void {
+    const preparationId = this.restartPreparationId(configuration);
+    const preparation = preparationId === undefined
+      ? undefined : this.restartPreparations.get(preparationId);
+    const vscodeSessionId = preparation?.vscodeSessionId;
+    const ownedSession = vscodeSessionId === undefined
+      ? undefined : this.ownedAdapterSessions.get(vscodeSessionId);
+    if (preparation?.generation !== generation || vscodeSessionId === undefined
+        || ownedSession === undefined
+        || preparation.adapterSessionId !== ownedSession.adapterSessionId
+        || typeof launch.__vbaDebugSourceWorkbookPath !== 'string'
+        || ownedSession.sourceWorkbookPath === undefined
+        || windowsPathKey(launch.__vbaDebugSourceWorkbookPath)
+          !== windowsPathKey(ownedSession.sourceWorkbookPath)) {
+      throw new VbaDebugSelectionError(
+        'The bound VBA debug restart cannot change its source workbook.'
+      );
+    }
+    ownedSession.generation = generation;
+    this.bindWorkbookConfirmation(vscodeSessionId);
   }
 
   public async createDebugAdapterExecutable(
@@ -641,8 +694,13 @@ export class VscodeDebugIntegration {
       this.ownedAdapterSessions.set(session.id, {
         executablePath: standaloneDebugAdapter.executablePath,
         adapterSessionId,
-        stop: session.stop
+        stop: session.stop,
+        sourceWorkbookPath: typeof session.configuration?.__vbaDebugSourceWorkbookPath === 'string'
+          ? session.configuration.__vbaDebugSourceWorkbookPath : undefined,
+        generation: preparationId === undefined
+          ? 0 : this.restartPreparations.get(preparationId)?.generation ?? 0
       });
+      this.bindWorkbookConfirmation(session.id);
 
       return {
         command: standaloneDebugAdapter.executablePath,
@@ -667,6 +725,8 @@ export class VscodeDebugIntegration {
   }
 
   public releaseSession(sessionId: string): void {
+    this.ownedAdapterSessions.get(sessionId)?.confirmationBinding?.dispose();
+    this.workbookConfirmationTransports.delete(sessionId);
     for (const preparationId of this.restartPreparationIdsBySession.get(sessionId) ?? []) {
       this.restartPreparations.get(preparationId)?.cancellation?.cancel();
       this.restartPreparations.delete(preparationId);
@@ -680,6 +740,38 @@ export class VscodeDebugIntegration {
       cancellation?.cancel();
       cancellation?.dispose();
     }
+  }
+
+  public registerWorkbookConfirmationTransport(
+    vscodeSessionId: string,
+    configuration: VbaDebugConfiguration,
+    customRequest: (command: string, argumentsValue: Record<string, unknown>) => PromiseLike<unknown> | unknown
+  ): void {
+    const sourceWorkbookPath = configuration.__vbaDebugSourceWorkbookPath;
+    if (typeof sourceWorkbookPath !== 'string') return;
+    this.workbookConfirmationTransports.set(vscodeSessionId, { sourceWorkbookPath, customRequest });
+    this.bindWorkbookConfirmation(vscodeSessionId);
+  }
+
+  public handleWorkbookConfirmationEvent(vscodeSessionId: string, message: unknown): Promise<void> | undefined {
+    if (this.activeSessionId !== vscodeSessionId) return undefined;
+    const ownedSession = this.ownedAdapterSessions.get(vscodeSessionId);
+    return ownedSession?.confirmationBinding?.handleEvent(ownedSession.adapterSessionId, message);
+  }
+
+  private bindWorkbookConfirmation(vscodeSessionId: string): void {
+    const ownedSession = this.ownedAdapterSessions.get(vscodeSessionId);
+    const transport = this.workbookConfirmationTransports.get(vscodeSessionId);
+    if (ownedSession?.sourceWorkbookPath === undefined || transport === undefined
+        || windowsPathKey(ownedSession.sourceWorkbookPath) !== windowsPathKey(transport.sourceWorkbookPath)) return;
+    ownedSession.confirmationBinding?.dispose();
+    ownedSession.confirmationBinding = new DebugWorkbookConfirmationBinding({
+      sessionId: ownedSession.adapterSessionId,
+      generationId: ownedSession.generation,
+      workbookPath: ownedSession.sourceWorkbookPath,
+      customRequest: transport.customRequest,
+      confirmReplacement: this.options.confirmWorkbookReplacement ?? (async () => false)
+    });
   }
 
   public observeDebugAdapterRequest(sessionId: string, message: unknown): void {
@@ -713,11 +805,13 @@ export class VscodeDebugIntegration {
         ? undefined
         : classifyAbnormalProcessTermination(exitCode, signal);
       if (abnormalTermination !== undefined) {
+        const sourceGuidance = 'VBA execution state is unconfirmed; use Reset in the selected source workbook\'s VBE if needed. '
+          + 'The source workbook was not saved or closed automatically.';
         try {
           this.options.reportDebugAdapterCrash?.(formatAbnormalProcessTermination(
             'vba-debug-adapter', 'debug-session', ownedSession.executablePath,
             1, 1, abnormalTermination, 'not-retried'
-          ));
+          ) + `\n${sourceGuidance}`);
         } catch {
           // Output failure must not prevent owned-session cleanup.
         }
@@ -726,8 +820,8 @@ export class VscodeDebugIntegration {
           : `signal ${abnormalTermination.signal}`;
         try {
           const notification = this.options.notifyDebugAdapterCrash?.(
-            `VBA debug adapter terminated abnormally (${status}); ` +
-            'the debug session was not retried. See VBA Tools Output.'
+            `VBA debug adapter terminated abnormally (${status}); `
+            + `the debug session was not retried. See VBA Tools Output. ${sourceGuidance}`
           );
           if (notification !== undefined) {
             void Promise.resolve(notification).catch(() => undefined);
@@ -983,9 +1077,17 @@ interface OwnedVbaDebugAdapterSession {
   readonly executablePath: string;
   readonly adapterSessionId: string;
   readonly stop: () => PromiseLike<unknown> | unknown;
+  readonly sourceWorkbookPath?: string | undefined;
+  generation: number;
+  confirmationBinding?: DebugWorkbookConfirmationBinding | undefined;
   terminationRequested?: boolean | undefined;
   exitObserved?: boolean | undefined;
   cleanup?: Promise<void> | undefined;
+}
+
+interface VbaDebugWorkbookConfirmationTransport {
+  readonly sourceWorkbookPath: string;
+  readonly customRequest: (command: string, argumentsValue: Record<string, unknown>) => PromiseLike<unknown> | unknown;
 }
 
 function canonicalVbaDebugProjectRoot(projectRoot: string): string {

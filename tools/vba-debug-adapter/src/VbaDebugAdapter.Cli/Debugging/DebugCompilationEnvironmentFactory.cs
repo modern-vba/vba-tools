@@ -7,6 +7,36 @@ namespace VbaDebugAdapter.Debugging;
 /// </summary>
 public sealed class DebugCompilationEnvironmentFactory
 {
+    internal VbaConditionalCompilationEnvironment CreateForLiveHost(DebugCompilationHostFacts hostFacts)
+    {
+        ArgumentNullException.ThrowIfNull(hostFacts);
+        if (hostFacts.Status != DebugCompilationHostFactsStatus.Verified
+            || hostFacts.BuiltInConstants is null)
+            throw new DebugSetupException("The actual live Excel/VBE compiler context could not be proved: "
+                + (hostFacts.UnavailableReason ?? "required host facts are unavailable."));
+        var is64Bit = hostFacts.ExcelProcessArchitecture switch
+        {
+            DebugExcelProcessArchitecture.X86 => false,
+            DebugExcelProcessArchitecture.X64 or DebugExcelProcessArchitecture.Arm64 => true,
+            _ => throw new DebugSetupException("The exact live Excel process architecture is unavailable.")
+        };
+        var builtIns = hostFacts.BuiltInConstants;
+        if (!builtIns.Vba6 || builtIns.Win16 || !builtIns.Win32
+            || builtIns.Win64 != is64Bit || builtIns.Mac)
+            throw new DebugSetupException("The live Excel/VBE compiler built-ins contradict the verified Windows process context.");
+        return new VbaConditionalCompilationEnvironment(
+            new Dictionary<string, VbaConditionalCompilationValue>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["VBA6"] = VbaConditionalCompilationValue.FromBoolean(builtIns.Vba6),
+                ["VBA7"] = VbaConditionalCompilationValue.FromBoolean(builtIns.Vba7),
+                ["Win16"] = VbaConditionalCompilationValue.FromBoolean(builtIns.Win16),
+                ["Win32"] = VbaConditionalCompilationValue.FromBoolean(builtIns.Win32),
+                ["Win64"] = VbaConditionalCompilationValue.FromBoolean(builtIns.Win64),
+                ["Mac"] = VbaConditionalCompilationValue.FromBoolean(builtIns.Mac)
+            }, BuiltInNames, supportsLongLong: builtIns.Vba7 && builtIns.Win64,
+            globalConstantsAreComplete: false);
+    }
+
     private static readonly string[] BuiltInNames =
         ["VBA6", "VBA7", "Win16", "Win32", "Win64", "Mac"];
 

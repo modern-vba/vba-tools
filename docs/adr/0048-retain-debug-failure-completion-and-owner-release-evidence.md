@@ -4,6 +4,11 @@ status: accepted
 
 # Retain debug failure completion and owner release evidence
 
+> Source-workbook Debug ownership, Stop/Restart and preparation are now governed
+> by [ADR 0062](0062-debug-the-retained-source-workbook.md). Disposable/copied
+> Debug claims below are historical for that route; independent Build/Test,
+> Publish, public snapshot-output, Doctor and their evidence are unchanged.
+
 ## Context
 
 Debug startup, build, prepared-plan execution, and termination caught cleanup

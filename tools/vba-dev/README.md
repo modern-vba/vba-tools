@@ -33,6 +33,15 @@ In-place Build/project Export callers must additionally require
 The unchanged command output schema alone does not distinguish an older
 bin-workbook provider from the source-workbook behavior.
 
+Debug preparation callers require `debug.sourceWorkbookPreparation: 1.0`.
+`prepare-debug --describe` resolves the selected source workbook without starting
+Excel. Managed preparation imports a complete immutable snapshot into an exact
+already-open source workbook bound by its Excel PID, UTC start ticks and
+generation. It uses the cancellation/confirmation transport plus a one-shot
+ready continuation after recovery capture; it never saves or closes the workbook.
+This raw Debug path does not run Build/Test/Publish's independent source-analysis
+gate. The adapter separately owns safe target admission, native Reset and Run.
+
 Managed source-workbook Build callers require
 `invocation.stdinWorkbookConfirmation: 1.0` before using the existing hidden
 `--cancellation-transport stdin-v1` channel for confirmation. One multiplexed
@@ -99,6 +108,7 @@ script after moving or replacing that executable.
 | `reference remove` | document | Remove VBA project references from the selected document manifest. |
 | `host-event list` | environment | Inspect the built-in UserForm Event catalog from one generated blank workbook. |
 | `build` | document | Import saved source into the selected source workbook and save it in place. |
+| `prepare-debug` | document / managed caller | Describe or prepare the exact retained source workbook without saving it. |
 | `test` | document | Run VBA unit tests for the selected document. |
 | `publish` | document | Publish the selected document. |
 | `export` | document/path | Export modules from a workbook into source. |
@@ -109,8 +119,8 @@ script after moving or replacing that executable.
 Every command that supports `--project` rejects an explicitly supplied empty
 or whitespace-only value. The same rule applies to `--document` and its `-d`
 alias wherever document selection is supported. This includes CommonModules,
-Reference, Check, and Doctor as well as Build, Publish, Test, and project-aware
-Export; project-only commands still have no document selector.
+Reference, Check, and Doctor as well as Build, Debug preparation, Publish, Test,
+and project-aware Export; project-only commands still have no document selector.
 
 Omit the option to use its default. Project resolution retains upward discovery
 from the current working directory when `--project` is omitted, and
@@ -167,9 +177,10 @@ format is the closed text-or-JSON choice. The sealed
 `completions script pwsh`, registers them in stages to retain root order, and
 preserves Capabilities' JSON-only format. A narrow family-ownership ledger
 stores only sealed family types and actual command references and proves all
-seventeen leaves have exactly one owner. It does not duplicate command
-metadata; the fourteen previously advertised leaves and the three unadvertised
-leaves remain unchanged. `VbaDevCommandGrammar` composes these families plus help,
+current leaves have exactly one owner. The sealed Debug preparation family adds
+the advertised `prepare-debug` leaf; `check`, `capabilities` and
+`completions script pwsh` remain unadvertised. The ledger does not duplicate command
+metadata. `VbaDevCommandGrammar` composes these families plus help,
 version, and cancellation; it declares no leaf and creates no dependency on
 another product.
 
@@ -190,9 +201,15 @@ open the source file hidden with command-owned cleanup. Borrowing grants no
 authority to hide, close, quit, or force-terminate the user's session. This is
 not a fallback for the private-desktop generation path.
 
-Interactive debugging is deliberately different. Its preparatory
-`vba-dev build` uses the private automation path, then the separate debug
-adapter opens a new visible `DebugExcelProcess` for VBE interaction.
+Interactive debugging is deliberately different. The separate adapter resolves
+the source workbook through `prepare-debug --describe`, reuses its exact existing
+Excel process or opens it visibly, and uses managed `prepare-debug` for raw
+snapshot replacement after consent, capture and bounded Reset. Native Run,
+breakpoints and later Reset stay in the adapter. Debug does not automatically
+save source editors or the workbook, close Excel, or use a temporary execution
+workbook. Build, Test, Publish and explicit snapshot-output Build retain their
+independent analysis requirements. See
+[ADR 0062](../../docs/adr/0062-debug-the-retained-source-workbook.md).
 
 ## Document source sets
 

@@ -4,6 +4,11 @@ status: accepted
 
 # Bind debug Excel lifetime to the debug session
 
+> Source-workbook Debug ownership, Stop/Restart and preparation are now governed
+> by [ADR 0062](0062-debug-the-retained-source-workbook.md). Disposable/copied
+> Debug claims below are historical for that route; independent Build/Test,
+> Publish, public snapshot-output, Doctor and their evidence are unchanged.
+
 Each `DebugExcelProcess` is strongly owned by one `VbeDebugSession` and is
 force-terminated whenever that session ends, including explicit stop, VS Code
 shutdown, Extension Host restart, and Debug Adapter failure. A process-lifetime

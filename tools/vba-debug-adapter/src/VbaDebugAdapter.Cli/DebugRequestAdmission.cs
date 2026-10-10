@@ -68,6 +68,7 @@ internal static class DebugRequestAdmission
                 "noDebug",
                 "__sessionId",
                 "__configurationTarget",
+                "__vbaDebugSourceWorkbookPath",
                 "__vbaRestartPreparation"
             ]);
         // VS Code adds an opaque client ID. Only the CLI --session lease establishes ownership.
@@ -112,6 +113,23 @@ internal static class DebugRequestAdmission
                 "The VBA launch project must be a valid absolute path.");
         }
         var documentName = RequiredString(arguments, "document");
+        var sourceWorkbookPath = OptionalExactString(arguments, "__vbaDebugSourceWorkbookPath");
+        if (sourceWorkbookPath is not null)
+        {
+            try
+            {
+                if (!Path.IsPathFullyQualified(sourceWorkbookPath)
+                    || sourceWorkbookPath.StartsWith(@"\\?\", StringComparison.Ordinal)
+                    || sourceWorkbookPath.StartsWith(@"\\.\", StringComparison.Ordinal)
+                    || !Path.GetFullPath(sourceWorkbookPath).Equals(sourceWorkbookPath, StringComparison.OrdinalIgnoreCase)
+                    || !Path.GetExtension(sourceWorkbookPath).Equals(".xlsm", StringComparison.OrdinalIgnoreCase))
+                    throw new DebugRequestRejectedException("The VBA launch source workbook must be a canonical absolute .xlsm path.");
+            }
+            catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                throw new DebugRequestRejectedException("The VBA launch source workbook path is invalid.");
+            }
+        }
         var workbookFileName = RequiredString(arguments, "__vbaDebugWorkbookFileName");
         if (workbookFileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
             !string.Equals(Path.GetFileName(workbookFileName), workbookFileName, StringComparison.Ordinal) ||
@@ -171,7 +189,8 @@ internal static class DebugRequestAdmission
                 Breakpoints = breakpoints
             })
         {
-            RestartPreparation = restartPreparation
+            RestartPreparation = restartPreparation,
+            SourceWorkbookPath = sourceWorkbookPath
         };
     }
 

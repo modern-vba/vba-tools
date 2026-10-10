@@ -8,7 +8,7 @@ status: accepted
 - Issue: #447
 - Partially supersedes: [ADR 0019](0019-separate-build-and-debug-excel-processes.md)
   and the ordinary Build/project Export portions of the
-  [workbook-backed project command model](../../tools/vba-dev/docs/adr/0001-workbook-backed-project-command-model.md).
+  [workbook-backed project command model](https://github.com/modern-vba/vba-tools/blob/main/tools/vba-dev/docs/adr/0001-workbook-backed-project-command-model.md).
 
 ## Context
 

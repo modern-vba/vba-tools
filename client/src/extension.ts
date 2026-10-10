@@ -402,6 +402,10 @@ export async function activate(
     },
     reportDebugAdapterCrash: message => outputChannel?.appendLine(message),
     notifyDebugAdapterCrash: message => window.showErrorMessage(message),
+    confirmWorkbookReplacement: async warning => {
+      const action = 'Replace live VBA code';
+      return await window.showWarningMessage(warning, { modal: true }, action) === action;
+    },
     reportSnapshotBuild: report => {
       toolDiagnosticReporter?.refreshSnapshot(
         vbaDevDiagnosticScope('debug-build', report.projectRoot, report.documentName),

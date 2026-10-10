@@ -506,7 +506,7 @@ internal sealed class AdmittedDebugSourceSnapshot
 }
 
 /// <summary>
-/// Defers branch-activity verification until the built workbook supplies its actual environment.
+/// Defers branch-activity verification until the selected workbook supplies its actual environment.
 /// </summary>
 internal sealed class DeferredDebugConditionalCompilationProof
 {
@@ -574,7 +574,7 @@ internal sealed class DeferredDebugConditionalCompilationProof
             {
                 throw new DebugSetupException(
                     $"VBA debug target '{target.Target.ModuleName}.{target.Target.ProcedureName}' is inactive " +
-                    "in the actual generated workbook compilation context.");
+                    "in the actual workbook compilation context.");
             }
         }
 
@@ -590,7 +590,7 @@ internal sealed class DeferredDebugConditionalCompilationProof
             {
                 throw InvalidBreakpoint(
                     breakpoint.Breakpoint,
-                    "its physical source line is inactive in the actual generated workbook compilation context");
+                    "its physical source line is inactive in the actual workbook compilation context");
             }
         }
     }
@@ -622,7 +622,7 @@ internal sealed class DeferredDebugConditionalCompilationProof
 
         throw new DebugSetupException(
             $"VBA debug target '{target.ModuleName}.{target.ProcedureName}' conditional compilation " +
-            "could not be proved in the actual generated workbook compilation context: " +
+            "could not be proved in the actual workbook compilation context: " +
             DescribeDiagnostics(evaluation));
     }
 
@@ -637,7 +637,7 @@ internal sealed class DeferredDebugConditionalCompilationProof
 
         throw InvalidBreakpoint(
             breakpoint,
-            "its conditional compilation could not be proved in the actual generated workbook " +
+            "its conditional compilation could not be proved in the actual workbook " +
             $"compilation context: {DescribeDiagnostics(evaluation)}");
     }
 

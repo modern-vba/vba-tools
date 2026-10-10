@@ -56,6 +56,21 @@ public sealed record DebugInputWait(
     DebugInputWaitPhase Phase,
     int ProcessId)
 {
+    public DebugLifecycleMessage ToSourceLifecycleMessage()
+    {
+        var owner = Kind switch
+        {
+            DebugInputWaitKind.Excel => "Excel",
+            DebugInputWaitKind.Vbe => "the VBE",
+            _ => "Excel/VBE"
+        };
+        var operation = Phase == DebugInputWaitPhase.WorkbookOpen
+            ? "opening the source workbook" : "starting the debug target";
+        return new DebugLifecycleMessage(
+            $"Source Excel process {ProcessId} is waiting for {owner} input while {operation}. " +
+            "Respond to the visible prompt or use Reset in the source workbook's VBE to stop execution.");
+    }
+
     public DebugLifecycleMessage ToLifecycleMessage()
     {
         var owner = Kind switch

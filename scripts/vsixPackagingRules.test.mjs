@@ -506,6 +506,37 @@ test('packaged Markdown links resolve only against files present in the VSIX', (
   );
 });
 
+test('source-workbook ADR links resolve without excluded CLI source documents', async () => {
+  const adrRoot = new URL('../docs/adr/', import.meta.url);
+  const entries = await fs.readdir(adrRoot, { withFileTypes: true });
+  const packagedFiles = new Map(entries
+    .filter(entry => entry.isFile() && entry.name.endsWith('.md'))
+    .map(entry => [`docs/adr/${entry.name}`, null]));
+  for (const name of [
+    '0061-build-and-export-the-source-workbook-in-place.md',
+    '0062-debug-the-retained-source-workbook.md'
+  ]) {
+    packagedFiles.set(`docs/adr/${name}`, await fs.readFile(new URL(name, adrRoot), 'utf8'));
+  }
+
+  assert.doesNotThrow(() => assertPackagedMarkdownLinks(packagedFiles));
+});
+
+test('VSIX content rules exclude local verification artifacts', async () => {
+  const validFiles = [
+    ...requiredContentPaths, 'package.json', 'client/out/extension.js',
+    distributionManifestPath, marketplaceIconPath,
+    requiredBundledCliPath, requiredBundledLanguageServerPath,
+    requiredVbaDevContractPath, ...standaloneDebugAdapterPaths
+  ];
+  assert.doesNotThrow(() => assertVsixContents(validFiles));
+  assert.throws(() => assertVsixContents([
+    ...validFiles, '.artifacts/source-workbook/verification.trx'
+  ]), /exclude development files.*\.artifacts\/source-workbook\/verification\.trx/i);
+  const ignore = await fs.readFile(new URL('../.vscodeignore', import.meta.url), 'utf8');
+  assert.match(ignore, /^\.artifacts\/\*\*$/m);
+});
+
 test('extension changelog provides the curated initial 0.1.0 release summary', async () => {
   const changelog = await fs.readFile(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
 
@@ -1195,7 +1226,7 @@ test('bundled CLI capabilities must satisfy the packaged extension contract surf
   );
 });
 
-test('bundled debug adapter capabilities require the snapshot build feature contract', () => {
+test('bundled debug adapter capabilities require the source workbook Debug feature contract', () => {
   const contract = readRequiredVbaDebugAdapterContract();
   assert.deepEqual(contract, {
     contractVersion: '1.0',
@@ -1204,8 +1235,12 @@ test('bundled debug adapter capabilities require the snapshot build feature cont
     sessionIdFormat: 'lowercase-hex-32',
     commands: ['cleanup', 'doctor'],
     commandSchemaVersions: { doctor: '1.0' },
-    featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
-    requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
+    featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
+    requiredVbaDevFeatureVersions: {
+      'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '1.0',
+      'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
+      'sourceSnapshot.activeWindowsCodePage': '1.0'
+    }
   });
   const compatibleCapabilities = {
     toolVersion: '0.1.0',
@@ -1242,7 +1277,7 @@ test('bundled debug adapter capabilities require the snapshot build feature cont
       toolVersion: '0.1.0',
       ...contractWithExtraFeature
     }), contractWithExtraFeature),
-    /only build\.sourceSnapshot 2\.0 and build\.sourceSnapshotAnalysis 1\.0/i
+    /only build\.sourceSnapshot 2\.0.*debug\.sourceWorkbookPreparation 1\.0/i
   );
 });
 
@@ -1266,7 +1301,11 @@ test('packaging admits the coordinated ACP-authoritative snapshot v2 providers',
   assert.equal(cliContract.featureVersions['sourceSnapshot.activeWindowsCodePage'], '1.0');
   assert.equal(adapterContract.contractVersion, '1.0');
   assert.equal(adapterContract.protocolVersion, '2.0');
-  assert.deepEqual(adapterContract.requiredVbaDevFeatureVersions, { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' });
+  assert.deepEqual(adapterContract.requiredVbaDevFeatureVersions, {
+    'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '1.0',
+    'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
+    'sourceSnapshot.activeWindowsCodePage': '1.0'
+  });
   assert.doesNotThrow(() => assertBundledCliCapabilities(JSON.stringify({
     toolVersion: '0.1.0',
     contractVersion: cliContract.contractVersion,
@@ -1281,7 +1320,7 @@ test('packaging admits the coordinated ACP-authoritative snapshot v2 providers',
   })));
 });
 
-test('packaging rejects missing snapshot analysis or diagnostic transport capabilities', () => {
+test('packaging rejects missing Test analysis or source workbook Debug capabilities', () => {
   const cliContract = readRequiredVbaDevContract();
   const adapterContract = readRequiredVbaDebugAdapterContract();
   const cliFeatures = { ...cliContract.featureVersions };
@@ -1292,14 +1331,14 @@ test('packaging rejects missing snapshot analysis or diagnostic transport capabi
       .map(([name, version]) => [name, { outputSchemaVersion: version }]))
   })), /build\.sourceSnapshotAnalysis/);
   const adapterFeatures = { ...adapterContract.featureVersions };
-  delete adapterFeatures['snapshotBuild.diagnostics'];
+  delete adapterFeatures['debug.sourceWorkbook'];
   assert.throws(() => assertBundledDebugAdapterCapabilities(JSON.stringify({
     toolVersion: '0.1.0', ...adapterContract, featureVersions: adapterFeatures
-  })), /snapshotBuild\.diagnostics/);
+  })), /debug\.sourceWorkbook/);
   assert.throws(() => assertBundledDebugAdapterCapabilities(JSON.stringify({
     toolVersion: '0.1.0', ...adapterContract,
     requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
-  })), /build\.sourceSnapshotAnalysis/);
+  })), /debug\.sourceWorkbookPreparation/);
 });
 
 test('packaging rejects mixed snapshot feature requirements and providers in either direction', () => {

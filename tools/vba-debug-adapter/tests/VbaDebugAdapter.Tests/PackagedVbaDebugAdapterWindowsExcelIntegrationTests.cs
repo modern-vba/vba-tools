@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
@@ -429,12 +430,7 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                 launchMarkerPath,
                 TimeSpan.FromSeconds(15));
             var excelWindowHandle = launchReport.ExcelWindowHandle;
-            var expectedWorkbookPath = Path.Combine(
-                sessionWorkspacePath,
-                "generations",
-                "generation-0000000000",
-                "output",
-                documentPaths.WorkbookFileName);
+            var expectedWorkbookPath = documentPaths.TemplatePath;
             Assert.Equal(
                 Path.GetFullPath(expectedWorkbookPath),
                 Path.GetFullPath(launchReport.WorkbookPath),
@@ -447,7 +443,6 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                 Path.GetFullPath(launchReport.WorkbookPath),
                 new[]
                 {
-                    documentPaths.TemplatePath,
                     documentPaths.BinPath,
                     documentPaths.PublishPath
                 },
@@ -487,24 +482,26 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                     (eventName.GetString() == "output" ||
                      eventName.GetString() == "exited" ||
                      eventName.GetString() == "terminated"))
-                .TakeLast(3)
+                .Where(message => message.GetProperty("event").GetString() != "output"
+                    || message.GetProperty("body").GetProperty("output").GetString()!
+                        .Contains($"Source Excel process {ownedExcelProcessId.Value} exited", StringComparison.Ordinal))
                 .ToArray();
-            Assert.Equal(
-                ["output", "exited", "terminated"],
-                terminalLifecycle
-                    .Select(message => message.GetProperty("event").GetString()!)
-                    .ToArray());
-            var exitCode = terminalLifecycle[1]
-                .GetProperty("body")
-                .GetProperty("exitCode")
-                .GetInt32();
-            Assert.Contains(
-                $"Owned Excel process {ownedExcelProcessId.Value} exited with code {exitCode}.",
-                terminalLifecycle[0]
-                    .GetProperty("body")
-                    .GetProperty("output")
-                    .GetString(),
-                StringComparison.Ordinal);
+            var observedExit = terminalLifecycle.SingleOrDefault(message => message.GetProperty("event").GetString() == "exited");
+            if (observedExit.ValueKind == JsonValueKind.Undefined)
+            {
+                Assert.Equal(["output", "terminated"], terminalLifecycle
+                    .Select(message => message.GetProperty("event").GetString()!).ToArray());
+                Assert.Contains("exit code unavailable", terminalLifecycle[0].GetProperty("body")
+                    .GetProperty("output").GetString(), StringComparison.OrdinalIgnoreCase);
+            }
+            else
+            {
+                Assert.Equal(["output", "exited", "terminated"], terminalLifecycle
+                    .Select(message => message.GetProperty("event").GetString()!).ToArray());
+                var exitCode = observedExit.GetProperty("body").GetProperty("exitCode").GetInt32();
+                Assert.Contains($"Source Excel process {ownedExcelProcessId.Value} exited with code {exitCode}.",
+                    terminalLifecycle[0].GetProperty("body").GetProperty("output").GetString(), StringComparison.Ordinal);
+            }
 
             await adapter.CompleteInputAndWaitForExitAsync(TimeSpan.FromSeconds(15));
             await WaitForProcessExitAsync(ownedExcelProcessId.Value, TimeSpan.FromSeconds(15));
@@ -729,7 +726,7 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
             Assert.False(restartResponse.GetProperty("success").GetBoolean());
             var restartFailure = restartResponse.GetProperty("message").GetString();
             Assert.Contains(
-                "vba-dev snapshot build exited with code",
+                "Source workbook preparation exited with code",
                 restartFailure,
                 StringComparison.Ordinal);
             Assert.Contains(
@@ -795,7 +792,7 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
 
     [WindowsExcelIntegrationFact]
     [Trait("Category", "WindowsExcelIntegration")]
-    public async Task AbruptPackagedAdapterExitKillsItsExactExcelProcessAndLeavesScopedCleanup()
+    public async Task AbruptPackagedAdapterExitLeavesTheSourceWorkbookOpenAndAllowsScopedStaleCleanup()
     {
         var repositoryRoot = ResolveRepositoryRoot();
         var assets = ResolvePackagedDebugAssets(repositoryRoot);
@@ -950,9 +947,8 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
             AssertPersistentArtifactsUnchanged(documentPaths, persistentArtifacts);
 
             await adapter.KillAbruptlyAsync(TimeSpan.FromSeconds(15));
-            await WaitForOwnedExcelProcessExitAsync(
-                ownedExcelProcess,
-                TimeSpan.FromSeconds(15));
+            Assert.True(IsOwnedExcelProcessRunning(ownedExcelProcess));
+            await WaitForVbeModeAsync(launchReport.ExcelWindowHandle, VbeBreakMode, TimeSpan.FromSeconds(15));
             Assert.True(Directory.Exists(sessionWorkspacePath));
             Assert.True(File.Exists(leasePath));
             AssertPersistentArtifactsUnchanged(documentPaths, persistentArtifacts);
@@ -968,6 +964,10 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                 $"stdout:{Environment.NewLine}{cleanupResult.StandardOutput}{Environment.NewLine}" +
                 $"stderr:{Environment.NewLine}{cleanupResult.StandardError}");
             Assert.False(Directory.Exists(sessionWorkspacePath));
+            Assert.True(IsOwnedExcelProcessRunning(ownedExcelProcess));
+            Assert.Equal(ownedExcelProcess, CaptureOwnedExcelProcess(GetWindowProcessId(launchReport.ExcelWindowHandle)));
+            Assert.Equal(Path.GetFullPath(documentPaths.TemplatePath), Path.GetFullPath(launchReport.WorkbookPath), ignoreCase: true);
+            AssertPersistentArtifactsUnchanged(documentPaths, persistentArtifacts);
         }
         finally
         {
@@ -981,6 +981,287 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                 TimeSpan.FromSeconds(15));
             TryDeleteDirectory(sessionWorkspacePath);
         }
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task PackagedSourceRestartDeclineRetainsTheCurrentSessionAndAcceptanceUsesLatestCodeInTheSameProcess()
+    {
+        var assets = ResolvePackagedDebugAssets(ResolveRepositoryRoot());
+        using var temp = TempDirectory.Create();
+        var projectRoot = Path.Combine(temp.Path, "DebugProject");
+        CreatePackagedDebugProjectFixture(projectRoot);
+        var paths = ResolveProjectDocumentPaths(projectRoot, "DebugProject");
+        var sourcePath = Path.Combine(paths.SourceSetPath, "DebugModule.bas");
+        File.WriteAllText(sourcePath, CreatePersistentSource(), new UTF8Encoding(false));
+        File.Copy(paths.TemplatePath, paths.BinPath);
+        File.Copy(paths.TemplatePath, paths.PublishPath);
+        var persistentArtifacts = CapturePersistentArtifacts(paths);
+        var oldMarker = Path.Combine(temp.Path, "source-restart-original.txt");
+        var oldCompletion = Path.Combine(temp.Path, "source-restart-original-completed.txt");
+        var freshMarker = Path.Combine(temp.Path, "source-restart-latest.txt");
+        var freshCompletion = Path.Combine(temp.Path, "source-restart-latest-completed.txt");
+        var initialSource = CreateDebugSource(oldMarker, oldCompletion);
+        var latestSource = CreateDebugSource(freshMarker, freshCompletion)
+            .Replace("Value2 = \"continued\"", "Value2 = \"latest-code\"", StringComparison.Ordinal);
+        var breakpointLine = FindLine(initialSource,
+            "    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"continued\"");
+        var sourceUri = new Uri(sourcePath).AbsoluteUri;
+        var sessionId = Guid.NewGuid().ToString("N");
+        var preparationId = Guid.NewGuid().ToString("N");
+        var baseline = CaptureExcelProcessIds();
+        OwnedExcelProcessIdentity? fixtureExcel = null;
+        var workspace = Path.Combine(Path.GetTempPath(), "vba-debug-adapter", "workspaces", sessionId);
+        object Launch(int generation, string source) => new
+        {
+            project = projectRoot, document = "DebugProject", module = "DebugModule", procedure = "RunTarget",
+            __vbaDebugWorkbookFileName = paths.WorkbookFileName,
+            __vbaDebugSourceWorkbookPath = paths.TemplatePath,
+            __vbaRestartPreparation = new { protocolVersion = 1, id = preparationId, generation },
+            sourceSnapshot = new
+            {
+                schemaVersion = 2,
+                sources = new[] { new { relativePath = "DebugModule.bas", sourceUri, encoding = "utf8bom",
+                    contentBase64 = Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(source)) } },
+                breakpoints = new[] { new { sourceUri, line = breakpointLine } }
+            }
+        };
+        try
+        {
+            await using var adapter = PackagedDebugAdapterProcess.Start(
+                assets.DebugAdapterExecutablePath, assets.VbaDevExecutablePath, projectRoot, sessionId);
+            await adapter.SendRequestAsync(1, "initialize", new { adapterID = "vba" });
+            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(1, TimeSpan.FromSeconds(15)), "initialize");
+            await adapter.SendRequestAsync(2, "setBreakpoints", new
+            {
+                source = new { path = sourcePath }, breakpoints = new[] { new { line = breakpointLine + 1 } }
+            });
+            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(2, TimeSpan.FromSeconds(15)), "setBreakpoints");
+            using var assistCancellation = new CancellationTokenSource();
+            var assist = AssistPackagedDebugForegroundAsync(baseline, assistCancellation.Token);
+            try
+            {
+                await adapter.SendRequestAsync(3, "launch", Launch(0, initialSource));
+                await adapter.SendRequestAsync(4, "configurationDone", new { });
+                AssertSuccessfulResponse(await adapter.WaitForResponseAsync(4, TimeSpan.FromSeconds(15)), "configurationDone");
+                AssertSuccessfulResponse(await adapter.WaitForResponseAsync(3, TimeSpan.FromSeconds(90)), "launch");
+            }
+            finally
+            {
+                assistCancellation.Cancel();
+                try { await assist; } catch (OperationCanceledException) { }
+            }
+            var original = await WaitForLaunchReportAsync(oldMarker, TimeSpan.FromSeconds(15));
+            var window = original.ExcelWindowHandle;
+            fixtureExcel = CaptureOwnedExcelProcess(GetWindowProcessId(window));
+            Assert.DoesNotContain(fixtureExcel.ProcessId, baseline);
+            Assert.Equal(Path.GetFullPath(paths.TemplatePath), Path.GetFullPath(original.WorkbookPath), ignoreCase: true);
+            await WaitForVbeModeAsync(window, VbeBreakMode, TimeSpan.FromSeconds(15));
+            await WriteSourceCellAsync(window, paths.TemplatePath, "A2", "retained-cell");
+            var initialLive = await ReadSourceStateAsync(window, paths.TemplatePath);
+            Assert.False(initialLive.Saved);
+            Assert.Contains(oldMarker, initialLive.ModuleCode, StringComparison.Ordinal);
+            Assert.Equal("retained-cell", initialLive.CellA2);
+
+            await adapter.SendRequestAsync(5, "restart", new { });
+            await adapter.SendRequestAsync(6, "vba/restartPrepared", new
+            {
+                sessionId, restartRequestSequence = 5, preparationId, generation = 1,
+                success = true, launch = Launch(1, latestSource)
+            });
+            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(6, TimeSpan.FromSeconds(15)), "vba/restartPrepared");
+            var declinedWarning = await adapter.WaitForEventAsync("vba/workbookConfirmation", TimeSpan.FromSeconds(90));
+            await adapter.AnswerWorkbookConfirmationAsync(7, declinedWarning, accepted: false);
+            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(7, TimeSpan.FromSeconds(15)), "vba/workbookConfirmationResult");
+            var declined = await adapter.WaitForResponseAsync(5, TimeSpan.FromSeconds(90));
+            Assert.False(declined.GetProperty("success").GetBoolean());
+            Assert.Equal(fixtureExcel, CaptureOwnedExcelProcess(GetWindowProcessId(window)));
+            await WaitForVbeModeAsync(window, VbeBreakMode, TimeSpan.FromSeconds(15));
+            Assert.Equal(initialLive, await ReadSourceStateAsync(window, paths.TemplatePath));
+            Assert.False(File.Exists(freshMarker));
+            Assert.False(File.Exists(oldCompletion));
+            AssertPersistentArtifactsUnchanged(paths, persistentArtifacts);
+
+            await adapter.SendRequestAsync(8, "restart", new { });
+            await adapter.SendRequestAsync(9, "vba/restartPrepared", new
+            {
+                sessionId, restartRequestSequence = 8, preparationId, generation = 2,
+                success = true, launch = Launch(2, latestSource)
+            });
+            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(9, TimeSpan.FromSeconds(15)), "vba/restartPrepared");
+            var acceptedWarning = await adapter.WaitForWorkbookConfirmationAsync(generation: 2, TimeSpan.FromSeconds(90));
+            Assert.Equal(Path.GetFullPath(paths.TemplatePath), Path.GetFullPath(
+                acceptedWarning.GetProperty("body").GetProperty("workbookPath").GetString()!), ignoreCase: true);
+            await adapter.AnswerWorkbookConfirmationAsync(10, acceptedWarning, accepted: true);
+            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(10, TimeSpan.FromSeconds(15)), "vba/workbookConfirmationResult");
+            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(8, TimeSpan.FromSeconds(90)), "restart");
+            var latest = await WaitForLaunchReportAsync(freshMarker, TimeSpan.FromSeconds(15));
+            Assert.Equal(fixtureExcel, CaptureOwnedExcelProcess(GetWindowProcessId(latest.ExcelWindowHandle)));
+            Assert.Equal(Path.GetFullPath(paths.TemplatePath), Path.GetFullPath(latest.WorkbookPath), ignoreCase: true);
+            await WaitForVbeModeAsync(latest.ExcelWindowHandle, VbeBreakMode, TimeSpan.FromSeconds(15));
+            var freshLive = await ReadSourceStateAsync(latest.ExcelWindowHandle, paths.TemplatePath);
+            Assert.False(freshLive.Saved);
+            Assert.Equal("retained-cell", freshLive.CellA2);
+            Assert.Contains("latest-code", freshLive.ModuleCode, StringComparison.Ordinal);
+            Assert.DoesNotContain(oldMarker, freshLive.ModuleCode, StringComparison.Ordinal);
+            AssertPersistentArtifactsUnchanged(paths, persistentArtifacts);
+            await ExecuteNativeContinueAsync(latest.ExcelWindowHandle);
+            await WaitForFileTextAsync(freshCompletion, "completed", TimeSpan.FromSeconds(15));
+            await WaitForVbeModeAsync(latest.ExcelWindowHandle, VbeDesignMode, TimeSpan.FromSeconds(15));
+            var completed = await ReadSourceStateAsync(latest.ExcelWindowHandle, paths.TemplatePath);
+            Assert.Equal("latest-code", completed.CellA1);
+            Assert.Equal("retained-cell", completed.CellA2);
+            Assert.False(File.Exists(oldCompletion));
+            await adapter.SendRequestAsync(11, "terminate", new { });
+            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(11, TimeSpan.FromSeconds(30)), "terminate");
+            await adapter.CompleteInputAndWaitForExitAsync(TimeSpan.FromSeconds(15));
+            Assert.True(IsOwnedExcelProcessRunning(fixtureExcel));
+            Assert.False((await ReadSourceStateAsync(latest.ExcelWindowHandle, paths.TemplatePath)).Saved);
+            AssertPersistentArtifactsUnchanged(paths, persistentArtifacts);
+        }
+        finally
+        {
+            if (fixtureExcel is not null) TryTerminateOwnedExcelProcess(fixtureExcel);
+            await WaitForNoNewExcelProcessesAsync(baseline, TimeSpan.FromSeconds(15));
+            TryDeleteDirectory(workspace);
+        }
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task PackagedActiveSourceEofResetsWithoutSavingClosingOrReplayingEitherWorkbook()
+    {
+        var assets = ResolvePackagedDebugAssets(ResolveRepositoryRoot());
+        using var temp = TempDirectory.Create();
+        var projectRoot = Path.Combine(temp.Path, "DebugProject");
+        CreatePackagedDebugProjectFixture(projectRoot);
+        var paths = ResolveProjectDocumentPaths(projectRoot, "DebugProject");
+        var sourcePath = Path.Combine(paths.SourceSetPath, "DebugModule.bas");
+        File.WriteAllText(sourcePath, CreatePersistentSource(), new UTF8Encoding(false));
+        File.Copy(paths.TemplatePath, paths.BinPath);
+        File.Copy(paths.TemplatePath, paths.PublishPath);
+        var otherPath = Path.Combine(temp.Path, "Other.xlsm");
+        File.Copy(paths.TemplatePath, otherPath);
+        var persistentArtifacts = CapturePersistentArtifacts(paths);
+        var otherBytes = File.ReadAllBytes(otherPath);
+        var marker = Path.Combine(temp.Path, "source-eof-started.txt");
+        var completionMarker = Path.Combine(temp.Path, "source-eof-completed.txt");
+        var source = CreateDebugSource(marker, completionMarker).Replace(
+            $"Open \"{marker.Replace("\"", "\"\"", StringComparison.Ordinal)}\" For Output As #fileNumber",
+            $"Open \"{marker.Replace("\"", "\"\"", StringComparison.Ordinal)}\" For Append As #fileNumber",
+            StringComparison.Ordinal);
+        var breakpointLine = FindLine(source,
+            "    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"continued\"");
+        var sourceUri = new Uri(sourcePath).AbsoluteUri;
+        var baseline = CaptureExcelProcessIds();
+        var sessionId = Guid.NewGuid().ToString("N");
+        var workspace = Path.Combine(Path.GetTempPath(), "vba-debug-adapter", "workspaces", sessionId);
+        OwnedExcelProcessIdentity? fixtureExcel = null;
+        PackagedDebugAdapterProcess? adapter = null;
+        using var assistCancellation = new CancellationTokenSource();
+        Task? assist = null;
+        var failures = new List<Exception>();
+        try
+        {
+            adapter = PackagedDebugAdapterProcess.Start(
+                assets.DebugAdapterExecutablePath, assets.VbaDevExecutablePath, projectRoot, sessionId);
+            await adapter.SendRequestAsync(1, "initialize", new { adapterID = "vba" });
+            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(1, TimeSpan.FromSeconds(15)), "initialize");
+            await adapter.SendRequestAsync(2, "setBreakpoints", new
+            {
+                source = new { path = sourcePath }, breakpoints = new[] { new { line = breakpointLine + 1 } }
+            });
+            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(2, TimeSpan.FromSeconds(15)), "setBreakpoints");
+            assist = AssistPackagedDebugForegroundAsync(baseline, assistCancellation.Token);
+            await adapter.SendRequestAsync(3, "launch", new
+            {
+                project = projectRoot, document = "DebugProject", module = "DebugModule", procedure = "RunTarget",
+                __vbaDebugWorkbookFileName = paths.WorkbookFileName,
+                __vbaDebugSourceWorkbookPath = paths.TemplatePath,
+                sourceSnapshot = new
+                {
+                    schemaVersion = 2,
+                    sources = new[] { new { relativePath = "DebugModule.bas", sourceUri, encoding = "utf8bom",
+                        contentBase64 = Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(source)) } },
+                    breakpoints = new[] { new { sourceUri, line = breakpointLine } }
+                }
+            });
+            await adapter.SendRequestAsync(4, "configurationDone", new { });
+            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(4, TimeSpan.FromSeconds(15)), "configurationDone");
+            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(3, TimeSpan.FromSeconds(90)), "launch");
+            var foregroundAssist = assist;
+            assist = null;
+            assistCancellation.Cancel();
+            try { await foregroundAssist; } catch (OperationCanceledException) { }
+
+            var launch = await WaitForLaunchReportAsync(marker, TimeSpan.FromSeconds(15));
+            var window = launch.ExcelWindowHandle;
+            fixtureExcel = CaptureOwnedExcelProcess(GetWindowProcessId(window));
+            Assert.DoesNotContain(fixtureExcel.ProcessId, baseline);
+            Assert.Equal(Path.GetFullPath(paths.TemplatePath), Path.GetFullPath(launch.WorkbookPath), ignoreCase: true);
+            await WaitForVbeModeAsync(window, VbeBreakMode, TimeSpan.FromSeconds(15));
+            await OpenTestOwnedWorkbookAsync(window, fixtureExcel, otherPath);
+            await WriteSourceCellAsync(window, otherPath, "A1", "other-dirty-cell");
+            await WriteSourceCellAsync(window, paths.TemplatePath, "A2", "source-retained-cell");
+            await SelectSourceCodePaneAsync(window, fixtureExcel, paths.TemplatePath);
+            var sourceBeforeEof = await ReadSourceStateAsync(window, paths.TemplatePath);
+            var otherBeforeEof = await ReadWorkbookCellStateAsync(window, otherPath, "A1");
+            Assert.False(sourceBeforeEof.Saved);
+            Assert.Equal("source-retained-cell", sourceBeforeEof.CellA2);
+            Assert.Contains(marker, sourceBeforeEof.ModuleCode, StringComparison.Ordinal);
+            Assert.False(otherBeforeEof.Saved);
+            Assert.Equal(Path.GetFullPath(otherPath), otherBeforeEof.WorkbookPath, ignoreCase: true);
+            Assert.Equal("other-dirty-cell", otherBeforeEof.CellValue);
+            Assert.False(File.Exists(completionMarker));
+            var markerBeforeEof = File.ReadAllBytes(marker);
+            Assert.Single(File.ReadAllLines(marker));
+            AssertPersistentArtifactsUnchanged(paths, persistentArtifacts);
+            Assert.Equal(otherBytes, ReadSavedOpenWorkbookBytes(otherPath));
+            Assert.Equal(fixtureExcel, CaptureOwnedExcelProcess(GetWindowProcessId(window)));
+
+            // EOF alone must stop execution without taking either workbook's lifetime.
+            await adapter.CompleteInputAndWaitForExitAsync(TimeSpan.FromSeconds(30));
+            Assert.True(IsOwnedExcelProcessRunning(fixtureExcel));
+            Assert.Equal(fixtureExcel, CaptureOwnedExcelProcess(GetWindowProcessId(window)));
+            await WaitForVbeModeAsync(window, VbeDesignMode, TimeSpan.FromSeconds(15));
+            Assert.Equal(sourceBeforeEof, await ReadSourceStateAsync(window, paths.TemplatePath));
+            Assert.Equal(otherBeforeEof, await ReadWorkbookCellStateAsync(window, otherPath, "A1"));
+            Assert.False(File.Exists(completionMarker));
+            Assert.Equal(markerBeforeEof, File.ReadAllBytes(marker));
+            Assert.Single(File.ReadAllLines(marker));
+            AssertPersistentArtifactsUnchanged(paths, persistentArtifacts);
+            Assert.Equal(otherBytes, ReadSavedOpenWorkbookBytes(otherPath));
+            Assert.False(Directory.Exists(workspace));
+        }
+        catch (Exception failure) { failures.Add(failure); }
+        finally
+        {
+            try
+            {
+                assistCancellation.Cancel();
+                if (assist is not null)
+                {
+                    try { await assist; } catch (OperationCanceledException) { }
+                }
+            }
+            catch (Exception failure) { failures.Add(failure); }
+            if (adapter is not null)
+            {
+                try { await adapter.DisposeAsync(); }
+                catch (Exception failure) { failures.Add(failure); }
+            }
+            try
+            {
+                if (fixtureExcel is not null) TryTerminateOwnedExcelProcess(fixtureExcel);
+                await WaitForNoNewExcelProcessesAsync(baseline, TimeSpan.FromSeconds(15));
+            }
+            catch (Exception failure) { failures.Add(failure); }
+            try { TryDeleteDirectory(workspace); }
+            catch (Exception failure) { failures.Add(failure); }
+        }
+        if (failures.Count == 1) ExceptionDispatchInfo.Capture(failures[0]).Throw();
+        if (failures.Count > 1)
+            throw new AggregateException("Original active-source EOF proof and subsequent fixture cleanup failures.", failures);
     }
 
     private static string ResolveRepositoryRoot()
@@ -1099,7 +1380,7 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
 
     [WindowsExcelIntegrationFact]
     [Trait("Category", "WindowsExcelIntegration")]
-    public async Task AnOwnedNativeModalRemainsInteractiveUntilStopCleansTheSession()
+    public async Task ASourceNativeModalRemainsInteractiveAndAcknowledgedStopLeavesTheWorkbookOpen()
     {
         var assets = ResolvePackagedDebugAssets(ResolveRepositoryRoot());
         using var temp = TempDirectory.Create();
@@ -1107,10 +1388,17 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
         CreatePackagedDebugProjectFixture(projectRoot);
         var paths = ResolveProjectDocumentPaths(projectRoot, "DebugProject");
         var sourcePath = Path.Combine(paths.SourceSetPath, "DebugModule.bas");
-        const string source = "Attribute VB_Name = \"DebugModule\"\r\nOption Explicit\r\n" +
-            "Public Sub RunTarget()\r\n    MsgBox \"Owned modal lifetime probe\"\r\nEnd Sub\r\n";
+        var marker = Path.Combine(temp.Path, "source-modal-started.txt");
+        var dialogTitle = "vba-tools source modal " + Guid.NewGuid().ToString("N");
+        var source = "Attribute VB_Name = \"DebugModule\"\r\nOption Explicit\r\nPublic Sub RunTarget()\r\n" +
+            "    Dim fileNumber As Integer\r\n    fileNumber = FreeFile\r\n" +
+            $"    Open \"{marker.Replace("\"", "\"\"", StringComparison.Ordinal)}\" For Output As #fileNumber\r\n" +
+            "    Print #fileNumber, CStr(Application.Hwnd) & \"|\" & ThisWorkbook.FullName\r\n    Close #fileNumber\r\n" +
+            $"    MsgBox \"Source modal lifetime probe\", vbOKOnly, \"{dialogTitle}\"\r\nEnd Sub\r\n";
         File.WriteAllText(sourcePath, source, new UTF8Encoding(true));
+        var persistentArtifacts = CapturePersistentArtifacts(paths);
         var baseline = CaptureExcelProcessIds();
+        OwnedExcelProcessIdentity? fixtureExcel = null;
         var sessionId = Guid.NewGuid().ToString("N");
         var workspace = Path.Combine(Path.GetTempPath(), "vba-debug-adapter", "workspaces", sessionId);
         await using var adapter = PackagedDebugAdapterProcess.Start(
@@ -1145,18 +1433,31 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
             var notification = await adapter.WaitForInputNotificationAsync(TimeSpan.FromSeconds(90));
             var output = notification.GetProperty("body").GetProperty("output").GetString()!;
             var processId = int.Parse(System.Text.RegularExpressions.Regex.Match(
-                output, @"Owned Excel process (\d+) is waiting").Groups[1].Value,
+                output, @"Source Excel process (\d+) is waiting").Groups[1].Value,
                 System.Globalization.CultureInfo.InvariantCulture);
             Assert.DoesNotContain(processId, baseline);
+            var launch = await WaitForLaunchReportAsync(marker, TimeSpan.FromSeconds(15));
+            fixtureExcel = CaptureOwnedExcelProcess(GetWindowProcessId(launch.ExcelWindowHandle));
+            Assert.Equal(processId, fixtureExcel.ProcessId);
+            Assert.Equal(Path.GetFullPath(paths.TemplatePath), Path.GetFullPath(launch.WorkbookPath), ignoreCase: true);
             var windows = new WindowsDebugModalWindowApi();
             Assert.NotEmpty(windows.CaptureVisibleModalWindows(processId));
             await Task.Delay(500);
             Assert.True(IsProcessRunning(processId, "EXCEL"));
             Assert.NotEmpty(windows.CaptureVisibleModalWindows(processId));
             await adapter.SendRequestAsync(4, "terminate", new { });
+            await Task.Delay(100);
+            Assert.True(IsOwnedExcelProcessRunning(fixtureExcel));
+            Assert.NotEmpty(windows.CaptureVisibleModalWindows(processId));
+            assistCancellation.Cancel();
+            try { await assist; } catch (OperationCanceledException) { }
+            await DismissTestOwnedModalAsync(fixtureExcel, dialogTitle);
             AssertSuccessfulResponse(await adapter.WaitForResponseAsync(4, TimeSpan.FromSeconds(30)), "terminate");
             await adapter.CompleteInputAndWaitForExitAsync(TimeSpan.FromSeconds(15));
-            Assert.False(IsProcessRunning(processId, "EXCEL"));
+            Assert.True(IsOwnedExcelProcessRunning(fixtureExcel));
+            await WaitForVbeModeAsync(launch.ExcelWindowHandle, VbeDesignMode, TimeSpan.FromSeconds(15));
+            Assert.False((await ReadSourceStateAsync(launch.ExcelWindowHandle, paths.TemplatePath)).Saved);
+            AssertPersistentArtifactsUnchanged(paths, persistentArtifacts);
             Assert.False(Directory.Exists(workspace));
             Assert.Single(adapter.Messages, message => message.TryGetProperty("event", out var name) &&
                 name.GetString() == "output" && message.GetProperty("body").GetProperty("output")
@@ -1166,6 +1467,10 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
         {
             assistCancellation.Cancel();
             try { await assist; } catch (OperationCanceledException) { }
+            if (fixtureExcel is not null)
+            {
+                TryTerminateOwnedExcelProcess(fixtureExcel);
+            }
         }
         await WaitForNoNewExcelProcessesAsync(baseline, TimeSpan.FromSeconds(15));
     }
@@ -1283,6 +1588,9 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
         ProjectDocumentPaths paths)
     {
         var artifacts = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+        var templatePath = Path.GetFullPath(paths.TemplatePath);
+        var sourceOwnerPath = Path.GetFullPath(Path.Combine(
+            Path.GetDirectoryName(templatePath)!, "~$" + paths.WorkbookFileName));
         foreach (var root in new[]
                  {
                      paths.SourceSetPath,
@@ -1295,12 +1603,22 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                          "*",
                          SearchOption.AllDirectories))
             {
-                artifacts.Add(Path.GetFullPath(filePath), File.ReadAllBytes(filePath));
+                var fullPath = Path.GetFullPath(filePath);
+                if (fullPath.Equals(sourceOwnerPath, StringComparison.OrdinalIgnoreCase)) continue;
+                artifacts.Add(fullPath, fullPath.Equals(templatePath, StringComparison.OrdinalIgnoreCase)
+                    ? ReadSavedOpenWorkbookBytes(fullPath) : File.ReadAllBytes(filePath));
             }
         }
-        var templatePath = Path.GetFullPath(paths.TemplatePath);
-        artifacts[templatePath] = File.ReadAllBytes(templatePath);
+        artifacts[templatePath] = ReadSavedOpenWorkbookBytes(templatePath);
         return artifacts;
+    }
+
+    private static byte[] ReadSavedOpenWorkbookBytes(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var buffer = new MemoryStream();
+        stream.CopyTo(buffer);
+        return buffer.ToArray();
     }
 
     private static void AssertPersistentArtifactsUnchanged(
@@ -1511,6 +1829,227 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
         {
             ReleaseComObject(projectObject);
             ReleaseComObject(vbeObject);
+        }
+    }
+
+    private static Task WriteSourceCellAsync(nint window, string workbookPath, string address, string value)
+        => RunInStaAsync(() => UseExcelApplication(window, application => WithSourceWorkbook(application, workbookPath, workbook =>
+        {
+            object? sheets = null, sheet = null, range = null;
+            try
+            {
+                dynamic book = workbook;
+                sheets = book.Worksheets;
+                sheet = ((dynamic)sheets).Item(1);
+                range = ((dynamic)sheet).Range(address);
+                ((dynamic)range).Value2 = value;
+                return true;
+            }
+            finally { ReleaseComObject(range); ReleaseComObject(sheet); ReleaseComObject(sheets); }
+        })));
+
+    private static Task<SourceWorkbookState> ReadSourceStateAsync(nint window, string workbookPath)
+        => RunInStaAsync(() => UseExcelApplication(window, application => WithSourceWorkbook(application, workbookPath, workbook =>
+        {
+            object? sheets = null, sheet = null, first = null, second = null;
+            object? project = null, components = null, component = null, code = null;
+            try
+            {
+                dynamic book = workbook;
+                sheets = book.Worksheets;
+                sheet = ((dynamic)sheets).Item(1);
+                first = ((dynamic)sheet).Range("A1");
+                second = ((dynamic)sheet).Range("A2");
+                project = book.VBProject;
+                components = ((dynamic)project).VBComponents;
+                component = ((dynamic)components).Item("DebugModule");
+                code = ((dynamic)component).CodeModule;
+                return new SourceWorkbookState((bool)book.Saved,
+                    Convert.ToString((object?)((dynamic)first).Value2) ?? "", Convert.ToString((object?)((dynamic)second).Value2) ?? "",
+                    (string)((dynamic)code).Lines(1, (int)((dynamic)code).CountOfLines));
+            }
+            finally
+            {
+                ReleaseComObject(code); ReleaseComObject(component); ReleaseComObject(components); ReleaseComObject(project);
+                ReleaseComObject(second); ReleaseComObject(first); ReleaseComObject(sheet); ReleaseComObject(sheets);
+            }
+        })));
+
+    private static Task OpenTestOwnedWorkbookAsync(nint window, OwnedExcelProcessIdentity fixture, string workbookPath)
+        => RunInStaAsync(() =>
+        {
+            Assert.True(IsOwnedExcelProcessRunning(fixture));
+            Assert.Equal(fixture.ProcessId, GetWindowProcessId(window));
+            return UseExcelApplication(window, application =>
+            {
+                object? books = null, workbook = null;
+                try
+                {
+                    books = ((dynamic)application).Workbooks;
+                    workbook = ((dynamic)books).Open(workbookPath);
+                    Assert.Equal(Path.GetFullPath(workbookPath),
+                        Path.GetFullPath((string)((dynamic)workbook).FullName), ignoreCase: true);
+                    return true;
+                }
+                finally { ReleaseComObject(workbook); ReleaseComObject(books); }
+            });
+        });
+
+    private static Task SelectSourceCodePaneAsync(nint window, OwnedExcelProcessIdentity fixture, string workbookPath)
+        => RunInStaAsync(() =>
+        {
+            Assert.True(IsOwnedExcelProcessRunning(fixture));
+            Assert.Equal(fixture.ProcessId, GetWindowProcessId(window));
+            return UseExcelApplication(window, application => WithSourceWorkbook(application, workbookPath, workbook =>
+            {
+                object? project = null, components = null, component = null, code = null;
+                object? pane = null, vbe = null, activeProject = null;
+                Exception? failure = null;
+                try
+                {
+                    project = ((dynamic)workbook).VBProject;
+                    Assert.Equal(VbeBreakMode, (int)((dynamic)project).Mode);
+                    components = ((dynamic)project).VBComponents;
+                    component = ((dynamic)components).Item("DebugModule");
+                    code = ((dynamic)component).CodeModule;
+                    pane = ((dynamic)code).CodePane;
+                    ((dynamic)pane).Show();
+                    ((dynamic)pane).SetSelection(1, 1, 1, 1);
+                    vbe = ((dynamic)application).VBE;
+                    activeProject = ((dynamic)vbe).ActiveVBProject;
+                    Assert.Equal(Path.GetFullPath(workbookPath),
+                        Path.GetFullPath((string)((dynamic)activeProject).FileName), ignoreCase: true);
+                    Assert.Equal(VbeBreakMode, (int)((dynamic)activeProject).Mode);
+                    return true;
+                }
+                catch (Exception error) { failure = error; throw; }
+                finally
+                {
+                    SourceVbeComReferences.ReleaseScope(failure, fixture.ProcessId, workbookPath,
+                        ("active source project", activeProject), ("VBE", vbe), ("source code pane", pane),
+                        ("source code module", code), ("source component", component),
+                        ("source components", components), ("source project", project));
+                }
+            }));
+        });
+
+    private static Task<WorkbookCellState> ReadWorkbookCellStateAsync(nint window, string workbookPath, string address)
+        => RunInStaAsync(() => UseExcelApplication(window, application => WithSourceWorkbook(application, workbookPath, workbook =>
+        {
+            object? sheets = null, sheet = null, range = null;
+            try
+            {
+                dynamic book = workbook;
+                sheets = book.Worksheets;
+                sheet = ((dynamic)sheets).Item(1);
+                range = ((dynamic)sheet).Range(address);
+                return new WorkbookCellState(Path.GetFullPath((string)book.FullName), (bool)book.Saved,
+                    Convert.ToString((object?)((dynamic)range).Value2) ?? "");
+            }
+            finally { ReleaseComObject(range); ReleaseComObject(sheet); ReleaseComObject(sheets); }
+        })));
+
+    private static T WithSourceWorkbook<T>(object application, string workbookPath, Func<object, T> operation)
+    {
+        object? books = null;
+        try
+        {
+            books = ((dynamic)application).Workbooks;
+            for (var index = 1; index <= (int)((dynamic)books).Count; index++)
+            {
+                object? book = null;
+                try
+                {
+                    book = ((dynamic)books).Item(index);
+                    if (Path.GetFullPath((string)((dynamic)book).FullName).Equals(
+                            Path.GetFullPath(workbookPath), StringComparison.OrdinalIgnoreCase))
+                        return operation(book);
+                }
+                finally { ReleaseComObject(book); }
+            }
+            throw new InvalidOperationException("The exact test-owned source workbook is not open.");
+        }
+        finally { ReleaseComObject(books); }
+    }
+
+    private static async Task DismissTestOwnedModalAsync(OwnedExcelProcessIdentity fixture, string exactTitle)
+    {
+        Assert.True(IsOwnedExcelProcessRunning(fixture));
+        var matches = new WindowsDebugModalWindowApi().CaptureVisibleModalWindows(fixture.ProcessId)
+            .Where(window =>
+            {
+                var title = new StringBuilder(512);
+                _ = GetWindowText(window, title, title.Capacity);
+                return title.ToString().Equals(exactTitle, StringComparison.Ordinal);
+            }).ToArray();
+        var dialog = Assert.Single(matches);
+        Assert.Equal(fixture.ProcessId, GetWindowProcessId(dialog));
+        var dialogClass = new StringBuilder(128);
+        _ = GetClassName(dialog, dialogClass, dialogClass.Capacity);
+        Assert.Equal("#32770", dialogClass.ToString());
+        Assert.True(IsWindowVisible(dialog));
+        Assert.True(IsWindowEnabled(dialog));
+        var button = GetDlgItem(dialog, 2);
+        if (button == nint.Zero)
+        {
+            var controls = new List<string>();
+            var enumerated = EnumChildWindows(dialog, (control, parameter) =>
+            {
+                var controlClass = new StringBuilder(128);
+                var controlTitle = new StringBuilder(512);
+                _ = GetClassName(control, controlClass, controlClass.Capacity);
+                _ = GetWindowText(control, controlTitle, controlTitle.Capacity);
+                controls.Add($"HWND={control}, nativeId={GetDlgCtrlID(control)}, " +
+                    $"class='{controlClass}', title='{controlTitle}'");
+                return true;
+            }, nint.Zero);
+            Assert.Fail($"Native button ID 2 was missing from exact fixture dialog {dialog}, " +
+                $"class='{dialogClass}', title='{exactTitle}'. EnumChildWindows={enumerated}. " +
+                $"Direct/descendant controls: {string.Join("; ", controls)}");
+        }
+        Assert.NotEqual(nint.Zero, button);
+        Assert.Equal(fixture.ProcessId, GetWindowProcessId(button));
+        Assert.Equal(2, GetDlgCtrlID(button));
+        var buttonClass = new StringBuilder(128);
+        _ = GetClassName(button, buttonClass, buttonClass.Capacity);
+        Assert.Equal("Button", buttonClass.ToString());
+        Assert.True(IsWindowVisible(button));
+        Assert.True(IsWindowEnabled(button));
+        var matchingButtons = new List<nint>();
+        Assert.True(EnumChildWindows(dialog, (control, parameter) =>
+        {
+            if (GetDlgCtrlID(control) == 2)
+            {
+                var controlClass = new StringBuilder(128);
+                _ = GetClassName(control, controlClass, controlClass.Capacity);
+                if (controlClass.ToString().Equals("Button", StringComparison.Ordinal)) matchingButtons.Add(control);
+            }
+            return true;
+        }, nint.Zero));
+        Assert.Equal(button, Assert.Single(matchingButtons));
+        Assert.True(IsOwnedExcelProcessRunning(fixture));
+        Assert.Equal(fixture.ProcessId, GetWindowProcessId(dialog));
+        Assert.Equal(fixture.ProcessId, GetWindowProcessId(button));
+        Assert.True(SetForegroundFromAttachedInputQueues(dialog),
+            $"Exact fixture dialog activation failed for HWND={dialog}, class='{dialogClass}', " +
+            $"fixture PID={fixture.ProcessId}, start={fixture.StartTime:O}; foreground HWND={GetForegroundWindow()}.");
+        Assert.True(IsOwnedExcelProcessRunning(fixture));
+        Assert.Equal(fixture.ProcessId, GetWindowProcessId(dialog));
+        Assert.Equal(fixture.ProcessId, GetWindowProcessId(button));
+        Assert.Equal(dialog, GetForegroundWindow());
+        Assert.True(PostMessage(button, 0x00F5, nint.Zero, nint.Zero)); // Exact fixture-owned BM_CLICK only.
+        var dismissalTimer = Stopwatch.StartNew();
+        while (IsWindow(dialog) && IsWindowVisible(dialog))
+        {
+            Assert.True(IsOwnedExcelProcessRunning(fixture));
+            Assert.Equal(fixture.ProcessId, GetWindowProcessId(dialog));
+            if (dismissalTimer.Elapsed >= TimeSpan.FromSeconds(2))
+            {
+                _ = GetClassName(dialog, dialogClass, dialogClass.Capacity);
+                Assert.Fail($"Posted BM_CLICK did not dismiss exact fixture dialog HWND={dialog}, " +
+                    $"class='{dialogClass}', fixture PID={fixture.ProcessId}, start={fixture.StartTime:O} within two seconds.");
+            }
+            await Task.Delay(25);
         }
     }
 
@@ -1992,6 +2531,14 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsWindowVisible(nint windowHandle);
 
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindow(nint windowHandle);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowEnabled(nint windowHandle);
+
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool AttachThreadInput(
@@ -2024,6 +2571,19 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
     private static extern uint GetWindowThreadProcessId(
         nint windowHandle,
         out uint processId);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(nint windowHandle, StringBuilder text, int maximumCount);
+
+    [DllImport("user32.dll")]
+    private static extern nint GetDlgItem(nint dialog, int itemId);
+
+    [DllImport("user32.dll")]
+    private static extern int GetDlgCtrlID(nint windowHandle);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostMessage(nint windowHandle, uint message, nint wParam, nint lParam);
 
     private sealed class PackagedDebugAdapterProcess : IAsyncDisposable
     {
@@ -2108,7 +2668,24 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
             => WaitForMessageAsync(message => message.TryGetProperty("event", out var name) &&
                 name.GetString() == "output" && message.GetProperty("body").GetProperty("output")
                     .GetString()!.Contains(" is waiting for ", StringComparison.Ordinal),
-                "an owned modal input notification", timeout);
+                "an exact source modal input notification", timeout);
+
+        public Task<JsonElement> WaitForWorkbookConfirmationAsync(int generation, TimeSpan timeout)
+            => WaitForMessageAsync(message => message.TryGetProperty("event", out var name)
+                && name.GetString() == "vba/workbookConfirmation"
+                && message.GetProperty("body").GetProperty("generationId").GetInt32() == generation,
+                $"workbook confirmation for generation {generation}", timeout);
+
+        public Task AnswerWorkbookConfirmationAsync(int sequence, JsonElement notification, bool accepted)
+        {
+            var body = notification.GetProperty("body");
+            Assert.Equal("1.0", body.GetProperty("schemaVersion").GetString());
+            return SendRequestAsync(sequence, "vba/workbookConfirmationResult", new
+            {
+                requestId = body.GetProperty("requestId").GetString(), sessionId = body.GetProperty("sessionId").GetString(),
+                generationId = body.GetProperty("generationId").GetInt32(), accepted
+            });
+        }
 
         public async Task CompleteInputAndWaitForExitAsync(TimeSpan timeout)
         {
@@ -2118,7 +2695,12 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                 await process.WaitForExitAsync().WaitAsync(timeout);
             }
 
-            Assert.Equal(0, process.ExitCode);
+            if (process.ExitCode != 0)
+            {
+                Assert.True(process.ExitCode == 0,
+                    $"The packaged debug adapter exited with code {process.ExitCode}; expected 0." +
+                    $"{Environment.NewLine}{await standardError}{Environment.NewLine}{RenderTranscript()}");
+            }
         }
 
         public async Task KillAbruptlyAsync(TimeSpan timeout)
@@ -2138,11 +2720,13 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                     process.StandardInput.Close();
                     try
                     {
-                        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
+                        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromMinutes(13));
                     }
                     catch
                     {
-                        process.Kill(entireProcessTree: true);
+                        // This exact test adapter may be stopped after its bounded cooperative
+                        // cleanup budget; never kill a borrowed Excel or a recovering companion.
+                        process.Kill(entireProcessTree: false);
                         await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
                     }
                 }
@@ -2288,4 +2872,8 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
     private sealed record OwnedExcelProcessIdentity(
         int ProcessId,
         DateTime StartTime);
+
+    private sealed record SourceWorkbookState(bool Saved, string CellA1, string CellA2, string ModuleCode);
+
+    private sealed record WorkbookCellState(string WorkbookPath, bool Saved, string CellValue);
 }

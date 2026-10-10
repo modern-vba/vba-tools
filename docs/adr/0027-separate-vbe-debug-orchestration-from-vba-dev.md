@@ -4,6 +4,11 @@ status: accepted
 
 # Separate VBE debug orchestration from vba-dev
 
+> Source-workbook Debug ownership, Stop/Restart and preparation are now governed
+> by [ADR 0062](0062-debug-the-retained-source-workbook.md). Disposable/copied
+> Debug claims below are historical for that route; independent Build/Test,
+> Publish, public snapshot-output, Doctor and their evidence are unchanged.
+
 `VbaDev` is a standalone .NET-style project command. Its public responsibilities
 are project and manifest resolution plus operations such as build, test,
 publish, import, export, reference management, CommonModules management, and

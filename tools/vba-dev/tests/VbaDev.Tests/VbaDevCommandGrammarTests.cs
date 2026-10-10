@@ -44,6 +44,7 @@ public sealed class VbaDevCommandGrammarTests
             ["reference remove"] = typeof(VbaDevReferenceCommandFamily),
             ["host-event list"] = typeof(VbaDevHostEventCommandFamily),
             ["build"] = typeof(VbaDevBuildPublishCommandFamily),
+            ["prepare-debug"] = typeof(VbaDevDebugPreparationCommandFamily),
             ["test"] = typeof(VbaDevTestCommandFamily),
             ["publish"] = typeof(VbaDevBuildPublishCommandFamily),
             ["export"] = typeof(VbaDevImportExportCommandFamily),
@@ -92,6 +93,7 @@ public sealed class VbaDevCommandGrammarTests
             ["host-event list"] = "1.0",
             ["import"] = "1.0",
             ["new excel"] = "1.0",
+            ["prepare-debug"] = "1.0",
             ["publish"] = "3.0",
             ["reference add"] = "1.0",
             ["reference list"] = "1.0",
@@ -123,7 +125,7 @@ public sealed class VbaDevCommandGrammarTests
         }
 
         var leafPaths = EnumerateLeafPaths(graph.RootCommand).ToArray();
-        Assert.Equal(17, leafPaths.Length);
+        Assert.Equal(18, leafPaths.Length);
         Assert.Equal(
             ["capabilities", "check", "completions script pwsh"],
             leafPaths
@@ -186,6 +188,17 @@ public sealed class VbaDevCommandGrammarTests
             ["reference remove"] = ["--document", "--format", "--project"],
             ["host-event list"] = ["--format"],
             ["build"] = ["--document", "--interactive", "--output", "--project", "--source-snapshot"],
+            ["prepare-debug"] =
+            [
+                "--describe",
+                "--document",
+                "--excel-process-id",
+                "--excel-process-start-utc-ticks",
+                "--generation",
+                "--interactive",
+                "--project",
+                "--source-snapshot"
+            ],
             ["test"] =
             [
                 "--document",
@@ -208,6 +221,8 @@ public sealed class VbaDevCommandGrammarTests
         {
             "common-module add --force",
             "build --interactive",
+            "prepare-debug --describe",
+            "prepare-debug --interactive",
             "reference list --available",
             "reference list --no-resolve",
             "test --no-build"
@@ -298,6 +313,7 @@ public sealed class VbaDevCommandGrammarTests
             ("doctor", "--format", "-f"),
             ("build", "--document", "-d"),
             ("build", "--output", "-o"),
+            ("prepare-debug", "--document", "-d"),
             ("test", "--document", "-d"),
             ("test", "--format", "-f"),
             ("publish", "--document", "-d"),
@@ -344,6 +360,7 @@ public sealed class VbaDevCommandGrammarTests
                 "reference",
                 "host-event",
                 "build",
+                "prepare-debug",
                 "test",
                 "publish",
                 "export",

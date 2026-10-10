@@ -4,6 +4,11 @@ status: accepted
 
 # Separate build and debug Excel processes
 
+> Source-workbook Debug ownership, Stop/Restart and preparation are now governed
+> by [ADR 0062](0062-debug-the-retained-source-workbook.md). Disposable/copied
+> Debug claims below are historical for that route; independent Build/Test,
+> Publish, public snapshot-output, Doctor and their evidence are unchanged.
+
 A `VbeDebugSession` uses the existing dedicated hidden Excel automation for
 building on an invocation-scoped private desktop, closes that process and its
 desktop after the build completes, and then creates a fresh visible

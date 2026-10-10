@@ -33,6 +33,8 @@ import './snapshotSourceInventoryCorpus.test';
 import './snapshotSourceInventoryVscodeAdapter.test';
 import './vscodeDebugConfiguration.test';
 import './vscodeDebugIntegration.test';
+import './debugWorkbookConfirmation.test';
+import './snapshotProviders.test';
 import './testExplorerRefresh.test';
 import './testExplorerInvalidation.test';
 import './projectManifestLanguageServerSync.test';

@@ -20,6 +20,11 @@ internal interface IVbaDebugSessionWorkspaceCreationScope
         string workbookFileName);
 }
 
+internal interface IVbaDebugSessionWorkspaceRetentionScope
+{
+    FileStream CreateRetentionMarkerStream();
+}
+
 public interface IVbaDebugGenerationWorkspace : IAsyncDisposable
 {
     DebugGenerationId GenerationId { get; }
@@ -459,13 +464,15 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
         SafeFileHandle parentHandle,
         string name,
         string path,
-        bool asynchronous)
+        bool asynchronous,
+        bool deleteAccess = false)
     {
         var createOptions = NtFileNonDirectoryFile |
             NtFileOpenReparsePoint |
             NtFileWriteThrough |
             (asynchronous ? 0u : NtFileSynchronousIoNonalert);
         var desiredAccess = GenericWrite | FileReadAttributes |
+            (deleteAccess ? DeleteAccess : 0u) |
             (asynchronous ? 0u : Synchronize);
         var handle = CreateRelativeHandle(
             parentHandle,
@@ -781,7 +788,8 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
         Action<string>? beforeCreateSourceFile,
         Action<string>? afterCreateSourceFileBeforeOwnershipTransfer,
         Action<SafeFileHandle, string>? releaseOwnedHandle)
-        : IVbaDebugSessionWorkspaceCreationScope, IDebugResourceOwnerEvidence
+        : IVbaDebugSessionWorkspaceCreationScope, IVbaDebugSessionWorkspaceRetentionScope,
+            IDebugResourceOwnerEvidence
     {
         private readonly object disposalGate = new();
         private ExceptionDispatchInfo? disposalFailure;
@@ -802,6 +810,18 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
                 "lease.json",
                 leasePath,
                 asynchronous: true);
+        }
+
+        public FileStream CreateRetentionMarkerStream()
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+            const string name = "source-companion-retention.json";
+            return CreateNewPhysicalFile(
+                sessionHandle,
+                name,
+                Path.Combine(SessionWorkspacePath, name),
+                asynchronous: false,
+                deleteAccess: true);
         }
 
         public IVbaDebugGenerationWorkspace CreateGenerationWorkspace(

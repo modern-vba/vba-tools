@@ -4,6 +4,11 @@ status: accepted
 
 # Use content-verified breakpoint source maps
 
+> Source-workbook Debug ownership, Stop/Restart and preparation are now governed
+> by [ADR 0062](0062-debug-the-retained-source-workbook.md). Disposable/copied
+> Debug claims below are historical for that route; independent Build/Test,
+> Publish, public snapshot-output, Doctor and their evidence are unchanged.
+
 `BreakpointTransfer` maps `.bas`, `.cls`, and `.frm` exported-source positions
 to VBE code-module positions by using the product-neutral `VbaTools.Syntax`
 parser core to exclude export-only attributes and designer records and then

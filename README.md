@@ -20,8 +20,9 @@ rules as their actual command declarations register them. The sealed Build and
 Publish family, the sealed Import and Export family, the sealed Test family,
 the sealed Reference family, the sealed CommonModules family, the sealed Host
 Event family, the sealed Check and Doctor inspection family, the sealed project-
-creation family, and the sealed terminal-contract family now own all seventeen
-public leaves, their closed command intents or terminal actions, and their
+creation family, the sealed Debug preparation family, and the sealed terminal-
+contract family now own all public leaves, their closed command intents or
+terminal actions, and their
 actual symbols on the same graph. A narrow ownership ledger records only family
 types and actual command references so the completed graph can prove exact-once
 ownership without becoming another command catalog. The completed migration is
@@ -478,14 +479,16 @@ the reason for incomplete analysis remain available in the VBA Tools output.
 This gate includes the existing project-semantic source diagnostics. It does not
 claim native VBE compile success. The ordinary saved-source build
 stage of `vba-dev test` uses the same gate. Source-snapshot Build, including the
-Build stage of snapshot Test and debug launch, validates its captured bytes with
+Build stage of snapshot Test, validates its captured bytes with
 the same selected-project evidence. It does not substitute saved source text.
-Debug Problems point to the original editor documents, including related
+Snapshot Build/Test Problems point to the original editor documents, including related
 locations, and remain navigable after temporary files are removed. A failed
-snapshot Build does not open the runnable debug workbook or execute its target.
-A successful rerun removes resolved debug Build findings without saving editors
+snapshot Build does not replace its explicit output or proceed to test execution.
+A successful rerun removes resolved findings from its own scope without saving editors
 or clearing other diagnostic scopes. Unsupported origin mappings are explained
 in Output rather than linked to a deleted temporary file.
+Source Debug uses a separate no-save preparation path without this independent
+analysis gate; Excel/VBE compile and runtime errors remain visible in the VBE.
 
 Test command and Test Explorer Build failures expose the same diagnostics and
 stop before test execution; see [Test Explorer](#test-explorer). [Publish](#publish)
@@ -539,9 +542,9 @@ vba-dev build
 Use Build when you want the source workbook to contain the saved exported VBA
 for manual inspection or execution. `build --source-snapshot <dir> --output
 <workbook>` remains a separate caller-owned-output capability, not an in-place
-Build. Publish and the current legacy Test/debug generation paths retain their
-staged-copy lifecycle; their separate migrations do not change this Build
-contract.
+Build. Publish and the current legacy Test generation paths retain their
+staged-copy lifecycle; they do not change this Build contract. Source Debug uses
+its separate no-save preparation against the source workbook.
 
 Build captures the selected source files and form
 sidecars once. A supported UTF-8, UTF-16 LE, or UTF-16 BE BOM identifies the
@@ -569,7 +572,7 @@ Ordinary Build and project Export also require a companion that advertises
 their source-workbook behavior; an older bin-workbook provider is not silently
 used for those commands.
 Snapshot test and debug startup check both tools before capturing source or
-creating temporary workbooks. An incompatible adapter override fails without
+starting workbook preparation. An incompatible adapter override fails without
 fallback; an incompatible `vba-dev` override keeps the existing warning and
 compatible bundled-tool fallback.
 
@@ -577,12 +580,30 @@ compatible bundled-tool fallback.
 
 With the cursor in a parameterless public `Sub` in a standard module, press F5
 and select `VBA: Active Procedure`. VBA Tools captures an immutable snapshot of
-the selected project's clean files and dirty editor content without saving,
-builds a same-filename workbook in an adapter-owned temporary directory, opens
-it first through a hidden private-desktop build process, then opens it in a
-separate dedicated visible Excel/VBE session, transfers breakpoints, and runs
-the procedure. `Option Private Module` is supported. Desktop Excel and trusted
-access to the VBA project object model are required.
+the selected document's clean files and dirty file-backed editor content without
+saving, then imports that snapshot into its exact source workbook
+(`templatePath`, normally `src/<document>/<document>.xlsm`). An already-open
+workbook reuses its Excel process; a closed workbook opens visibly for debugging.
+The adapter transfers breakpoints and runs the procedure through the VBE.
+`Option Private Module` is supported. Desktop Excel and trusted access to the
+VBA project object model are required.
+
+Debug alone skips the independent pre-launch syntax/type/argument-error gate.
+Normal editor diagnostics, byte/encoding checks, exact target/breakpoint
+identification, workbook permissions and native Excel/VBE compile/runtime errors
+still apply. Build, Test, Publish and explicit snapshot-output Build retain their
+source-analysis requirements. An unsafe or unidentifiable target/breakpoint is
+rejected with an explanation rather than guessed.
+
+Before replacing VBA in a dirty open workbook, VBA Tools asks whether to replace
+its live VBE code. Declining changes neither the workbook nor its current debug
+execution. Accepting does not save cell changes, the workbook or source editors.
+Before replacement, modules, UserForms with their `.frx` data and references are
+captured for attempted code/reference recovery during replacement/verification.
+Failed capture prevents replacement; incomplete recovery is reported with
+retained manual recovery paths. After verified preparation, a native
+breakpoint/Run error leaves the imported code for inspection and requests bounded
+Reset without saving. This is not a rollback of arbitrary VBA or cell side effects.
 
 To pin a target independently of the active editor, save a configuration in
 `.vscode/launch.json`:
@@ -629,36 +650,37 @@ A debug session can also run without breakpoints.
 Restart Debugging captures a new immutable snapshot from the project and
 document bound at launch, including unsaved editor bytes without saving them.
 Changing the active editor or supplying different restart arguments does not
-retarget the session. The adapter validates the complete fresh snapshot and
-builds its temporary workbook while the current session remains active. After
-the build succeeds, it rechecks the restart binding and terminates the old owned
-Excel process immediately before starting the replacement. Capture, validation,
-build, cancellation before the swap, or a stale request binding while the
-current session is still live fails only Restart and leaves that session active.
-If the bound session exits during the build, the new generation is cleaned and
-no replacement starts. If the replacement cannot start after the swap, Restart
-fails and cleans its new temporary artifacts without reviving the terminated
-process.
+retarget the session. The adapter validates the fresh snapshot and captures
+recovery material while the current session remains active, reconfirming
+replacement when the workbook is dirty. Only after acceptance and exact-session
+revalidation does it Reset execution, import the latest source and run the bound
+target from the beginning in the same workbook and Excel process. Declining
+confirmation or cancelling before that boundary preserves the current execution.
+Restart does not undo prior cell changes or save. A closed/replaced binding is
+never automatically reopened or retargeted.
 
-The opened workbook is disposable session state, not the configured source
-template, bin workbook, or publish workbook. Saving it changes only the
-adapter-owned temporary copy. The source files, source template, bin output, and
-publish output remain unchanged, and all debug-workbook changes are discarded
-when the session ends. Make persistent changes in the exported source or source
-template instead.
+The opened workbook is the selected source workbook, not a disposable execution
+copy. Imported VBA and execution changes remain unsaved after debugging; save or
+discard them explicitly in Excel. Exported source editors are never automatically
+saved. Debug does not write bin or publish output.
 
-Open-time events such as `Workbook_Open` do not run automatically. Use an
-eligible wrapper `Sub` to debug startup logic. Excel and VBE prompts remain
-interactive without a timeout.
+When Debug opens a closed source workbook, open-time events such as
+`Workbook_Open` do not run automatically. Reusing an already-open workbook does
+not change its application's event settings. Use an eligible wrapper `Sub` to
+debug startup logic. Excel and VBE prompts remain interactive without a timeout.
 
-Only one VBA debug session can run in a VS Code window, and attaching to an
-existing Excel process is not supported. Normal procedure completion leaves the
-session active for further VBE interaction. Close the debug Excel process to end
-the session.
+Only one VBA debug session can run in a VS Code window. Normal procedure
+completion leaves the session active for further VBE interaction. Actually
+closing the selected workbook or Excel ends the session without reopening it;
+cancelling Excel's normal save/close choice leaves it active. Other workbooks
+and Excel processes are not cleanup targets.
 
-Stopping the debug session closes its dedicated Excel process without saving
-the temporary workbook. Do not open unrelated workbooks in that process because
-their unsaved changes would also be discarded.
+Stopping resets VBA execution but does not save, restore, discard or close the
+workbook or Excel, including a workbook opened by this launch. Disconnect and
+transport-loss cleanup respect the same borrowed lifetime. If native Reset
+cannot be confirmed within its bounded operation, VBA Tools reports that state
+and asks you to stop/reset manually in the selected workbook's VBE; it does not
+force-terminate Excel.
 
 ### Test
 
@@ -1041,12 +1063,13 @@ cannot influence executable selection.
 | Semantic highlighting remains unavailable after opening a source | Open the VBA Tools output channel and enable `vbaLanguageServer.trace.server` if more detail is needed. Editor readiness does not wait for Excel, a workbook, or project-wide diagnostics. |
 | `vba-dev capabilities` is delayed or companion-backed metadata is still unavailable | Semantic highlighting should still start. Companion resolution, CLI-backed reference refresh, and UserForm Event discovery run only after the language client is operational. Review VBA Tools Output for the configured and bundled candidate results and correct `vbaTools.devtool.path` if needed. A later successful managed command publishes that same session-pinned resolution to the running language server without another lifecycle probe; reloading the window starts a new automatic attempt. |
 | A companion process terminates abnormally | Review VBA Tools Output for the executable, capability-inspection attempt, and exit status. Only a side-effect-free startup capability probe may be attempted once more in a fresh process. Build, import, publish, test, save, and debug execution are not replayed after a crash; check their output and workbook state before starting another command. A recovered probe does not prove the underlying host problem is fixed. |
+| The debug adapter exits abnormally | VBA execution state is unconfirmed. Use Reset in the selected source workbook's VBE if needed. The source workbook is not automatically saved or closed, and execution is not replayed. Review VBA Tools Output; pending companion/recovery material is retained until its release is proved. |
 | Workbook commands fail before opening Excel | Run `VBA Tools: Doctor`, review the `Project automation` section, and confirm that the workspace contains `vba-project.json`. |
 | Build, publish, or build-before-test reports an unexpected source-analysis exception | Preserve the JSON file named by `Source-analysis failure evidence saved` in VBA Tools Output. Reports are local under `%LOCALAPPDATA%\VbaTools\Diagnostics\source-analysis` (newest 20 retained). See the [failure investigation guide](https://github.com/modern-vba/vba-tools/blob/main/docs/source-analysis-failure-evidence.md). A successful retry does not establish that the cause is fixed. |
 | An already-open source workbook stays visible during ordinary Build or project Export | This is expected: the exact existing workbook is reused without changing its displayed window or closing the user's session. Build saves after import; Export does not save. |
 | Excel or a dialog appears during snapshot Build, legacy Test, Publish, standalone Import, explicit Export, project creation, Host Event discovery, reference probing, or project Doctor | This is an automation-isolation failure, not expected behavior. Preserve the VBA Tools Output failure, including any PID, HWND, desktop, class, title, and phase evidence, and report it. Those command-owned paths do not fall back to visible Excel. |
 | F5 cannot establish VBE debugging | Run `VBA Tools: Doctor` and review the `VBE debugging` checks and remediation in the VBA Tools output channel. |
-| Excel becomes visible after F5 | This is expected only after the hidden preparatory build has finished: the separately owned debug Excel/VBE session must be visible for breakpoints, code panes, prompts, and interactive execution. |
+| Excel becomes visible after F5 | Debug uses the selected source workbook. An already-open workbook keeps its Excel process and display state; a closed source workbook opens in a visible debug session. Its VBE is shown for native breakpoints and execution. Stop leaves the workbook open and unsaved. |
 | VBE Doctor reports an adapter infrastructure failure | Check the executable path and compatibility details in the VBA Tools output channel. If `vbaTools.debugAdapter.path` is set, correct or clear the explicit path; invalid overrides intentionally do not fall back. |
 | Excel blocks workbook automation | Enable trusted access to the VBA project object model in Excel Trust Center settings. |
 | UserForm Events are unavailable | Review the environment-level catalog status and cleanup details in VBA Tools Output, confirm desktop Excel and trusted VBA-project access are available, then run `VBA Tools: Refresh UserForm Events`. Discovery never opens a project template and does not retry automatically. |

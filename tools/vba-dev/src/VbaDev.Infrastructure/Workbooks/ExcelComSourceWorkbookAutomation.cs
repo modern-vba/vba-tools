@@ -14,11 +14,17 @@ internal sealed class SourceWorkbookBorrowedBinding(
     IWorkbookBuildSession workbook,
     Func<bool> isSaved,
     Action release,
-    Func<bool>? isStillSelected = null) : IDisposable
+    Func<bool>? isStillSelected = null,
+    int? processId = null,
+    long? processStartUtcTicks = null) : IDisposable
 {
     private int disposed;
 
     internal IWorkbookBuildSession Workbook { get; } = workbook;
+
+    internal int? ProcessId { get; } = processId;
+
+    internal long? ProcessStartUtcTicks { get; } = processStartUtcTicks;
 
     internal bool IsSaved() => isSaved();
 
@@ -39,6 +45,7 @@ public sealed class ExcelComSourceWorkbookAutomation : ISourceWorkbookAutomation
     private readonly IStaComDispatcherFactory dispatcherFactory;
     private readonly ISourceWorkbookOpenLocator openLocator;
     private readonly ISourceWorkbookAutomation closedAutomation;
+    private readonly bool validateSelectedWorkbookBeforeOperations;
 
     public ExcelComSourceWorkbookAutomation()
         : this(new StaComDispatcherFactory(), new WindowsSourceWorkbookOpenLocator(),
@@ -49,11 +56,13 @@ public sealed class ExcelComSourceWorkbookAutomation : ISourceWorkbookAutomation
     internal ExcelComSourceWorkbookAutomation(
         IStaComDispatcherFactory dispatcherFactory,
         ISourceWorkbookOpenLocator openLocator,
-        ISourceWorkbookAutomation closedAutomation)
+        ISourceWorkbookAutomation closedAutomation,
+        bool validateSelectedWorkbookBeforeOperations = false)
     {
         this.dispatcherFactory = dispatcherFactory;
         this.openLocator = openLocator;
         this.closedAutomation = closedAutomation;
+        this.validateSelectedWorkbookBeforeOperations = validateSelectedWorkbookBeforeOperations;
     }
 
     public async Task<TResult> RunAsync<TResult>(
@@ -86,7 +95,8 @@ public sealed class ExcelComSourceWorkbookAutomation : ISourceWorkbookAutomation
             if (binding is not null)
             {
                 result = await operation(
-                        new BorrowedSourceWorkbookSession(dispatcher, binding, timeouts),
+                        new BorrowedSourceWorkbookSession(dispatcher, binding, timeouts,
+                            validateSelectedWorkbookBeforeOperations),
                         cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -175,7 +185,8 @@ public sealed class ExcelComSourceWorkbookAutomation : ISourceWorkbookAutomation
     private sealed class BorrowedSourceWorkbookSession(
         IStaComDispatcher dispatcher,
         SourceWorkbookBorrowedBinding binding,
-        WorkbookAutomationTimeouts timeouts) : ISourceWorkbookSession
+        WorkbookAutomationTimeouts timeouts,
+        bool validateSelectedWorkbookBeforeOperations) : ISourceWorkbookSession
     {
         private int saveState;
 
@@ -269,7 +280,13 @@ public sealed class ExcelComSourceWorkbookAutomation : ISourceWorkbookAutomation
             CancellationToken cancellationToken)
         {
             using var stageCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var pending = dispatcher.InvokeAsync(operation, stageCancellation.Token);
+            var pending = dispatcher.InvokeAsync(() =>
+            {
+                if (validateSelectedWorkbookBeforeOperations && !binding.IsStillSelected())
+                    throw new InvalidOperationException(
+                        "The selected source workbook is no longer bound to its original Excel workbook.");
+                return operation();
+            }, stageCancellation.Token);
             try
             {
                 return await WaitForStageAsync(pending, stage, timeout, cancellationToken)

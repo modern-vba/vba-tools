@@ -22,6 +22,27 @@ test('ProjectManifest adapter reads canonical manifest fixture for Test Explorer
   });
 });
 
+test('ProjectManifest projection retains a source workbook when legacy binPath is absent', () => {
+  const fixture = JSON.parse(readProjectManifestFixture('document-source-set.json'));
+  delete fixture.documents.Book1.binPath;
+
+  const manifest = parseProjectManifest(JSON.stringify(fixture));
+
+  assert.deepEqual(manifest?.documents, [{
+    name: 'Book1',
+    sourcePath: 'src/Book1',
+    templatePath: 'src/Book1/Book1.xlsm'
+  }]);
+});
+
+test('ProjectManifest projection still rejects an explicitly invalid legacy binPath', () => {
+  for (const binPath of ['', null, 42]) {
+    const fixture = JSON.parse(readProjectManifestFixture('document-source-set.json'));
+    fixture.documents.Book1.binPath = binPath;
+    assert.equal(parseProjectManifest(JSON.stringify(fixture)), undefined);
+  }
+});
+
 test('ProjectManifest adapter selects an ordinal-equivalent primary document and preserves its spelling', () => {
   const fixture = JSON.parse(readProjectManifestFixture('document-source-set.json'));
   fixture.documents = { '\u03a3': fixture.documents.Book1 };

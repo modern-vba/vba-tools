@@ -4,6 +4,14 @@ status: accepted
 
 # Establish the vba-dev command grammar
 
+Extension for issue #448 (2026-10-10):
+[ADR 0062](0062-debug-the-retained-source-workbook.md) adds the sealed Debug
+preparation family and its advertised `prepare-debug` leaf. The current graph
+therefore has eighteen public leaves and fifteen advertised leaves. The migration
+history below records the original seventeen/fourteen counts; its single graph,
+exact-once ownership, closed-intent binding and deterministic phase invariants
+also apply to the added family.
+
 ADR 0028 established `System.CommandLine` as the command model. This decision
 defines the internal ownership and deterministic validation contract used to
 complete that migration; every public leaf is now owned exactly once by a

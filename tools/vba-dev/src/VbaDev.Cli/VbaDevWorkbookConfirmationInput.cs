@@ -10,6 +10,8 @@ internal sealed class VbaDevWorkbookConfirmationInput : IDisposable
     private readonly bool managed;
     private readonly object pendingLock = new();
     private string? pendingId;
+    private string? pendingAcceptedFrame;
+    private string? pendingDeclinedFrame;
     private TaskCompletionSource<bool>? pendingAnswer;
     private bool inputClosed;
 
@@ -24,6 +26,19 @@ internal sealed class VbaDevWorkbookConfirmationInput : IDisposable
 
     internal static Task<bool> ConfirmAsync(string message, CancellationToken cancellationToken)
         => current.Value?.ReadConfirmationAsync(message, cancellationToken) ?? Task.FromResult(false);
+
+    internal static bool SupportsDebugPreparation => current.Value?.managed is true;
+
+    internal static Task<bool> ContinueDebugPreparationAsync(
+        string generationId,
+        string workbookPath,
+        int excelProcessId,
+        long excelProcessStartUtcTicks,
+        CancellationToken cancellationToken)
+        => current.Value is { managed: true } owner
+            ? owner.ReadManagedPreparationAsync(generationId, workbookPath,
+                excelProcessId, excelProcessStartUtcTicks, cancellationToken)
+            : Task.FromResult(false);
 
     public void Dispose()
     {
@@ -45,8 +60,8 @@ internal sealed class VbaDevWorkbookConfirmationInput : IDisposable
         lock (pendingLock)
         {
             if (pendingId is null || pendingAnswer is null) return;
-            if (frame == $"confirm:{pendingId}:yes") pendingAnswer.TrySetResult(true);
-            else if (frame == $"confirm:{pendingId}:no") pendingAnswer.TrySetResult(false);
+            if (frame == pendingAcceptedFrame) pendingAnswer.TrySetResult(true);
+            else if (frame == pendingDeclinedFrame) pendingAnswer.TrySetResult(false);
         }
     }
 
@@ -94,6 +109,31 @@ internal sealed class VbaDevWorkbookConfirmationInput : IDisposable
     }
 
     private async Task<bool> ReadManagedConfirmationAsync(string message, CancellationToken cancellationToken)
+        => await ReadManagedRequestAsync(
+            requestId => System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type = "workbookConfirmation", schemaVersion = "1.0", requestId, message
+            }), "confirm", "yes", "no", cancellationToken).ConfigureAwait(false);
+
+    private Task<bool> ReadManagedPreparationAsync(
+        string generationId,
+        string workbookPath,
+        int excelProcessId,
+        long excelProcessStartUtcTicks,
+        CancellationToken cancellationToken)
+        => ReadManagedRequestAsync(
+            requestId => System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type = "debugPreparationReady", schemaVersion = "1.0", requestId,
+                generationId, workbookPath, excelProcessId, excelProcessStartUtcTicks
+            }), "prepare", "ready", "declined", cancellationToken);
+
+    private async Task<bool> ReadManagedRequestAsync(
+        Func<string, string> serializeRequest,
+        string framePrefix,
+        string acceptedValue,
+        string declinedValue,
+        CancellationToken cancellationToken)
     {
         var requestId = Guid.NewGuid().ToString("N");
         var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -101,14 +141,13 @@ internal sealed class VbaDevWorkbookConfirmationInput : IDisposable
         {
             if (inputClosed || pendingAnswer is not null) return false;
             pendingId = requestId;
+            pendingAcceptedFrame = $"{framePrefix}:{requestId}:{acceptedValue}";
+            pendingDeclinedFrame = $"{framePrefix}:{requestId}:{declinedValue}";
             pendingAnswer = answer;
         }
         try
         {
-            await error.WriteLineAsync(System.Text.Json.JsonSerializer.Serialize(new
-            {
-                type = "workbookConfirmation", schemaVersion = "1.0", requestId, message
-            })).ConfigureAwait(false);
+            await error.WriteLineAsync(serializeRequest(requestId)).ConfigureAwait(false);
             await error.FlushAsync(cancellationToken).ConfigureAwait(false);
             return await answer.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -117,6 +156,8 @@ internal sealed class VbaDevWorkbookConfirmationInput : IDisposable
             lock (pendingLock)
             {
                 pendingId = null;
+                pendingAcceptedFrame = null;
+                pendingDeclinedFrame = null;
                 pendingAnswer = null;
             }
         }

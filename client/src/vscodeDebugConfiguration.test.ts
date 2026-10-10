@@ -43,6 +43,7 @@ test('F5 from one active exported VBA source resolves a zero-configuration sourc
     name: 'VBA: Active Procedure',
     project: projectRoot,
     document: 'Book1',
+    __vbaDebugSourceWorkbookPath: path.join(projectRoot, 'src', 'Book1', 'Book1.xlsm'),
     __vbaDebugWorkbookFileName: 'Book1.xlsm',
     sourceSnapshot: {
       schemaVersion: 2,
@@ -55,6 +56,49 @@ test('F5 from one active exported VBA source resolves a zero-configuration sourc
       breakpoints: []
     }
   });
+});
+
+test('F5 selects the manifest source workbook rather than the legacy bin workbook', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  const manifest = JSON.parse(manifestJson('BookProject', ['Book1'])) as {
+    documents: { Book1: { templatePath: string; binPath: string } };
+  };
+  manifest.documents.Book1.templatePath = 'src/Book1/LiveSource.xlsm';
+  manifest.documents.Book1.binPath = 'bin/LegacyOutput.xlsm';
+  const integration = createIntegration({
+    activeEditor: { uriPath: sourcePath, line: 0, character: 0 },
+    manifests: new Map([[manifestPath, JSON.stringify(manifest)]]),
+    sources: new Map([[sourcePath, 'Public Sub RunTarget()\r\nEnd Sub\r\n']])
+  });
+
+  const configuration = await integration.resolveDebugConfiguration({});
+
+  assert.equal(configuration.__vbaDebugSourceWorkbookPath,
+    path.join(projectRoot, 'src', 'Book1', 'LiveSource.xlsm'));
+  assert.equal(configuration.__vbaDebugWorkbookFileName, 'LiveSource.xlsm');
+});
+
+test('F5 resolves a selected source workbook when its manifest has no binPath', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  const manifest = JSON.parse(manifestJson('BookProject', ['Book1'])) as {
+    documents: { Book1: { binPath?: string } };
+  };
+  delete manifest.documents.Book1.binPath;
+  const integration = createIntegration({
+    activeEditor: { uriPath: sourcePath, line: 0, character: 0 },
+    manifests: new Map([[manifestPath, JSON.stringify(manifest)]]),
+    sources: new Map([[sourcePath, 'Public Sub RunTarget()\r\nEnd Sub\r\n']])
+  });
+
+  const configuration = await integration.resolveDebugConfiguration({});
+
+  assert.equal(configuration.__vbaDebugSourceWorkbookPath,
+    path.join(projectRoot, 'src', 'Book1', 'Book1.xlsm'));
+  assert.equal(configuration.__vbaDebugWorkbookFileName, 'Book1.xlsm');
 });
 
 test('F5 transports an unsaved captured source as persistent base64 bytes', async () => {
@@ -94,6 +138,7 @@ test('F5 transports an unsaved captured source as persistent base64 bytes', asyn
     name: 'VBA: Active Procedure',
     project: projectRoot,
     document: 'Book1',
+    __vbaDebugSourceWorkbookPath: path.join(projectRoot, 'src', 'Book1', 'Book1.xlsm'),
     __vbaDebugWorkbookFileName: 'Book1.xlsm',
     sourceSnapshot: {
       schemaVersion: 2,
@@ -301,6 +346,7 @@ test('a saved launch narrows project and document and resolves an explicit proce
     document: 'Book2',
     module: 'DebugModule',
     procedure: 'RunTarget',
+    __vbaDebugSourceWorkbookPath: path.join(selectedRoot, 'src', 'Book2', 'Book2.xlsm'),
     __vbaDebugWorkbookFileName: 'Book2.xlsm',
     sourceSnapshot: {
       schemaVersion: 2,
@@ -690,6 +736,7 @@ test('debug restart preparation notifies the bound adapter session with the next
     document: 'Book1',
     module: 'DebugModule',
     procedure: 'RunTarget',
+    __vbaDebugSourceWorkbookPath: path.join(projectRoot, 'src', 'Book1', 'Book1.xlsm'),
     __vbaDebugWorkbookFileName: 'Book1.xlsm',
     sourceSnapshot: { schemaVersion: 2, sources: [] }
   });
@@ -784,6 +831,7 @@ test('debug restart notification failure does not leave preparation state busy',
     document: 'Book1',
     module: 'DebugModule',
     procedure: 'RunTarget',
+    __vbaDebugSourceWorkbookPath: path.join(projectRoot, 'src', 'Book1', 'Book1.xlsm'),
     __vbaDebugWorkbookFileName: 'Book1.xlsm',
     sourceSnapshot: { schemaVersion: 2, sources: [] }
   }, workspaceRoot);
@@ -872,6 +920,7 @@ test('debug restart preparation ignores fresh arguments and the active editor af
     document: 'OldBook',
     module: 'OldModule',
     procedure: 'OldTarget',
+    __vbaDebugSourceWorkbookPath: path.join(oldProjectRoot, 'src', 'OldBook', 'OldBook.xlsm'),
     __vbaDebugWorkbookFileName: 'OldBook.xlsm',
     sourceSnapshot: { schemaVersion: 2, sources: [] }
   }, workspaceRoot);
@@ -883,6 +932,7 @@ test('debug restart preparation ignores fresh arguments and the active editor af
     document: 'FreshBook',
     module: 'FreshModule',
     procedure: 'FreshTarget',
+    __vbaDebugSourceWorkbookPath: path.join(freshProjectRoot, 'src', 'FreshBook', 'FreshBook.xlsm'),
     __vbaDebugWorkbookFileName: 'FreshBook.xlsm',
     sourceSnapshot: { schemaVersion: 2, sources: [] }
   }, workspaceRoot);
@@ -1236,6 +1286,7 @@ test('debug restart remains busy until the adapter restart response completes re
     document: 'Book1',
     module: 'DebugModule',
     procedure: 'RunTarget',
+    __vbaDebugSourceWorkbookPath: path.join(projectRoot, 'src', 'Book1', 'Book1.xlsm'),
     __vbaDebugWorkbookFileName: 'Book1.xlsm',
     sourceSnapshot: { schemaVersion: 2, sources: [] }
   }, workspaceRoot);
@@ -2188,8 +2239,12 @@ function createIntegration(options: {
                 sessionIdFormat: 'lowercase-hex-32',
                 commands: ['cleanup', 'doctor'],
                 commandSchemaVersions: { doctor: '1.0' },
-                featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
-                requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
+                featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
+                requiredVbaDevFeatureVersions: {
+                  'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '1.0',
+                  'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
+                  'sourceSnapshot.activeWindowsCodePage': '1.0'
+                }
               }
             })
           }
@@ -2299,19 +2354,36 @@ function isWithin(filePath: string, directoryPath: string): boolean {
 function fixtureIntegration(options: ConstructorParameters<typeof VscodeDebugIntegration>[0]): VscodeDebugIntegration {
   return new VscodeDebugIntegration({
     requiredContract: {
-      contractVersion: '1.0', commandSchemaVersions: {},
-      featureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0' }
+      contractVersion: '1.0', commandSchemaVersions: { 'prepare-debug': '1.0' },
+      featureVersions: {
+        'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0', 'test.sourceSnapshot': '2.0',
+        'debug.sourceWorkbookPreparation': '1.0', 'invocation.stdinCancellation': '1.0',
+        'invocation.stdinWorkbookConfirmation': '1.0', 'sourceSnapshot.activeWindowsCodePage': '1.0'
+      }
     },
     requiredDebugAdapterContract: {
       contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
       sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
-      commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
-      requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
+      commandSchemaVersions: { doctor: '1.0' },
+      featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
+      requiredVbaDevFeatureVersions: {
+        'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '1.0',
+        'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
+        'sourceSnapshot.activeWindowsCodePage': '1.0'
+      }
     },
     vbaDevResolver: {
       resolve: async () => ({
         executablePath: path.resolve('vba-dev.exe'), bundledPath: path.resolve('vba-dev.exe'), source: 'bundled',
-        capabilities: { toolVersion: '0.1.0', contractVersion: '1.0', commands: {}, activeWindowsCodePage: 65001 }
+        capabilities: {
+          toolVersion: '0.1.0', contractVersion: '1.0',
+          commands: { 'prepare-debug': { outputSchemaVersion: '1.0' } }, activeWindowsCodePage: 65001,
+          featureVersions: {
+            'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '1.0',
+            'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
+            'sourceSnapshot.activeWindowsCodePage': '1.0'
+          }
+        }
       })
     },
     vbaDebugAdapterResolver: {
@@ -2320,20 +2392,35 @@ function fixtureIntegration(options: ConstructorParameters<typeof VscodeDebugInt
         capabilities: {
           toolVersion: '0.1.0', contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
           sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
-          commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
-          requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
+          commandSchemaVersions: { doctor: '1.0' },
+          featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
+          requiredVbaDevFeatureVersions: {
+            'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '1.0',
+            'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
+            'sourceSnapshot.activeWindowsCodePage': '1.0'
+          }
         }
       })
     },
     capabilitiesProcess: async file => ({
       stdout: JSON.stringify(file.endsWith('vba-dev.exe') ? {
-        toolVersion: '0.1.0', contractVersion: '1.0', commands: {}, activeWindowsCodePage: 65001,
-        featureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0' }
+        toolVersion: '0.1.0', contractVersion: '1.0',
+        commands: { 'prepare-debug': { outputSchemaVersion: '1.0' } }, activeWindowsCodePage: 65001,
+        featureVersions: {
+          'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0', 'test.sourceSnapshot': '2.0',
+          'debug.sourceWorkbookPreparation': '1.0', 'invocation.stdinCancellation': '1.0',
+          'invocation.stdinWorkbookConfirmation': '1.0', 'sourceSnapshot.activeWindowsCodePage': '1.0'
+        }
       } : {
         toolVersion: '0.1.0', contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
         sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
-        commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
-        requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
+        commandSchemaVersions: { doctor: '1.0' },
+        featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
+        requiredVbaDevFeatureVersions: {
+          'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '1.0',
+          'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
+          'sourceSnapshot.activeWindowsCodePage': '1.0'
+        }
       }),
       stderr: ''
     }),

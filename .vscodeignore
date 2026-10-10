@@ -26,6 +26,7 @@ tools/vba-source-identity/**
 fixtures/source-identity/**
 tools/vba-integration-tests/**
 .tmp/**
+.artifacts/**
 temp/**
 scripts/**
 bin/**/*.deps.json

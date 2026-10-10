@@ -95,7 +95,8 @@ public sealed class VbaConditionalCompilationEnvironment
     public VbaConditionalCompilationEnvironment(
         IEnumerable<KeyValuePair<string, VbaConditionalCompilationValue>> globalConstants,
         IEnumerable<string>? builtInConstantNames = null,
-        bool supportsLongLong = false)
+        bool supportsLongLong = false,
+        bool globalConstantsAreComplete = true)
     {
         ArgumentNullException.ThrowIfNull(globalConstants);
 
@@ -137,6 +138,7 @@ public sealed class VbaConditionalCompilationEnvironment
         this.globalConstants = new ReadOnlyDictionary<string, VbaConditionalCompilationValue>(constants);
         this.builtInConstantNames = builtIns;
         SupportsLongLong = supportsLongLong;
+        GlobalConstantsAreComplete = globalConstantsAreComplete;
     }
 
     private static bool IsIdentifierName(string value)
@@ -146,6 +148,11 @@ public sealed class VbaConditionalCompilationEnvironment
     /// Gets whether the verified compiler context supports the VBA LongLong subtype.
     /// </summary>
     public bool SupportsLongLong { get; }
+
+    /// <summary>
+    /// Gets whether an absent global name is proved undefined, rather than merely unobserved.
+    /// </summary>
+    public bool GlobalConstantsAreComplete { get; }
 
     internal bool TryGetGlobalConstant(
         string name,
@@ -388,6 +395,13 @@ public static class VbaConditionalCompilationEvaluator
             if (environment.TryGetGlobalConstant(name, out var value))
             {
                 return VbaConditionalCompilationExpressionEvaluation.Success(value);
+            }
+
+            if (!environment.GlobalConstantsAreComplete)
+            {
+                return VbaConditionalCompilationExpressionEvaluation.Failure(
+                    VbaConditionalCompilationFailureKind.Undefined,
+                    $"Conditional-compilation constant '{name}' is unobserved; the live global constant inventory is incomplete.");
             }
 
             // VBA treats names that are undefined in #If/#ElseIf as Empty.

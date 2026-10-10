@@ -22,7 +22,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             new RecordingVbaDevCapabilitiesProbe(new(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -127,7 +127,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             new RecordingVbaDevCapabilitiesProbe(new(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -261,7 +261,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             new RecordingVbaDevCapabilitiesProbe(new(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty)));
         using var inputPrefix = CreateDapInput(
             new { seq = 1, type = "request", command = "launch", arguments = CreateValidLaunchArguments() },
@@ -323,7 +323,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             new RecordingVbaDevCapabilitiesProbe(new(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"debug.sourceWorkbookPreparation\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\"}}",
                 string.Empty)));
         using var inputPrefix = CreateDapInput(
             new { seq = 1, type = "request", command = "launch", arguments = CreateValidLaunchArguments() },
