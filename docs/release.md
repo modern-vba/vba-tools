@@ -363,6 +363,12 @@ Run this gate against the exact commit intended for the release tag. Record the
 commit SHA, command result, and clean Windows smoke result in the release
 preparation pull request or, for explicitly authorized direct integration, the
 release issue verification note or another maintainer-designated review record.
+The native VBE checks require successful execution in the exact workbook and
+project, but not a guarantee that Windows makes the VBE the operating system's
+foreground window. Foreground activation is attempted on a best-effort basis;
+wrong-window ownership, changed command context, or an unavailable native
+command still fails the check. Do not waive other gate failures on the basis
+of a foreground-window observation.
 When a ruleset bypass was used, record the explicit authorization and whether
 it was the Repository Admin pull-request-only or Organization Admin
 always-bypass path.

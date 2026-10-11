@@ -8,6 +8,8 @@ status: accepted
 > by [ADR 0062](0062-debug-the-retained-source-workbook.md). Disposable/copied
 > Debug claims below are historical for that route; independent Build/Test,
 > Publish, public snapshot-output, Doctor and their evidence are unchanged.
+> [ADR 0065](0065-make-vbe-foreground-activation-best-effort.md) supersedes
+> exact operating-system foreground ownership as a Debug launch requirement.
 
 `VbeProcedureRun` selects the `DebugTargetProcedure` in its VBE code pane and
 invokes the native `Run Sub/UserForm` command. This keeps execution inside the

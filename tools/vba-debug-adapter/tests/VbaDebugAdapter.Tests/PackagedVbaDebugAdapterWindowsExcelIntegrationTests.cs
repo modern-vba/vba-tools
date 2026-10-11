@@ -2245,10 +2245,11 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                         continue;
                     }
 
-                    await RunInStaAsync(() => UseExcelApplication(
+                    var foregroundReached = await RunInStaAsync(() => UseExcelApplication(
                         excelWindowHandle,
                         application => EstablishVbeForeground(application, processId)));
-                    break;
+                    if (foregroundReached)
+                        break;
                 }
                 catch (Exception ex) when (
                     ex is ArgumentException or
@@ -2296,7 +2297,7 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
             _ = SetForegroundFromAttachedInputQueues(vbeWindowHandle);
             try
             {
-                windowActivator.BringOwnedWindowToForeground(
+                return windowActivator.BringOwnedWindowToForeground(
                     vbeWindowHandle,
                     processId);
             }
@@ -2305,7 +2306,6 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                 ex.Data["CoAllowSetForegroundWindow.HResult"] = foregroundPermission;
                 throw;
             }
-            return true;
         }
         finally
         {

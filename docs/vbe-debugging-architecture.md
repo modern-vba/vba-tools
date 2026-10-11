@@ -463,9 +463,12 @@ is a `DebugSetupError` with no fallback.
 
 Before resolving or executing a native command, the adapter establishes
 `VbeCommandContext`: the project is in design mode, the intended code pane is
-assigned as `ActiveCodePane`, the exact line is selected, the code window has
-focus, and the VBE is foreground. Localized captions are not command
-identities. The currently verified built-in IDs are 51 for Toggle Breakpoint
+assigned as `ActiveCodePane`, the exact line is selected, and the code window
+has focus. It attempts to foreground the exact owned VBE window, but failure
+to become the operating system's foreground window alone does not block a
+verified native COM command. An unowned window, changed target context,
+missing command, or disabled command remains an error. Localized captions are
+not command identities. The currently verified built-in IDs are 51 for Toggle Breakpoint
 and 186 for Run Sub/UserForm; Doctor must fail if either control cannot be
 resolved and enabled in the established context.
 
@@ -976,6 +979,11 @@ environment established an active standard-module code pane and selected an
 executable line. Without explicit code-window activation and foreground focus,
 Toggle Breakpoint ID 51 was present but disabled. After establishing
 `VbeCommandContext`, IDs 51 and 186 were both enabled.
+
+This probe records the observed command state, not an ongoing requirement
+that Windows grant exact foreground ownership. Current Debug still attempts
+foreground activation and requires the native command to be enabled in the
+verified target context.
 
 The probe set a native breakpoint, invoked Run Sub/UserForm, observed
 `VBProject.Mode` enter break mode, continued execution, and verified completion

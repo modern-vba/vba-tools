@@ -623,6 +623,12 @@ The adapter transfers breakpoints and runs the procedure through the VBE.
 `Option Private Module` is supported. Desktop Excel and trusted access to the
 VBA project object model are required.
 
+VBA Tools attempts to bring the selected VBE window to the front. Windows may
+leave another window in front; that alone does not stop debugging. The adapter
+still requires the exact workbook, project, code pane and enabled native VBE
+command. If the command is unavailable or the target context changes, launch
+fails rather than sending input to another window.
+
 Debug alone skips the independent pre-launch syntax/type/argument-error gate.
 Normal editor diagnostics, byte/encoding checks, exact target/breakpoint
 identification, workbook permissions and native Excel/VBE compile/runtime errors
