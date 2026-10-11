@@ -1691,6 +1691,13 @@ test('release verification scripts expose every suite and keep Excel integration
   );
 });
 
+test('real-workbook Extension Host checks are explicitly included only in the Windows Excel release gate', async () => {
+  const { scripts } = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(scripts['test:extension-host:windows-excel'], 'npm run test:extension-host -- --windows-excel');
+  assert.match(scripts['test:windows-excel-integration'], /npm run test:extension-host:windows-excel &&/);
+  assert.doesNotMatch(scripts['verify:release'], /test:extension-host:windows-excel|--windows-excel/);
+});
+
 test('private-desktop Excel feasibility has an isolated repeatable opt-in command', async () => {
   const packageJson = JSON.parse(
     await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
@@ -1787,7 +1794,8 @@ function writeZip(filePath, entries) {
 }
 
 async function createPackagingFailureFixture(t, { writeOutput = true } = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-vsix-failure-'));
+  // Evidence guards require canonical local roots; hosted TEMP may use an 8.3 alias.
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-vsix-failure-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const manifest = readDistributionManifest();
   const paths = [

@@ -161,7 +161,7 @@ test('annotated release tag binds reviewed versions channel and Windows evidence
   });
 });
 
-for (const initialVersion of ['0.1.1', '0.1.2']) {
+for (const initialVersion of ['0.1.1', '0.1.2', '0.1.3']) {
   test(`initial ${initialVersion} tag rejects a skipped clean Windows smoke`, () => {
     const tagObject = validTagObject
       .replaceAll('0.1.0', initialVersion)
@@ -876,9 +876,35 @@ test('clean Windows smoke verifies source-workbook debug retention and no automa
   assert.doesNotMatch(smoke, /adapter-owned temporary directory|dedicated visible Excel|Exit the owned Excel process/);
 });
 
+test('release preparation PRs verify the hosted gate without tag creation or publishing privileges', async () => {
+  const workflow = await fs.readFile('.github/workflows/release-validation.yml', 'utf8');
+  assert.match(workflow, /pull_request:/);
+  assert.match(workflow, /codex\/issue-246-release-/);
+  assert.match(workflow, /runs-on: windows-2025/);
+  assert.match(workflow, /contents: read/);
+  assert.match(workflow, /npm run verify:release/);
+  assert.doesNotMatch(workflow, /environment:|id-token:|attestations:|contents: write|release:tag|release:artifacts|vsce publish|azure\/login/);
+  for (const reference of workflow.matchAll(/uses: [^\s]+@([^\s]+)/g)) {
+    assert.match(reference[1], /^[0-9a-f]{40}$/);
+  }
+});
+
+test('failed release preparation retains only isolated VBA log evidence, never native dumps', async () => {
+  const workflow = await fs.readFile('.github/workflows/release-validation.yml', 'utf8');
+  const evidence = workflow.split('      - name: Retain isolated VBA failure evidence')[1];
+  assert.ok(evidence, 'Failed hosted verification must retain its isolated VBA logs.');
+  assert.match(evidence, /if: failure\(\)/);
+  assert.match(evidence, /uses: actions\/upload-artifact@[0-9a-f]{40}/);
+  assert.match(evidence, /path: \.tmp\/extension-host-failures\/\*\*\/output_logging_\*\/\*VBA\*\.log/);
+  assert.match(evidence, /retention-days: 3/);
+  assert.match(evidence, /include-hidden-files: true/);
+  assert.doesNotMatch(evidence, /\.dmp|diagnostic-verification|path: \.tmp\/extension-host-failures\s/);
+});
+
 test('first public release notes explain source-workbook migration and snapshot compatibility', async () => {
   const changelog = await fs.readFile('CHANGELOG.md', 'utf8');
-  const extensionNotes = changelog.split('## [0.1.2]')[1]?.split('\n## [')[0];
+  const { version } = JSON.parse(await fs.readFile('package.json', 'utf8'));
+  const extensionNotes = changelog.split(`## [${version}]`)[1]?.split('\n## [')[0];
   assert.ok(extensionNotes, 'The first published extension needs migration notes.');
   assert.match(extensionNotes, /### Changed/);
   assert.match(extensionNotes, /Build[\s\S]*other unsaved workbook edits/);
