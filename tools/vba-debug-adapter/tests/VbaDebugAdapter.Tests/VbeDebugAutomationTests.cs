@@ -1948,8 +1948,10 @@ public sealed class VbeDebugAutomationTests
         Assert.DoesNotContain(events, entry => entry.StartsWith("execute:", StringComparison.Ordinal));
     }
 
-    [Fact]
-    public async Task OpenAndRunActivatesTheExactProcedureAndExecutesNativeRunCommand186()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task OpenAndRunActivatesTheExactProcedureAndExecutesNativeRunCommand186(bool foregroundReached)
     {
         using var temp = TempDirectory.Create();
         await using var generationFixture =
@@ -1962,7 +1964,7 @@ public sealed class VbeDebugAutomationTests
         var process = new FakeDebugOwnedProcess(
             27182,
             new DateTime(2026, 7, 21, 10, 30, 0, DateTimeKind.Local));
-        var windowActivator = new FakeDebugWindowActivator(events);
+        var windowActivator = new FakeDebugWindowActivator(events, foregroundReached: foregroundReached);
         var automation = new VbeDebugAutomation(
             new FakeExcelDebugApplicationFactory(model.Excel),
             new FakeDebugExcelProcessApi(27182, process),
@@ -2522,7 +2524,8 @@ internal sealed class FakeExcelDebugApplicationFactory(object application) : IEx
 
 internal sealed class FakeDebugWindowActivator(
     List<string>? events = null,
-    int foregroundPermissionHResult = 0) : IDebugWindowActivator
+    int foregroundPermissionHResult = 0,
+    bool foregroundReached = true) : IDebugWindowActivator
 {
     public int AllowComServerForeground(object comServerObject)
     {
@@ -2530,9 +2533,10 @@ internal sealed class FakeDebugWindowActivator(
         return foregroundPermissionHResult;
     }
 
-    public void BringOwnedWindowToForeground(nint windowHandle, int processId)
+    public bool BringOwnedWindowToForeground(nint windowHandle, int processId)
     {
         events?.Add($"foreground:{windowHandle}:{processId}");
+        return foregroundReached;
     }
 }
 

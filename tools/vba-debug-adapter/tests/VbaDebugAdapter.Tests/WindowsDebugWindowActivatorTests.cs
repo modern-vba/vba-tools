@@ -33,7 +33,7 @@ public sealed class WindowsDebugWindowActivatorTests
         };
         var activator = new WindowsDebugWindowActivator(windowApi);
 
-        activator.BringOwnedWindowToForeground((nint)1234, processId: 200);
+        Assert.True(activator.BringOwnedWindowToForeground((nint)1234, processId: 200));
 
         Assert.Equal(1, windowApi.RestoreCalls);
         Assert.Equal(1, windowApi.SetForegroundCalls);
@@ -41,7 +41,7 @@ public sealed class WindowsDebugWindowActivatorTests
     }
 
     [Fact]
-    public void BringOwnedWindowToForegroundRejectsAnotherWindowFromTheOwnedProcess()
+    public void BringOwnedWindowToForegroundDoesNotRequireAnotherWindowFromTheOwnedProcessToYield()
     {
         var windowApi = new FakeWindowsDebugWindowApi
         {
@@ -52,17 +52,15 @@ public sealed class WindowsDebugWindowActivatorTests
         };
         var activator = new WindowsDebugWindowActivator(windowApi);
 
-        var error = Assert.Throws<DebugSetupException>(() =>
-            activator.BringOwnedWindowToForeground((nint)1234, processId: 200));
+        Assert.False(activator.BringOwnedWindowToForeground((nint)1234, processId: 200));
 
-        Assert.Contains("requested VBE window", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal((nint)5678, error.Data["ForegroundWindow.Handle"]);
         Assert.Equal(1, windowApi.RestoreCalls);
         Assert.Equal(1, windowApi.SetForegroundCalls);
+        Assert.Equal(41, windowApi.GetForegroundWindowCalls);
     }
 
     [Fact]
-    public void BringOwnedWindowToForegroundFailsClosedAfterTheActivationTransition()
+    public void BringOwnedWindowToForegroundDoesNotRequireAnUnrelatedWindowToYield()
     {
         var windowApi = new FakeWindowsDebugWindowApi
         {
@@ -72,14 +70,11 @@ public sealed class WindowsDebugWindowActivatorTests
         };
         var activator = new WindowsDebugWindowActivator(windowApi);
 
-        var error = Assert.Throws<DebugSetupException>(() =>
-            activator.BringOwnedWindowToForeground((nint)1234, processId: 200));
+        Assert.False(activator.BringOwnedWindowToForeground((nint)1234, processId: 200));
 
-        Assert.Contains("foreground PID 100", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("owned Excel PID 200", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(false, error.Data["SetForegroundWindow.Result"]);
         Assert.Equal(1, windowApi.RestoreCalls);
         Assert.Equal(1, windowApi.SetForegroundCalls);
+        Assert.Equal(41, windowApi.GetForegroundWindowCalls);
     }
 }
 

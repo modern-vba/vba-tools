@@ -505,8 +505,10 @@ public sealed class SourceVbeDebugAutomationTests
         Assert.Contains("selection:3:1:3:1", events);
     }
 
-    [Fact]
-    public async Task TargetUsesNativeRunInTheExactWorkbookWithoutSavingOrQuitting()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task TargetUsesNativeRunInTheExactWorkbookWithoutSavingOrQuitting(bool foregroundReached)
     {
         using var temp = TempDirectory.Create();
         var path = Path.Combine(temp.Path, "Source.xlsm");
@@ -517,20 +519,23 @@ public sealed class SourceVbeDebugAutomationTests
             12345, 638000000000000000, true, () => true, () => { });
         var automation = new SourceVbeDebugAutomation(new FakeSourceVbeDesktopConnector(binding),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()),
-            new FakeDebugWindowActivator(events));
+            new FakeDebugWindowActivator(events, foregroundReached: foregroundReached));
         await using var session = await automation.AttachOrOpenAsync(path, CancellationToken.None);
 
         await session.RunTargetAsync(new DebugTargetProcedure("DebugModule", "RunProbe"),
             null, CancellationToken.None);
 
         Assert.Contains("execute:186", events);
+        Assert.Contains("foreground:9753:12345", events);
         Assert.Contains("selection:7:1:7:1", events);
         Assert.DoesNotContain("excel-quit", events);
         Assert.DoesNotContain("close:False", events);
     }
 
-    [Fact]
-    public async Task StopResetsOnlyTheBoundProjectAndLeavesUnsavedWorkbookOpen()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task StopResetsOnlyTheBoundProjectAndLeavesUnsavedWorkbookOpen(bool foregroundReached)
     {
         using var temp = TempDirectory.Create();
         var path = Path.Combine(temp.Path, "Source.xlsm");
@@ -549,13 +554,14 @@ public sealed class SourceVbeDebugAutomationTests
             12345, 638000000000000000, true, () => true, () => { });
         var automation = new SourceVbeDebugAutomation(new FakeSourceVbeDesktopConnector(binding),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()),
-            new FakeDebugWindowActivator(events));
+            new FakeDebugWindowActivator(events, foregroundReached: foregroundReached));
 
         await using var session = await automation.AttachOrOpenAsync(path, CancellationToken.None);
         await session.ResetExecutionAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
 
         Assert.Equal(2, model.Project.Mode);
         Assert.Contains("execute:228", events);
+        Assert.Contains("foreground:9753:12345", events);
         Assert.Equal(path, model.Workbook.FullName);
         Assert.False(model.Workbook.Saved);
         Assert.DoesNotContain("excel-quit", events);
