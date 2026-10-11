@@ -239,7 +239,7 @@ export async function createReleaseTag({
   if (cleanWindowsSmoke !== 'pass' && cleanWindowsSmoke !== 'not-required') {
     throw new Error('Clean Windows smoke must be pass or not-required.');
   }
-  if ((extensionVersion === '0.1.0' || extensionVersion === '0.1.1') &&
+  if (['0.1.0', '0.1.1', '0.1.2'].includes(extensionVersion) &&
       cleanWindowsSmoke !== 'pass') {
     throw new Error(`The initial ${extensionVersion} release requires Clean Windows smoke to pass.`);
   }
