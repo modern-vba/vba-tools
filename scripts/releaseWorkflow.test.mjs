@@ -161,24 +161,26 @@ test('annotated release tag binds reviewed versions channel and Windows evidence
   });
 });
 
-test('first published 0.1.1 tag rejects a skipped clean Windows smoke', () => {
-  const tagObject = validTagObject
-    .replaceAll('0.1.0', '0.1.1')
-    .replace('Clean-Windows-Smoke: pass',
-      'Clean-Windows-Smoke: not-required\nClean-Windows-Smoke-Reason: No package changes.');
-  assert.throws(() => validateAnnotatedReleaseTag({
-    tagName: 'vba-tools-v0.1.1',
-    tagType: 'tag',
-    tagObject,
-    packageJson: { ...packageJson, version: '0.1.1' },
-    packageLock: {
-      ...packageLock,
-      version: '0.1.1',
-      packages: { '': { version: '0.1.1' } }
-    },
-    vbaDevProps
-  }), /initial.*0\.1\.1.*Clean Windows smoke/i);
-});
+for (const initialVersion of ['0.1.1', '0.1.2']) {
+  test(`initial ${initialVersion} tag rejects a skipped clean Windows smoke`, () => {
+    const tagObject = validTagObject
+      .replaceAll('0.1.0', initialVersion)
+      .replace('Clean-Windows-Smoke: pass',
+        'Clean-Windows-Smoke: not-required\nClean-Windows-Smoke-Reason: No package changes.');
+    assert.throws(() => validateAnnotatedReleaseTag({
+      tagName: `vba-tools-v${initialVersion}`,
+      tagType: 'tag',
+      tagObject,
+      packageJson: { ...packageJson, version: initialVersion },
+      packageLock: {
+        ...packageLock,
+        version: initialVersion,
+        packages: { '': { version: initialVersion } }
+      },
+      vbaDevProps
+    }), /initial.*Clean Windows smoke/i);
+  });
+}
 
 test('release tag validation rejects lightweight tags unknown evidence and cross-version metadata', () => {
   const valid = {
@@ -876,7 +878,7 @@ test('clean Windows smoke verifies source-workbook debug retention and no automa
 
 test('first public release notes explain source-workbook migration and snapshot compatibility', async () => {
   const changelog = await fs.readFile('CHANGELOG.md', 'utf8');
-  const extensionNotes = changelog.split('## [0.1.1]')[1]?.split('\n## [')[0];
+  const extensionNotes = changelog.split('## [0.1.2]')[1]?.split('\n## [')[0];
   assert.ok(extensionNotes, 'The first published extension needs migration notes.');
   assert.match(extensionNotes, /### Changed/);
   assert.match(extensionNotes, /Build[\s\S]*other unsaved workbook edits/);

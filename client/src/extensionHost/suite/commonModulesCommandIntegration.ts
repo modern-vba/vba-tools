@@ -17,6 +17,7 @@ import {
 } from '../../commandPaletteTarget';
 import { resolveCommandPalettePathIdentity } from '../../commandPaletteTargetAdapter';
 import { StartVbaDevProcess } from '../../devtoolCommand';
+import { assertCanonicalProjectReceiptPath } from '../commonModulesReceiptAssertions';
 import { createHarness } from './projectManifestMutationIntegration';
 
 interface CommonModulesFixture {
@@ -284,7 +285,7 @@ export async function runCommonModulesCommandIntegrationTests(): Promise<void> {
         ) as Record<string, unknown>;
         assert.equal(rawUntrustedReceipt.schemaVersion, '1.0');
         assert.equal(rawUntrustedReceipt.operation, 'update');
-        assert.equal(rawUntrustedReceipt.project, fixture.projectRoot);
+        await assertCanonicalProjectReceiptPath(rawUntrustedReceipt.project, fixture.projectRoot);
         assert.equal(rawUntrustedReceipt.complete, true);
         assert.ok(await resolveCommandPaletteProjectTargetFromManifestText(
           fixture.manifestPath,
