@@ -19,7 +19,7 @@ internal interface IDebugWindowActivator
 {
     int AllowComServerForeground(object comServerObject);
 
-    void BringOwnedWindowToForeground(nint windowHandle, int processId);
+    bool BringOwnedWindowToForeground(nint windowHandle, int processId);
 }
 
 internal interface IWindowsDebugWindowApi
@@ -2078,7 +2078,7 @@ internal sealed class WindowsDebugWindowActivator : IDebugWindowActivator
     public int AllowComServerForeground(object comServerObject)
         => windowApi.AllowComServerForeground(comServerObject);
 
-    public void BringOwnedWindowToForeground(nint windowHandle, int processId)
+    public bool BringOwnedWindowToForeground(nint windowHandle, int processId)
     {
         if (windowHandle == nint.Zero ||
             processId <= 0 ||
@@ -2089,7 +2089,7 @@ internal sealed class WindowsDebugWindowActivator : IDebugWindowActivator
         }
 
         windowApi.Restore(windowHandle);
-        var setForegroundResult = windowApi.SetForeground(windowHandle);
+        _ = windowApi.SetForeground(windowHandle);
 
         var foregroundWindow = nint.Zero;
         var foregroundProcessId = 0;
@@ -2101,7 +2101,7 @@ internal sealed class WindowsDebugWindowActivator : IDebugWindowActivator
                 : windowApi.GetProcessId(foregroundWindow);
             if (foregroundWindow == windowHandle && foregroundProcessId == processId)
             {
-                return;
+                return true;
             }
 
             if (check < 40)
@@ -2110,11 +2110,9 @@ internal sealed class WindowsDebugWindowActivator : IDebugWindowActivator
             }
         }
 
-        var error = new DebugSetupException(
-            $"The requested VBE window did not become the exact foreground window; foreground HWND {foregroundWindow} with foreground PID {foregroundProcessId} did not match requested HWND {windowHandle} for owned Excel PID {processId} after the activation transition wait.");
-        error.Data["SetForegroundWindow.Result"] = setForegroundResult;
-        error.Data["ForegroundWindow.Handle"] = foregroundWindow;
-        throw error;
+        // Native commands are sent to the verified VBE COM control, not as
+        // keystrokes to the operating system's foreground window.
+        return false;
     }
 }
 
