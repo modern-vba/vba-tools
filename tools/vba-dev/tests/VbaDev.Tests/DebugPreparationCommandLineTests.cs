@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -70,6 +71,63 @@ public sealed class DebugPreparationCommandLineTests
         Assert.Equal("Book1", receipt.RootElement.GetProperty("documentName").GetString());
         Assert.Equal(workbookPath, receipt.RootElement.GetProperty("workbookPath").GetString());
         Assert.Equal("saved source", File.ReadAllText(workbookPath));
+    }
+
+    [Fact]
+    public async Task DescribeWritesANonAsciiLegacyWarningAsStrictUtf8ToRedirectedStderr()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        const string documentName = "書式でテキスト抽出";
+        var manifest = ProjectManifest.CreateDefault("Project", documentName, root, null);
+        var documents = new Dictionary<string, ProjectDocument>(manifest.Documents,
+            StringComparer.OrdinalIgnoreCase)
+        {
+            [documentName] = manifest.Documents[documentName] with
+            {
+                BinPath = $"bin/{documentName}.xlsm"
+            }
+        };
+        new JsonProjectManifestStore().Save(root, manifest with { Documents = documents });
+        var startInfo = new ProcessStartInfo(FindBuiltExecutable())
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = new UTF8Encoding(false, true),
+            StandardErrorEncoding = new UTF8Encoding(false, true)
+        };
+        foreach (var argument in new[] { "prepare-debug", "--describe", "--project", root,
+                     "--document", documentName })
+            startInfo.ArgumentList.Add(argument);
+
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("The vba-dev CLI process did not start.");
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await process.WaitForExitAsync(timeout.Token);
+        Assert.Equal(0, process.ExitCode);
+        using var receipt = JsonDocument.Parse(await output);
+        Assert.Equal(documentName, receipt.RootElement.GetProperty("documentName").GetString());
+        Assert.Contains($"[WARN] project-workbook-bin-deprecated: The binPath setting for document '{documentName}'",
+            await error);
+    }
+
+    private static string FindBuiltExecutable()
+    {
+        var configuration = new DirectoryInfo(AppContext.BaseDirectory).Parent?.Name
+            ?? throw new InvalidOperationException("The test build configuration is unavailable.");
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
+             directory is not null; directory = directory.Parent)
+        {
+            var candidate = Path.Combine(directory.FullName, "src", "VbaDev.Cli", "bin",
+                configuration, "net10.0", "win-x64", "vba-dev.exe");
+            if (File.Exists(candidate)) return candidate;
+        }
+        throw new InvalidOperationException("The built vba-dev executable was not found.");
     }
 
     [Theory]

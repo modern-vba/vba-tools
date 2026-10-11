@@ -1,8 +1,10 @@
+using System.Text;
 using VbaDev.App.Cli;
 using VbaDev.Cli;
 
 try
 {
+    Console.OutputEncoding = new UTF8Encoding(false);
     VbaDevProcessStartupEvidence.TryWriteFromEnvironment();
     using var standardInput = Console.OpenStandardInput();
     return await VbaDevCommandLine
