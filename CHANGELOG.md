@@ -4,10 +4,11 @@ All notable user-facing changes to the VBA Tools extension are recorded here.
 The extension history is versioned independently from the bundled `vba-dev`
 CLI history.
 
-## [0.1.1] - 2026-10-10
+## [0.1.2] - 2026-10-12
 
-This is the first publicly available VBA Tools pre-release. Version 0.1.0 was
-tagged but was not published to the VS Code Marketplace or as a GitHub Release.
+This is the first public VBA Tools pre-release candidate. Versions 0.1.0 and
+0.1.1 were tagged but were not published to the VS Code Marketplace or as a
+GitHub Release. This section carries forward their unreleased capabilities.
 
 ### Added
 
@@ -63,6 +64,11 @@ and explicit-workbook Export retain their separate output and lifetime contracts
 - CommonModules Add and Update no longer treat a completed result as untrusted
   when the selected project and CLI receipt use equivalent Windows short and
   long paths. Side-effecting operations are not retried.
+- Redirected CLI output uses UTF-8, allowing the debug adapter to read Japanese
+  warnings without a decoding failure.
+- Hosted CommonModules integration verification compares the receipt with the
+  filesystem-canonical project path rather than its original 8.3 alias. No
+  product operation, response-time requirement, or test gate is skipped.
 
 ### Requirements
 
@@ -77,6 +83,13 @@ and explicit-workbook Export retain their separate output and lifetime contracts
 - Intermittent source-analysis and companion-process failures observed on an
   affected Windows host remain under investigation ([#409], [#415]). The
   capability-probe retry does not fix their underlying cause.
+
+## [0.1.1] - 2026-10-10
+
+Unpublished release attempt. The protected tag remains at `bafe1c4`; hosted
+verification failed on a test-only short-path comparison before artifact
+creation or Marketplace publication. Its capabilities and source-workbook
+migration notes are carried forward in 0.1.2 above.
 
 ## [0.1.0] - 2026-10-06
 

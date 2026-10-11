@@ -12,9 +12,10 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
 - Tag extension releases as `vba-tools-vX.Y.Z`.
 - Reserve `vba-dev-vX.Y.Z` tags for independently versioned standalone CLI
   releases so extension and CLI tag namespaces cannot collide.
-- Publish `0.1.1` as the initial Marketplace pre-release. Version `0.1.0` was
-  tagged, but its workflow failed before artifact creation and neither a GitHub
-  Release nor a Marketplace version was published. Never move or reuse that tag.
+- Publish `0.1.2` as the initial Marketplace pre-release. Versions `0.1.0` and
+  `0.1.1` were tagged, but their workflows failed before artifact creation and
+  neither a GitHub Release nor a Marketplace version was published. Never move
+  or reuse those tags.
   Use odd minor versions for pre-release channels and even minor versions for
   stable channels; the first planned stable line is `0.2.x`.
 - Pass `--pre-release` when packaging and publishing a pre-release. Marketplace
@@ -43,9 +44,9 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
   Generate later version sections from Conventional Commits since the previous
   tag in the matching namespace, then edit known limitations, requirements, and
   other user-facing context in the release preparation review record.
-- Curate the first publicly available `0.1.1` changelog section as a complete
+- Curate the first publicly available `0.1.2` changelog section as a complete
   user-facing summary, including capabilities carried forward from the tagged
-  but unpublished `0.1.0`; do not dump the complete commit history.
+  but unpublished `0.1.0` and `0.1.1`; do not dump the complete commit history.
 - Do not let `vsce publish` increment the version or create a release commit.
   Publish the already-versioned, verified VSIX with `--packagePath`.
 - Run non-Excel release verification on a standard GitHub-hosted Windows runner.
@@ -115,7 +116,7 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
 - Serialize release workflows for the repository and do not cancel an active
   release when another run is requested. A protected tag starts a new release;
   manual dispatch may only resume an existing tagged draft release.
-- The initial published `vba-tools` `0.1.1` pre-release must include the independently
+- The initial published `vba-tools` `0.1.2` pre-release must include the independently
   versioned standalone `vba-dev` Windows x64 ZIP delivered by GitHub issue #243.
 - Block the initial Marketplace release until its listing metadata and packaged
   support documents pass the Marketplace readiness checks in this runbook.
@@ -134,8 +135,8 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
 
 Before starting, decide:
 
-- the extension version, such as `0.1.1`;
-- the release tag, such as `vba-tools-v0.1.1`;
+- the extension version, such as `0.1.2`;
+- the release tag, such as `vba-tools-v0.1.2`;
 - the Marketplace channel, `pre-release` or `stable`;
 - the bundled and standalone `vba-dev` version;
 - known limitations that must appear in the GitHub Release notes;
@@ -594,8 +595,9 @@ Clean-Windows-Smoke: pass
 
 The clean Windows smoke value may be `not-required` only when the runbook allows
 the smoke to be skipped, and the tag message must then include a concise
-`Clean-Windows-Smoke-Reason` trailer. The initial published `0.1.1` release,
-as well as the already-tagged `0.1.0` attempt, requires `pass` for both checks.
+`Clean-Windows-Smoke-Reason` trailer. The initial published `0.1.2` release,
+as well as the already-tagged `0.1.0` and `0.1.1` attempts, requires `pass` for
+both checks.
 
 The tag-triggered workflow must reject a lightweight tag, an unrecognized
 trailer, a non-pass Windows Excel result, or a verification commit that differs
