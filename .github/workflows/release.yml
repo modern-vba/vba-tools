@@ -303,7 +303,9 @@ jobs:
           }
           gh @arguments
           if ($LASTEXITCODE -ne 0) { throw 'Draft release creation failed.' }
-          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:TAG_NAME"
+          node scripts/releaseWorkflow.mjs resolve-draft `
+            --tag $env:TAG_NAME `
+            --release-json verified-draft/draft-release.json
           if ($LASTEXITCODE -ne 0) { throw 'Draft release lookup failed.' }
           New-Item -ItemType Directory -Path 'verified-draft/assets' -Force | Out-Null
           foreach ($name in @($env:VSIX_NAME, $env:CLI_ARCHIVE_NAME, 'SHA256SUMS')) {
@@ -313,11 +315,6 @@ jobs:
             $draftHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path verified-draft/assets $name)).Hash
             if ($artifactHash -cne $draftHash) { throw "Actions artifact and draft release bytes differ for $name." }
           }
-          [System.IO.File]::WriteAllText(
-            (Join-Path $PWD 'verified-draft/draft-release.json'),
-            "$releaseJson`n",
-            [System.Text.UTF8Encoding]::new($false)
-          )
           node scripts/releaseWorkflow.mjs validate-draft `
             --release-json verified-draft/draft-release.json `
             --directory verified-draft/assets `
@@ -372,17 +369,14 @@ jobs:
           CLI_ARCHIVE_NAME: ${{ needs.validate.outputs.cli_archive_name }}
         run: |
           New-Item -ItemType Directory -Path 'verified-draft/assets' -Force | Out-Null
+          node scripts/releaseWorkflow.mjs resolve-draft `
+            --tag $env:TAG_NAME `
+            --release-json verified-draft/draft-release.json
+          if ($LASTEXITCODE -ne 0) { throw 'Draft release lookup failed.' }
           foreach ($name in @($env:VSIX_NAME, $env:CLI_ARCHIVE_NAME, 'SHA256SUMS')) {
             gh release download $env:TAG_NAME --dir verified-draft/assets --pattern $name
             if ($LASTEXITCODE -ne 0) { throw "Draft asset download failed: $name" }
           }
-          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:TAG_NAME"
-          if ($LASTEXITCODE -ne 0) { throw 'Draft release lookup failed.' }
-          [System.IO.File]::WriteAllText(
-            (Join-Path $PWD 'verified-draft/draft-release.json'),
-            "$releaseJson`n",
-            [System.Text.UTF8Encoding]::new($false)
-          )
           node scripts/releaseWorkflow.mjs validate-draft `
             --release-json verified-draft/draft-release.json `
             --directory verified-draft/assets `
@@ -670,17 +664,14 @@ jobs:
           CLI_ARCHIVE_NAME: ${{ needs.validate.outputs.cli_archive_name }}
         run: |
           New-Item -ItemType Directory -Path final-staged | Out-Null
+          node scripts/releaseWorkflow.mjs resolve-draft `
+            --tag $env:TAG_NAME `
+            --release-json final-draft.json
+          if ($LASTEXITCODE -ne 0) { throw 'Draft release lookup failed.' }
           foreach ($name in @($env:VSIX_NAME, $env:CLI_ARCHIVE_NAME, 'SHA256SUMS')) {
             gh release download $env:TAG_NAME --dir final-staged --pattern $name
             if ($LASTEXITCODE -ne 0) { throw "Draft asset download failed: $name" }
           }
-          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:TAG_NAME"
-          if ($LASTEXITCODE -ne 0) { throw 'Draft release lookup failed.' }
-          [System.IO.File]::WriteAllText(
-            (Join-Path $PWD 'final-draft.json'),
-            "$releaseJson`n",
-            [System.Text.UTF8Encoding]::new($false)
-          )
           node scripts/releaseWorkflow.mjs validate-draft `
             --release-json final-draft.json `
             --directory final-staged `

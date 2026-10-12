@@ -12,10 +12,12 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
 - Tag extension releases as `vba-tools-vX.Y.Z`.
 - Reserve `vba-dev-vX.Y.Z` tags for independently versioned standalone CLI
   releases so extension and CLI tag namespaces cannot collide.
-- Publish `0.1.3` as the initial Marketplace pre-release. Versions `0.1.0`,
+- Publish `0.1.4` as the initial Marketplace pre-release. Versions `0.1.0`,
   `0.1.1`, and `0.1.2` were tagged, but their workflows failed before artifact creation and
-  neither a GitHub Release nor a Marketplace version was published. Never move
-  or reuse those tags.
+  neither a GitHub Release nor a Marketplace version was published. Version
+  `0.1.3` passed build and provenance creation and retained a draft with all
+  three assets, but draft lookup failed before Marketplace publication. Preserve
+  that draft and its artifacts; never move or reuse any of these tags.
   Use odd minor versions for pre-release channels and even minor versions for
   stable channels; the first planned stable line is `0.2.x`.
 - Pass `--pre-release` when packaging and publishing a pre-release. Marketplace
@@ -44,9 +46,9 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
   Generate later version sections from Conventional Commits since the previous
   tag in the matching namespace, then edit known limitations, requirements, and
   other user-facing context in the release preparation review record.
-- Curate the first publicly available `0.1.3` changelog section as a complete
+- Curate the first publicly available `0.1.4` changelog section as a complete
   user-facing summary, including capabilities carried forward from the tagged
-  but unpublished `0.1.0`, `0.1.1`, and `0.1.2`; do not dump the complete commit history.
+  but unpublished `0.1.0`, `0.1.1`, `0.1.2`, and `0.1.3`; do not dump the complete commit history.
 - Do not let `vsce publish` increment the version or create a release commit.
   Publish the already-versioned, verified VSIX with `--packagePath`.
 - Run non-Excel release verification on a standard GitHub-hosted Windows runner.
@@ -116,7 +118,7 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
 - Serialize release workflows for the repository and do not cancel an active
   release when another run is requested. A protected tag starts a new release;
   manual dispatch may only resume an existing tagged draft release.
-- The initial published `vba-tools` `0.1.3` pre-release must include the independently
+- The initial published `vba-tools` `0.1.4` pre-release must include the independently
   versioned standalone `vba-dev` Windows x64 ZIP delivered by GitHub issue #243.
 - Block the initial Marketplace release until its listing metadata and packaged
   support documents pass the Marketplace readiness checks in this runbook.
@@ -135,8 +137,8 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
 
 Before starting, decide:
 
-- the extension version, such as `0.1.3`;
-- the release tag, such as `vba-tools-v0.1.3`;
+- the extension version, such as `0.1.4`;
+- the release tag, such as `vba-tools-v0.1.4`;
 - the Marketplace channel, `pre-release` or `stable`;
 - the bundled and standalone `vba-dev` version;
 - known limitations that must appear in the GitHub Release notes;
@@ -619,8 +621,8 @@ Clean-Windows-Smoke: pass
 
 The clean Windows smoke value may be `not-required` only when the runbook allows
 the smoke to be skipped, and the tag message must then include a concise
-`Clean-Windows-Smoke-Reason` trailer. The initial published `0.1.3` release,
-as well as the already-tagged `0.1.0`, `0.1.1`, and `0.1.2` attempts, requires `pass` for
+`Clean-Windows-Smoke-Reason` trailer. The initial published `0.1.4` release,
+as well as the already-tagged `0.1.0`, `0.1.1`, `0.1.2`, and `0.1.3` attempts, requires `pass` for
 both checks.
 
 The tag-triggered workflow must reject a lightweight tag, an unrecognized
@@ -657,6 +659,14 @@ Create a draft GitHub Release from the release tag before Marketplace publish.
 Build each release asset once, upload it to the draft, and verify every uploaded
 file against `SHA256SUMS`. Keep the release as a draft until Marketplace
 publishing succeeds.
+
+Resolve drafts through `releaseWorkflow.mjs resolve-draft`: list all release
+pages with push-authorized access, require one exact-tag draft, and fetch its
+Release ID. Reject absent, ambiguous, published or changed identities before
+metadata or asset validation. The REST `/releases/tags/{tag}` endpoint retrieves
+published releases and must not be used for a draft, even immediately after its
+successful creation. Initial staging, resume staging and pre-finalization use
+the same resolver; existing metadata, checksum and provenance checks still apply.
 
 On the initial tag run, a read-only job inspects packaged executables before
 either the attestation or publication job receives its protected environment.
