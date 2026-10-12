@@ -4,10 +4,10 @@ All notable user-facing changes to the VBA Tools extension are recorded here.
 The extension history is versioned independently from the bundled `vba-dev`
 CLI history.
 
-## [0.1.2] - 2026-10-12
+## [0.1.3] - 2026-10-12
 
-This is the first public VBA Tools pre-release candidate. Versions 0.1.0 and
-0.1.1 were tagged but were not published to the VS Code Marketplace or as a
+This is the first public VBA Tools pre-release candidate. Versions 0.1.0,
+0.1.1, and 0.1.2 were tagged but were not published to the VS Code Marketplace or as a
 GitHub Release. This section carries forward their unreleased capabilities.
 
 ### Added
@@ -69,6 +69,9 @@ and explicit-workbook Export retain their separate output and lifetime contracts
 - Hosted CommonModules integration verification compares the receipt with the
   filesystem-canonical project path rather than its original 8.3 alias. No
   product operation, response-time requirement, or test gate is skipped.
+- Separate real-workbook Extension Host checks from the Excel-free hosted
+  release gate. The explicit Windows Excel gate still executes native Build,
+  Publish, snapshot Build and Test diagnostics; missing Excel fails that profile.
 
 ### Requirements
 
@@ -84,12 +87,19 @@ and explicit-workbook Export retain their separate output and lifetime contracts
   affected Windows host remain under investigation ([#409], [#415]). The
   capability-probe retry does not fix their underlying cause.
 
+## [0.1.2] - 2026-10-12
+
+Unpublished release attempt. The protected tag remains at `aa4a2e5`; hosted
+verification attempted real Excel fixture creation on the Excel-free runner
+and failed before artifact creation or Marketplace publication. Its capabilities
+and source-workbook migration notes are carried forward in 0.1.3 above.
+
 ## [0.1.1] - 2026-10-10
 
 Unpublished release attempt. The protected tag remains at `bafe1c4`; hosted
 verification failed on a test-only short-path comparison before artifact
 creation or Marketplace publication. Its capabilities and source-workbook
-migration notes are carried forward in 0.1.2 above.
+migration notes are carried forward in 0.1.3 above.
 
 ## [0.1.0] - 2026-10-06
 

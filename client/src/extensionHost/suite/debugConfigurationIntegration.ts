@@ -20,10 +20,14 @@ import {
   useVbaDebugConfigurationObserverForTest
 } from '../../vscodeDebugIntegration';
 import type { VbaDebugConfiguration } from '../../vscodeDebugConfiguration';
+import { VbaDevSessionResolver } from '../../devtool';
 
 export async function runDebugConfigurationIntegrationTests(): Promise<void> {
   const fixtureRoot = process.env.VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT;
   assert.ok(fixtureRoot, 'The debug configuration fixture root must be provided.');
+  const extensionRoot = path.resolve(__dirname, '..', '..', '..', '..');
+  const resolver = new VbaDevSessionResolver({ extensionRoot });
+  const activeWindowsCodePage = await resolver.readActiveWindowsCodePage();
   const sourcePath = path.join(fixtureRoot, 'src', 'Book1', 'DebugModule.bas');
   const encodedSourcePath = path.join(fixtureRoot, 'src', 'Book1', 'EncodedModule.bas');
   const outsidePath = path.join(fixtureRoot, 'outside', 'Outside.bas');
@@ -127,7 +131,10 @@ export async function runDebugConfigurationIntegrationTests(): Promise<void> {
       fileURLToPath(encodedSource.sourceUri!).toLowerCase(),
       encodedSourcePath.toLowerCase()
     );
-    assert.equal(encodedSource.encoding, 'windows-932');
+    // Clean BOMless sources use the companion's active Windows code page, not
+    // the Japanese locale of the machine that originally authored this fixture.
+    assert.equal(encodedSource.encoding,
+      activeWindowsCodePage === 65001 ? 'utf8' : `windows-${activeWindowsCodePage}`);
     assert.deepEqual(
       Buffer.from(encodedSource.contentBase64, 'base64'),
       savedEncodedSourceBytes

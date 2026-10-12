@@ -12,7 +12,7 @@ import {
 } from './diagnosticVerification.mjs';
 
 test('diagnostic verification continues independent stages after a failure and retains both outcomes', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-')));
   try {
     const observed = [];
     const result = await runDiagnosticVerification({
@@ -48,7 +48,7 @@ test('diagnostic verification continues independent stages after a failure and r
 });
 
 test('explicit release-gate mode runs the exact standard Windows Excel script once with a local run identity', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-gate-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-gate-test-')));
   try {
     const observed = [];
     const result = await runDiagnosticVerification({
@@ -81,7 +81,7 @@ test('explicit release-gate mode runs the exact standard Windows Excel script on
 });
 
 test('a failed standard Windows Excel release gate retains bounded evidence without a release-gate success claim', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-gate-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-gate-test-')));
   try {
     const result = await runDiagnosticVerification({
       root,
@@ -107,7 +107,7 @@ test('a failed standard Windows Excel release gate retains bounded evidence with
 });
 
 test('the standard Windows Excel gate cannot be smuggled into a diagnostic script list', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-gate-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-gate-test-')));
   try {
     await assert.rejects(runDiagnosticVerification({
       root,
@@ -142,7 +142,7 @@ test('CLI parsing makes standard gate and exact native Test build dump target ex
 });
 
 test('release-gate mode opts only its npm child into the selected native Test build dump phase', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-gate-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-gate-test-')));
   try {
     let childEnv;
     const previousTarget = process.env.VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET;
@@ -168,7 +168,7 @@ test('release-gate mode opts only its npm child into the selected native Test bu
 });
 
 test('diagnostic profiles do not inherit an ambient native Test build dump target', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-')));
   const previousTarget = process.env.VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET;
   process.env.VBA_TOOLS_NATIVE_TEST_BUILD_DUMP_TARGET = 'invalid';
   try {
@@ -194,7 +194,7 @@ test('diagnostic profiles do not inherit an ambient native Test build dump targe
 });
 
 test('release-gate capture does not propagate ambient .NET dump controls to every test child', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-gate-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-gate-test-')));
   const names = ['DOTNET_DbgEnableMiniDump', 'DOTNET_DbgMiniDumpType', 'DOTNET_DbgMiniDumpName'];
   const previous = new Map(names.map((name) => [name, process.env[name]]));
   for (const name of names) process.env[name] = 'ambient-unsafe-value';
@@ -224,7 +224,7 @@ test('release-gate capture does not propagate ambient .NET dump controls to ever
 });
 
 test('diagnostic verification retains a spawn failure and still runs a later stage', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-')));
   try {
     const observed = [];
     const result = await runDiagnosticVerification({
@@ -259,7 +259,7 @@ test('diagnostic profile explicitly distinguishes omitted Excel stage from the W
 });
 
 test('diagnostic verification bounds a log without converting the stage into a pass', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-')));
   try {
     const result = await runDiagnosticVerification({
       root,
@@ -285,7 +285,7 @@ test('diagnostic verification bounds a log without converting the stage into a p
 });
 
 test('diagnostic log retains ordered tail across multiple chunks without truncating a short stream', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-')));
   try {
     const run = async (chunks) => runDiagnosticVerification({
       root,
@@ -311,7 +311,7 @@ test('diagnostic log retains ordered tail across multiple chunks without truncat
 });
 
 test('Windows Excel diagnostic profile includes the native stage without treating it as a release gate', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-')));
   try {
     const observed = [];
     const result = await runDiagnosticVerification({
@@ -325,7 +325,8 @@ test('Windows Excel diagnostic profile includes the native stage without treatin
       }
     });
     assert.equal(result.exitCode, 0);
-    assert.deepEqual(observed.slice(-5), [
+    assert.deepEqual(observed.slice(-6), [
+      'test:extension-host:windows-excel',
       'build:devtool',
       'build:language-server',
       'test:devtool:windows-excel',
@@ -341,7 +342,7 @@ test('Windows Excel diagnostic profile includes the native stage without treatin
 });
 
 test('a failed native prerequisite skips only dependent stages and still runs independent work', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-')));
   try {
     const observed = [];
     const result = await runDiagnosticVerification({
@@ -365,7 +366,7 @@ test('a failed native prerequisite skips only dependent stages and still runs in
 });
 
 test('diagnostic verification rejects a Windows Excel profile on a non-Windows host', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-')));
   try {
     await assert.rejects(runDiagnosticVerification({
       root,
@@ -380,7 +381,7 @@ test('diagnostic verification rejects a Windows Excel profile on a non-Windows h
 });
 
 test('a log-open failure records an incomplete stage and does not suppress later independent stages', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-')));
   try {
     let opens = 0;
     const observed = [];
@@ -412,7 +413,7 @@ test('a log-open failure records an incomplete stage and does not suppress later
 });
 
 test('a second log-open failure names only the log file that was created', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-test-')));
   try {
     let opens = 0;
     const result = await runDiagnosticVerification({
@@ -435,7 +436,7 @@ test('a second log-open failure names only the log file that was created', async
 });
 
 test('dirty content fingerprints change when tracked or untracked bytes change', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-identity-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-identity-test-')));
   try {
     await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '0.1.0', packageManager: 'npm@11.19.1' }));
     await fs.writeFile(path.join(root, 'package-lock.json'), '{}');
@@ -470,8 +471,8 @@ test('dirty content fingerprints change when tracked or untracked bytes change',
 });
 
 test('diagnostic verification rejects a linked evidence root without writing outside the checkout', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-link-test-'));
-  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-outside-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-link-test-')));
+  const outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-diagnostic-outside-test-')));
   try {
     await fs.symlink(outside, path.join(root, '.tmp'), 'junction');
     await assert.rejects(runDiagnosticVerification({

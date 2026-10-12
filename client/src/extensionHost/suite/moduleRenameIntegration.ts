@@ -17,6 +17,10 @@ import { useVbaRenameWarningHostForTest } from '../../rename';
 import { withRenameFailureDiagnostics } from '../renameFailureDiagnostics';
 
 export async function runModuleRenameIntegrationTests(): Promise<void> {
+  await withRenameFailureDiagnostics('module Rename suite', runModuleRenameScenarios);
+}
+
+async function runModuleRenameScenarios(): Promise<void> {
   const fixtureRoot = process.env.VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT;
   assert.ok(fixtureRoot, 'The module Rename fixture root must be provided.');
   const outsideRoot = path.join(fixtureRoot, 'outside');
@@ -588,8 +592,22 @@ async function verifyMismatchedOldFormAndSidecarCasing(
 }
 
 async function verifyProductionMismatchedOldFormAndSidecarCasing(
-  outsideRoot: string
+  parentRoot: string
 ): Promise<void> {
+  // The preceding adapter-only Undo scenario can still have queued filesystem
+  // callbacks after disposal. Give the production adapter its own source unit.
+  const outsideRoot = path.join(parentRoot, 'production-mixed-case');
+  await workspace.fs.createDirectory(Uri.file(outsideRoot));
+  await workspace.fs.writeFile(Uri.file(path.join(outsideRoot, 'MixedCaseForm.frm')), Buffer.from([
+    'VERSION 5.00',
+    'Begin VB.UserForm mIxEdCaSeFoRm',
+    '   OleObjectBlob = "mixedcaseform.frx":0000',
+    'End',
+    'Attribute VB_Name = "mIxEdCaSeFoRm"',
+    ''
+  ].join('\r\n'), 'utf8'));
+  await workspace.fs.writeFile(Uri.file(path.join(outsideRoot, 'mixedcaseform.frx')),
+    Uint8Array.from([0x04, 0x05, 0x06, 0x07]));
   const sourcePath = path.join(outsideRoot, 'MixedCaseForm.frm');
   const sourceUri = Uri.file(sourcePath);
   const sourceDocument = await workspace.openTextDocument(sourceUri);
