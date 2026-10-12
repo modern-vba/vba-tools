@@ -41,6 +41,7 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
     private readonly CancellationTokenSource _operations = new();
     private readonly Dictionary<int, TaskCompletionSource<JsonElement>> _pendingResponses = [];
     private readonly List<JsonElement> _transcript = [];
+    private readonly List<long> _transcriptRecordedAt = [];
     private readonly Dictionary<string, int> _readCursors = new(StringComparer.Ordinal);
     private readonly MemoryStream? _stderrEvidence;
     private readonly Queue<string> _stderrTail = new();
@@ -881,6 +882,7 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
                 lock (_gate)
                 {
                     _transcript.Add(message);
+                    _transcriptRecordedAt.Add(Stopwatch.GetTimestamp());
                     if (message.TryGetProperty("id", out var idElement)
                         && idElement.ValueKind == JsonValueKind.Number
                         && idElement.TryGetInt32(out var id)
@@ -1113,11 +1115,10 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         int? afterCheckpoint,
         CancellationToken cancellationToken)
     {
-        using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        wait.CancelAfter(timeout);
-        while (true)
+        var started = Stopwatch.GetTimestamp();
+        var initialCheckpoint = TranscriptCheckpoint;
+        TranscriptMessageWait.Snapshot Read()
         {
-            Task changed;
             lock (_gate)
             {
                 var savedCursor = _readCursors.GetValueOrDefault(cursorKey);
@@ -1133,7 +1134,7 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
                     }
 
                     _readCursors[cursorKey] = index + 1;
-                    return message;
+                    return new(message, Task.CompletedTask);
                 }
 
                 if (_sessionFailure is not null)
@@ -1141,20 +1142,25 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
                     throw CreateSessionException("The language-server session failed.", _sessionFailure);
                 }
 
-                changed = _transcriptChanged.Task;
+                return new(null, _transcriptChanged.Task);
             }
+        }
 
-            try
-            {
-                await changed.WaitAsync(wait.Token);
-            }
-            catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
-            {
-                var failure = CreateSessionException(
-                    "Timed out waiting for a language-server message.",
-                    exception);
-                throw new TimeoutException(failure.Message, exception);
-            }
+        try
+        {
+            return await TranscriptMessageWait.WaitAsync(Read, timeout, cancellationToken);
+        }
+        catch (TranscriptMessageWait.WatchdogExpiredException exception)
+        {
+            var failure = CreateSessionException(
+                $"Timed out waiting for a language-server message: cursor={cursorKey}, " +
+                $"afterCheckpoint={afterCheckpoint?.ToString() ?? "none"}, " +
+                $"initialCheckpoint={initialCheckpoint}, currentCheckpoint={TranscriptCheckpoint}, " +
+                $"watchdogMs={timeout.TotalMilliseconds:F1}, " +
+                $"elapsedMs={Stopwatch.GetElapsedTime(started).TotalMilliseconds:F1}.",
+                exception.InnerException ?? exception,
+                started);
+            throw new TimeoutException(failure.Message, exception.InnerException ?? exception);
         }
     }
 
@@ -1251,7 +1257,8 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         long Revision,
         int? ClientVersion);
 
-    private InvalidOperationException CreateSessionException(string message, Exception? innerException = null)
+    private InvalidOperationException CreateSessionException(
+        string message, Exception? innerException = null, long? waitStarted = null)
     {
         string stderr;
         string transcript;
@@ -1262,7 +1269,10 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
                 : string.Empty;
             transcript = string.Join(
                 Environment.NewLine,
-                _transcript.TakeLast(10).Select(item => item.GetRawText()));
+                _transcript.Select((item, index) => (item, index)).TakeLast(10).Select(entry =>
+                    waitStarted is { } origin
+                        ? $"[transcriptRecordedAfterWaitStartMs={Stopwatch.GetElapsedTime(origin, _transcriptRecordedAt[entry.index]).TotalMilliseconds:F1}] {entry.item.GetRawText()}"
+                        : entry.item.GetRawText()));
         }
 
         var details = new StringBuilder(message);
