@@ -161,7 +161,7 @@ test('annotated release tag binds reviewed versions channel and Windows evidence
   });
 });
 
-for (const initialVersion of ['0.1.1', '0.1.2', '0.1.3']) {
+for (const initialVersion of ['0.1.1', '0.1.2', '0.1.3', '0.1.4']) {
   test(`initial ${initialVersion} tag rejects a skipped clean Windows smoke`, () => {
     const tagObject = validTagObject
       .replaceAll('0.1.0', initialVersion)
@@ -334,6 +334,99 @@ test('Marketplace Contributor probe reads profile and role receipts without publ
     '--profile-json', profilePath,
     '--role-assignments-json', assignmentsPath
   ]), { publisherRole: 'Contributor' });
+});
+
+test('draft lookup finds the exact tag on a later page and reads by release ID', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-draft-lookup-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const releaseJson = path.join(root, 'draft.json');
+  const tag = 'vba-tools-v0.1.3';
+  const release = { id: 410561869, tag_name: tag, draft: true, prerelease: true, assets: [] };
+  const calls = [];
+  const runCommand = async (file, args) => {
+    calls.push([file, args]);
+    assert.equal(file, 'gh');
+    if (args.includes('--paginate')) {
+      assert.deepEqual(args, ['api', '--paginate', '--slurp',
+        'repos/modern-vba/vba-tools/releases?per_page=100']);
+      return { stdout: JSON.stringify([[{ id: 1, tag_name: 'vba-tools-v0.1.2', draft: false }], [release]]) };
+    }
+    assert.deepEqual(args, ['api', 'repos/modern-vba/vba-tools/releases/410561869']);
+    return { stdout: JSON.stringify(release) };
+  };
+  assert.deepEqual(await runReleaseWorkflowCommand([
+    'resolve-draft', '--tag', tag, '--release-json', releaseJson
+  ], { root, repository: 'modern-vba/vba-tools', runCommand }), { releaseId: release.id });
+  assert.deepEqual(JSON.parse(await fs.readFile(releaseJson, 'utf8')), release);
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(([, args]) => !args.some((arg) => arg.includes('/releases/tags/'))));
+});
+
+test('draft lookup fails closed on absent ambiguous published or malformed release lists', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-draft-rejection-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const releaseJson = path.join(root, 'draft.json');
+  const tag = 'vba-tools-v0.1.3';
+  const release = { id: 410561869, tag_name: tag, draft: true };
+  const invalidLists = [[], [[]], [[{ ...release, tag_name: `${tag}-other` }]],
+    [[release], [release]], [[release, { ...release, id: 2, draft: false }]],
+    [[{ ...release, draft: false }]], [[{ ...release, id: -1 }]],
+    [[{ ...release, id: '410561869' }]], {}, [null]];
+  for (const pages of invalidLists) {
+    let calls = 0;
+    await assert.rejects(() => runReleaseWorkflowCommand([
+      'resolve-draft', '--tag', tag, '--release-json', releaseJson
+    ], { root, repository: 'modern-vba/vba-tools', runCommand: async () => {
+      calls += 1;
+      assert.equal(calls, 1, 'An invalid list must not resolve a release ID.');
+      return { stdout: JSON.stringify(pages) };
+    } }), /release list|unique.*draft|release ID/i);
+    await assert.rejects(() => fs.access(releaseJson), { code: 'ENOENT' });
+  }
+});
+
+test('draft lookup rejects a changed ID tag or publication state without writing metadata', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-draft-race-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const releaseJson = path.join(root, 'draft.json');
+  const tag = 'vba-tools-v0.1.3';
+  const release = { id: 410561869, tag_name: tag, draft: true };
+  for (const detail of [{ ...release, id: 2 }, { ...release, tag_name: `${tag}-other` },
+    { ...release, draft: false }]) {
+    await assert.rejects(() => runReleaseWorkflowCommand([
+      'resolve-draft', '--tag', tag, '--release-json', releaseJson
+    ], { root, repository: 'modern-vba/vba-tools', runCommand: async (_file, args) => ({
+      stdout: JSON.stringify(args.includes('--paginate') ? [[release]] : detail)
+    }) }), /draft.*changed/i);
+    await assert.rejects(() => fs.access(releaseJson), { code: 'ENOENT' });
+  }
+  const apiError = new Error('API lookup failed');
+  await assert.rejects(() => runReleaseWorkflowCommand([
+    'resolve-draft', '--tag', tag, '--release-json', releaseJson
+  ], { root, repository: 'modern-vba/vba-tools', runCommand: async () => { throw apiError; } }),
+  (error) => error === apiError);
+});
+
+test('all privileged draft stages use the draft-aware resolver, never published-tag lookup', async () => {
+  const workflow = yaml.load(await fs.readFile('.github/workflows/release.yml', 'utf8'));
+  for (const name of ['stage', 'resume_stage', 'finalize']) {
+    const runs = workflow.jobs[name].steps.map((step) => step.run ?? '').join('\n');
+    assert.match(runs, /releaseWorkflow\.mjs resolve-draft/);
+    assert.match(runs, /--tag \$env:TAG_NAME/);
+    assert.doesNotMatch(runs, /releases\/tags\//);
+    assert.ok(runs.indexOf('resolve-draft') < runs.indexOf('validate-draft'));
+    assert.ok(runs.indexOf('resolve-draft') < runs.indexOf('gh release download'));
+  }
+});
+
+test('draft lookup rejects unsupported repository and tag selectors before API access', async () => {
+  for (const [repository, tag] of [['other/repository', 'vba-tools-v0.1.3'],
+    ['modern-vba/vba-tools', '../other']]) {
+    await assert.rejects(() => runReleaseWorkflowCommand([
+      'resolve-draft', '--tag', tag, '--release-json', '.tmp/invalid-draft-selector.json'
+    ], { repository, runCommand: () => { throw new Error('No API access allowed.'); } }),
+    /canonical release tag/i);
+  }
 });
 
 test('resume accepts only the existing matching draft with the exact uploaded asset set', () => {
