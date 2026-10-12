@@ -390,7 +390,7 @@ test('release tag records reviewed commit and Windows evidence in a local annota
 });
 
 test('initial release tag fails closed on incomplete evidence or an unreviewed commit', async (t) => {
-  for (const initialVersion of ['0.1.1', '0.1.2', '0.1.3']) {
+  for (const initialVersion of ['0.1.1', '0.1.2', '0.1.3', '0.1.4']) {
     await t.test(`initial ${initialVersion} requires clean Windows smoke`, async (subtest) => {
       const { root } = await createPreparedReleaseCommit(subtest);
       const manifest = await readJson(root, 'package.json');

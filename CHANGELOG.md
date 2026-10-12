@@ -4,10 +4,10 @@ All notable user-facing changes to the VBA Tools extension are recorded here.
 The extension history is versioned independently from the bundled `vba-dev`
 CLI history.
 
-## [0.1.3] - 2026-10-12
+## [0.1.4] - 2026-10-12
 
 This is the first public VBA Tools pre-release candidate. Versions 0.1.0,
-0.1.1, and 0.1.2 were tagged but were not published to the VS Code Marketplace or as a
+0.1.1, 0.1.2, and 0.1.3 were tagged but were not published to the VS Code Marketplace or as a
 GitHub Release. This section carries forward their unreleased capabilities.
 
 ### Added
@@ -61,6 +61,10 @@ and explicit-workbook Export retain their separate output and lifetime contracts
 
 ### Fixed
 
+- Release automation resolves unpublished drafts through paginated exact-tag
+  listings and Release ID lookup instead of the published-release tag endpoint.
+  Initial staging, resume and pre-finalization retain fail-closed identity,
+  checksum and provenance checks; missing, ambiguous or published drafts stop.
 - CommonModules Add and Update no longer treat a completed result as untrusted
   when the selected project and CLI receipt use equivalent Windows short and
   long paths. Side-effecting operations are not retried.
@@ -87,19 +91,29 @@ and explicit-workbook Export retain their separate output and lifetime contracts
   affected Windows host remain under investigation ([#409], [#415]). The
   capability-probe retry does not fix their underlying cause.
 
+## [0.1.3] - 2026-10-12
+
+Unpublished release attempt. The protected tag remains at `13eb153`; hosted
+verification, artifact assembly, executable inspection and provenance creation
+passed. A draft with all three assets was created, but its subsequent lookup
+used the published-release tag endpoint and failed with HTTP 404. Marketplace
+publication did not run; the draft and attested artifacts are retained unchanged.
+Its capabilities and source-workbook migration notes are carried forward in
+0.1.4 above.
+
 ## [0.1.2] - 2026-10-12
 
 Unpublished release attempt. The protected tag remains at `aa4a2e5`; hosted
 verification attempted real Excel fixture creation on the Excel-free runner
 and failed before artifact creation or Marketplace publication. Its capabilities
-and source-workbook migration notes are carried forward in 0.1.3 above.
+and source-workbook migration notes are carried forward in 0.1.4 above.
 
 ## [0.1.1] - 2026-10-10
 
 Unpublished release attempt. The protected tag remains at `bafe1c4`; hosted
 verification failed on a test-only short-path comparison before artifact
 creation or Marketplace publication. Its capabilities and source-workbook
-migration notes are carried forward in 0.1.3 above.
+migration notes are carried forward in 0.1.4 above.
 
 ## [0.1.0] - 2026-10-06
 

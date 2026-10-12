@@ -94,7 +94,7 @@ export function validateAnnotatedReleaseTag({
   if (cleanWindowsSmoke !== 'pass' && cleanWindowsSmoke !== 'not-required') {
     throw new Error('Clean Windows smoke must be pass or not-required.');
   }
-  if (['0.1.0', '0.1.1', '0.1.2', '0.1.3'].includes(extensionVersion) &&
+  if (['0.1.0', '0.1.1', '0.1.2', '0.1.3', '0.1.4'].includes(extensionVersion) &&
       cleanWindowsSmoke !== 'pass') {
     throw new Error(`The initial ${extensionVersion} release requires Clean Windows smoke to pass.`);
   }
@@ -495,6 +495,36 @@ export async function runReleaseWorkflowCommand(
       environment,
       deploymentPolicies
     });
+  } else if (parsed.command === 'resolve-draft') {
+    if (repository !== 'modern-vba/vba-tools' || !tagPattern.test(parsed.tag)) {
+      throw new Error('Draft lookup requires modern-vba/vba-tools and a canonical release tag.');
+    }
+    // The tag-name REST endpoint returns published releases, not drafts.
+    const prefix = `repos/${repository}/releases`;
+    const pages = JSON.parse((await runCommand('gh', [
+      'api', '--paginate', '--slurp', `${prefix}?per_page=100`
+    ], root)).stdout);
+    if (!Array.isArray(pages) || !pages.every((page) => Array.isArray(page) &&
+        page.every((release) => release && typeof release === 'object'))) {
+      throw new Error('Draft release list must contain complete paginated release arrays.');
+    }
+    const matches = pages.flat().filter((release) => release.tag_name === parsed.tag);
+    if (matches.length !== 1 || matches[0].draft !== true) {
+      throw new Error('Draft lookup requires a unique exact-tag draft release.');
+    }
+    const releaseId = matches[0].id;
+    if (!Number.isSafeInteger(releaseId) || releaseId <= 0) {
+      throw new Error('Draft lookup requires a valid release ID.');
+    }
+    const release = JSON.parse((await runCommand('gh', [
+      'api', `${prefix}/${releaseId}`
+    ], root)).stdout);
+    if (release?.id !== releaseId || release.tag_name !== parsed.tag || release.draft !== true) {
+      throw new Error('Draft identity or publication state changed during lookup.');
+    }
+    await fs.mkdir(path.dirname(parsed.releaseJson), { recursive: true });
+    await fs.writeFile(parsed.releaseJson, `${JSON.stringify(release, null, 2)}\n`, 'utf8');
+    result = { releaseId };
   } else if (parsed.command === 'validate-tag') {
     const tagRef = `refs/tags/${parsed.tag}`;
     const [{ stdout: tagType }, { stdout: tagObject }] = await Promise.all([
@@ -598,6 +628,10 @@ function parseWorkflowCommandArguments(args) {
   const command = args[0];
   const commandOptions = {
     'validate-protections': new Map(),
+    'resolve-draft': new Map([
+      ['--tag', 'tag'],
+      ['--release-json', 'releaseJson']
+    ]),
     'validate-tag': new Map([
       ['--tag', 'tag'],
       ['--metadata', 'metadata'],
