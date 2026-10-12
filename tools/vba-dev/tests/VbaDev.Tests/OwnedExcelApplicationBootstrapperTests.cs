@@ -111,7 +111,17 @@ public sealed class OwnedExcelApplicationBootstrapperTests
     }
 
     [Fact]
-    public async Task StartupDrainRetainsTheCheckpointTimeoutAndLaterBindingFailure()
+    public Task StartupDrainRetainsTheCheckpointTimeoutAndLaterBindingFailure()
+        => AssertStartupDrainRetainsTheCheckpointTimeoutAndLaterBindingFailureAsync(
+            TimeSpan.Zero);
+
+    [Fact]
+    public Task StartupDrainRetainsTheCheckpointTimeoutAndLaterBindingFailureAfterDelayedPreparation()
+        => AssertStartupDrainRetainsTheCheckpointTimeoutAndLaterBindingFailureAsync(
+            TimeSpan.FromSeconds(2));
+
+    private static async Task AssertStartupDrainRetainsTheCheckpointTimeoutAndLaterBindingFailureAsync(
+        TimeSpan preparationDelay)
     {
         var bindingError = new InvalidOperationException("binding failed after fixture release");
         var process = new FakeDebugOwnedProcess(425, new DateTime(2026, 9, 22, 9, 1, 0, DateTimeKind.Local));
@@ -132,13 +142,20 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             CreateNoExposureIsolationFactory(),
             static _ => { });
         var startup = Task.Factory.StartNew(
-            () => bootstrapper.Start(controller, CancellationToken.None),
+            () =>
+            {
+                // Model slow fixture preparation before any owned Excel launch.
+                // This delay is a stimulus, not an ordering barrier or product SLA.
+                Task.Delay(preparationDelay).GetAwaiter().GetResult();
+                return bootstrapper.Start(controller, CancellationToken.None);
+            },
             CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         Exception? primaryFailure = null;
         Exception? observed = null;
         try
         {
-            await entered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            // Fixture readiness is a hang guard, not the timeout under test.
+            await WaitForStartupCheckpointAsync(entered.Task, startup, TimeSpan.FromSeconds(5));
             primaryFailure = await Record.ExceptionAsync(
                 () => WaitForStartupCheckpointAsync(missingCheckpoint.Task, startup));
         }
@@ -1331,13 +1348,15 @@ public sealed class OwnedExcelApplicationBootstrapperTests
         await operation.ConfigureAwait(false);
     }
 
-    private static async Task WaitForStartupCheckpointAsync(Task checkpoint, Task startup)
+    private static async Task WaitForStartupCheckpointAsync(
+        Task checkpoint, Task startup, TimeSpan? watchdogTimeout = null)
     {
+        var timeout = watchdogTimeout ?? TimeSpan.FromSeconds(1);
         var started = Stopwatch.GetTimestamp();
         var initialGcPause = GC.GetTotalPauseDuration();
         try
         {
-            await Task.WhenAny(checkpoint, startup).WaitAsync(TimeSpan.FromSeconds(1))
+            await Task.WhenAny(checkpoint, startup).WaitAsync(timeout)
                 .ConfigureAwait(false);
         }
         catch (TimeoutException failure)
@@ -1348,6 +1367,7 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             {
                 throw new TimeoutException(
                     $"Startup checkpoint was not observed: startup={startup.Status}, checkpoint={checkpoint.Status}, " +
+                    $"watchdogMs={timeout.TotalMilliseconds:F1}, " +
                     $"elapsedMs={Stopwatch.GetElapsedTime(started).TotalMilliseconds:F1}, " +
                     $"gcPauseMs={(GC.GetTotalPauseDuration() - initialGcPause).TotalMilliseconds:F1}, " +
                     $"poolThreads={ThreadPool.ThreadCount}, pendingPoolWork={ThreadPool.PendingWorkItemCount}.",
