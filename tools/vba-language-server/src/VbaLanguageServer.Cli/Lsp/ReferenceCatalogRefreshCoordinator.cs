@@ -471,27 +471,16 @@ internal sealed class ReferenceCatalogRefreshCoordinator
     /// <summary>
     /// Waits until all automatic lifecycle work admitted so far has completed.
     /// </summary>
-    public async Task WaitForIdleAsync()
-    {
-        while (true)
+    public Task WaitForIdleAsync()
+        => ReferenceCatalogIdleWait.WaitAsync(() =>
         {
-            Task[] tasks;
-            Task mailboxIdle;
             lock (lifecycleGate)
             {
-                tasks = backgroundTasks.ToArray();
-                mailboxIdle = lifecycleMailbox?.WaitForIdleAsync()
-                    ?? Task.CompletedTask;
+                return (
+                    backgroundTasks.ToArray(),
+                    lifecycleMailbox?.WaitForIdleAsync() ?? Task.CompletedTask);
             }
-
-            if (tasks.Length == 0 && mailboxIdle.IsCompletedSuccessfully)
-            {
-                return;
-            }
-
-            await Task.WhenAll(tasks.Append(mailboxIdle));
-        }
-    }
+        });
 
     /// <summary>
     /// Cancels and observes all automatic lifecycle work.
