@@ -29,6 +29,7 @@ export const diagnosticReleaseScripts = Object.freeze([
 ]);
 
 const windowsExcelScripts = Object.freeze([
+  'test:extension-host:windows-excel',
   'build:devtool',
   'build:language-server',
   'test:devtool:windows-excel',

@@ -38,6 +38,26 @@ public sealed class SourceIdentityTests
     }
 
     [Fact]
+    public void Native_short_name_paths_bridge_through_normalized_URIs_without_expanding_raw_URI_aliases()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var root = System.IO.Path.GetPathRoot(
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles))!;
+        var shortPath = System.IO.Path.Combine(root, "PROGRA~1");
+        var normalizedPath = System.IO.Path.GetFullPath(shortPath);
+        Assert.True(SourceIdentity.TryFromPath(shortPath, out var fromPath));
+        Assert.True(SourceIdentity.TryFromUri(new Uri(normalizedPath).AbsoluteUri, out var fromNormalizedUri));
+        Assert.Equal(fromPath, fromNormalizedUri);
+
+        // ADR 0049 deliberately keeps URI admission lexical. A native path must
+        // be normalized before it is presented to another owner as a file URI.
+        Assert.True(SourceIdentity.TryFromUri("file:///" + shortPath.Replace('\\', '/'), out var rawUri));
+        Assert.Equal(shortPath, rawUri.Path);
+        if (!string.Equals(shortPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
+            Assert.NotEqual(fromPath, rawUri);
+    }
+
+    [Fact]
     public void Invalid_UTF16_and_null_URI_inputs_return_a_default_identity()
     {
         foreach (var suffix in new[] { new string('\ud800', 1), new string('\udfff', 1) })

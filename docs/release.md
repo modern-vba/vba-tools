@@ -12,8 +12,8 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
 - Tag extension releases as `vba-tools-vX.Y.Z`.
 - Reserve `vba-dev-vX.Y.Z` tags for independently versioned standalone CLI
   releases so extension and CLI tag namespaces cannot collide.
-- Publish `0.1.2` as the initial Marketplace pre-release. Versions `0.1.0` and
-  `0.1.1` were tagged, but their workflows failed before artifact creation and
+- Publish `0.1.3` as the initial Marketplace pre-release. Versions `0.1.0`,
+  `0.1.1`, and `0.1.2` were tagged, but their workflows failed before artifact creation and
   neither a GitHub Release nor a Marketplace version was published. Never move
   or reuse those tags.
   Use odd minor versions for pre-release channels and even minor versions for
@@ -44,9 +44,9 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
   Generate later version sections from Conventional Commits since the previous
   tag in the matching namespace, then edit known limitations, requirements, and
   other user-facing context in the release preparation review record.
-- Curate the first publicly available `0.1.2` changelog section as a complete
+- Curate the first publicly available `0.1.3` changelog section as a complete
   user-facing summary, including capabilities carried forward from the tagged
-  but unpublished `0.1.0` and `0.1.1`; do not dump the complete commit history.
+  but unpublished `0.1.0`, `0.1.1`, and `0.1.2`; do not dump the complete commit history.
 - Do not let `vsce publish` increment the version or create a release commit.
   Publish the already-versioned, verified VSIX with `--packagePath`.
 - Run non-Excel release verification on a standard GitHub-hosted Windows runner.
@@ -116,7 +116,7 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
 - Serialize release workflows for the repository and do not cancel an active
   release when another run is requested. A protected tag starts a new release;
   manual dispatch may only resume an existing tagged draft release.
-- The initial published `vba-tools` `0.1.2` pre-release must include the independently
+- The initial published `vba-tools` `0.1.3` pre-release must include the independently
   versioned standalone `vba-dev` Windows x64 ZIP delivered by GitHub issue #243.
 - Block the initial Marketplace release until its listing metadata and packaged
   support documents pass the Marketplace readiness checks in this runbook.
@@ -135,8 +135,8 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
 
 Before starting, decide:
 
-- the extension version, such as `0.1.2`;
-- the release tag, such as `vba-tools-v0.1.2`;
+- the extension version, such as `0.1.3`;
+- the release tag, such as `vba-tools-v0.1.3`;
 - the Marketplace channel, `pre-release` or `stable`;
 - the bundled and standalone `vba-dev` version;
 - known limitations that must appear in the GitHub Release notes;
@@ -310,6 +310,30 @@ architecture-boundary, packaging, and compatibility suites, then republishes
 all three bundled executables and
 verifies the planned VSIX. It intentionally does not opt in to real Excel
 automation; the real-Excel cross-product case is skipped.
+
+The ordinary `test:extension-host` profile retains editor, diagnostics-reporter,
+snapshot, navigation, and controlled companion/lifecycle coverage without
+creating a real workbook. The native Build, Publish, snapshot Build and Test
+Problems suites use real Excel to create their fixtures and run only through
+`npm run test:extension-host:windows-excel`. This explicit profile does not
+detect or silently skip missing Excel: native prerequisite failures fail the
+profile. `test:windows-excel-integration` includes it before the serialized
+C# and cross-product Excel suites, so `verify:release:windows-excel` runs both
+the ordinary hosted surface and all native checks. The opt-in diagnostic
+Windows Excel profile also includes this independent stage.
+
+Release preparation branches named `codex/issue-246-release-*` also run this
+ordinary gate in the `Verify release preparation` pull-request workflow on
+`windows-2025`, before tag authorization. This validation has only repository
+read permission, no protected environment and no publishing credentials;
+it neither creates artifacts for publication nor starts a release.
+
+Hosted test fixtures use a canonical temporary workspace path before creating
+editor file URIs. This avoids mixing native Windows short-name normalization
+with the deliberately lexical source-URI admission contract in ADR 0049.
+Encoding tests read the companion's active code page, or use a BOM-selected
+invalid Unicode input when rejection is the behavior under test; they must not
+assume that a hosted runner uses Japanese ACP 932.
 
 Extension Host tests use the reviewed stable VS Code 1.139.1 release by default.
 The extension's minimum supported version remains 1.137.0; the test runtime pin
@@ -595,8 +619,8 @@ Clean-Windows-Smoke: pass
 
 The clean Windows smoke value may be `not-required` only when the runbook allows
 the smoke to be skipped, and the tag message must then include a concise
-`Clean-Windows-Smoke-Reason` trailer. The initial published `0.1.2` release,
-as well as the already-tagged `0.1.0` and `0.1.1` attempts, requires `pass` for
+`Clean-Windows-Smoke-Reason` trailer. The initial published `0.1.3` release,
+as well as the already-tagged `0.1.0`, `0.1.1`, and `0.1.2` attempts, requires `pass` for
 both checks.
 
 The tag-triggered workflow must reject a lightweight tag, an unrecognized

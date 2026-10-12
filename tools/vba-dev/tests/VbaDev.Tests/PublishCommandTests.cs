@@ -359,7 +359,11 @@ public sealed class PublishCommandTests
         var sourcePath = Path.Combine(sourceDirectory, "Broken.bas");
         File.WriteAllBytes(
             sourcePath,
-            Encoding.ASCII.GetBytes("'#ExcludePublish\r\n").Concat(new byte[] { 0x81 }).ToArray());
+            // An incomplete CP932 lead byte is valid on some other Windows code
+            // pages. Pin BOM-selected UTF-8 so this is invalid on every locale.
+            new byte[] { 0xef, 0xbb, 0xbf }
+                .Concat(Encoding.ASCII.GetBytes("'#ExcludePublish\r\n"))
+                .Concat(new byte[] { 0x81 }).ToArray());
         var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,

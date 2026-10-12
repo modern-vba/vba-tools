@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import { Buffer } from 'node:buffer';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -13,8 +13,10 @@ import {
 import { runRestrictedModeExtensionHostTests } from './restrictedModeExtensionHost';
 import { runWithExtensionHostCleanup } from './testRunCleanup';
 import { resolveExtensionHostFailureLogRoot, saveExtensionHostFailureLogs } from './testRunFailureLogs';
+import { parseExtensionHostTestProfile } from './integrationSuites';
 
 async function main(): Promise<void> {
+  const profile = parseExtensionHostTestProfile(process.argv.slice(2));
   const extensionDevelopmentPath = path.resolve(__dirname, '..', '..', '..');
   const extensionTestsPath = path.resolve(__dirname, 'suite', 'index.js');
   const hostEventCatalogTestsPath = path.resolve(
@@ -61,11 +63,13 @@ async function main(): Promise<void> {
       launchArgs: createExtensionHostLaunchArgs(userDataPath, fixtureRoot),
       extensionTestsEnv: {
         VBA_TOOLS_EXTENSION_HOST_TEST: '1',
+        VBA_TOOLS_EXTENSION_HOST_TEST_PROFILE: profile,
         VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT: fixtureRoot,
         VBA_TOOLS_EXTENSION_HOST_MUTATION_FIXTURE_ROOT: mutationFixtureRoot,
         VBA_TOOLS_INTRINSIC_HOST_EVENT_CATALOG_TEST_MODE: 'controlled-trusted'
       }
     });
+    if (profile === 'windows-excel') return;
     await runTests({
       extensionDevelopmentPath,
       extensionTestsPath: hostEventCatalogTestsPath,
@@ -166,10 +170,10 @@ async function createHostEventCatalogFixture(): Promise<string> {
 }
 
 async function createDebugConfigurationFixture(): Promise<string> {
-  const fixtureRoot = await mkdtemp(path.join(
+  const fixtureRoot = await realpath(await mkdtemp(path.join(
     tmpdir(),
     'vba-tools-debug-fixture-'
-  ));
+  )));
   const sourceSetPath = path.join(fixtureRoot, 'src', 'Book1');
   const outsidePath = path.join(fixtureRoot, 'outside');
   await mkdir(sourceSetPath, { recursive: true });
