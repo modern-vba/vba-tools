@@ -239,7 +239,7 @@ export async function createReleaseTag({
   if (cleanWindowsSmoke !== 'pass' && cleanWindowsSmoke !== 'not-required') {
     throw new Error('Clean Windows smoke must be pass or not-required.');
   }
-  if (['0.1.0', '0.1.1', '0.1.2', '0.1.3', '0.1.4', '0.1.5'].includes(extensionVersion) &&
+  if (['0.1.0', '0.1.1', '0.1.2', '0.1.3', '0.1.4', '0.1.5', '0.1.6'].includes(extensionVersion) &&
       cleanWindowsSmoke !== 'pass') {
     throw new Error(`The initial ${extensionVersion} release requires Clean Windows smoke to pass.`);
   }
@@ -577,17 +577,20 @@ async function writeJson(filePath, value) {
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
-function runCommandWithSpawn(file, args, cwd) {
+export function runCommandWithSpawn(file, args, cwd, spawnProcess = spawn) {
   return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { cwd, windowsHide: true });
+    const child = spawnProcess(file, args, { cwd, windowsHide: true });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.on('error', reject);
-    child.on('exit', (exitCode) => {
+    child.on('close', (exitCode, signal) => {
       if (exitCode !== 0) {
-        reject(new Error(`${file} ${args.join(' ')} exited with ${exitCode}: ${stderr}`));
+        reject(new Error(`${file} ${args.join(' ')} exited with ${exitCode}` +
+          `${signal ? ` (signal ${signal})` : ''}.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
         return;
       }
       resolve({ stdout, stderr });
