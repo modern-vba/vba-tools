@@ -4,10 +4,10 @@ All notable user-facing changes to the VBA Tools extension are recorded here.
 The extension history is versioned independently from the bundled `vba-dev`
 CLI history.
 
-## [0.1.4] - 2026-10-12
+## [0.1.5] - 2026-10-13
 
 This is the first public VBA Tools pre-release candidate. Versions 0.1.0,
-0.1.1, 0.1.2, and 0.1.3 were tagged but were not published to the VS Code Marketplace or as a
+0.1.1, 0.1.2, 0.1.3, and 0.1.4 were tagged but were not published to the VS Code Marketplace or as a
 GitHub Release. This section carries forward their unreleased capabilities.
 
 ### Added
@@ -61,6 +61,12 @@ and explicit-workbook Export retain their separate output and lifetime contracts
 
 ### Fixed
 
+- Release automation reads Marketplace JSON from stdout alone and retains
+  stderr separately. Initial lookup, visibility polling, and final verification
+  use the same direct pinned-vsce invocation; npm notices cannot become JSON.
+  Failed commands, malformed or incomplete responses, and identity mismatches
+  remain errors rather than permission to publish. Only the pinned vsce's exact
+  missing-extension token is treated as definitive absence.
 - Release automation resolves unpublished drafts through paginated exact-tag
   listings and Release ID lookup instead of the published-release tag endpoint.
   Initial staging, resume and pre-finalization retain fail-closed identity,
@@ -90,6 +96,21 @@ and explicit-workbook Export retain their separate output and lifetime contracts
 - Intermittent source-analysis and companion-process failures observed on an
   affected Windows host remain under investigation ([#409], [#415]). The
   capability-probe retry does not fix their underlying cause.
+- One initial VM Test on the preceding candidate terminated abnormally in
+  `VbaLexer.Tokenize`; its cause is unconfirmed. Ten subsequent targeted Test
+  invocations passed with virtual CPU 0 excluded, but this is not proof of a fix,
+  unconditional stability, or equivalence to a host CPU exclusion. The maintainer
+  accepted the original failure as a known release risk
+  ([verification and acceptance](https://github.com/modern-vba/vba-tools/issues/246#issuecomment-6145865089)).
+
+## [0.1.4] - 2026-10-12
+
+Unpublished release attempt. The protected tag remains at `9298738`; hosted
+verification, artifact assembly, executable inspection, provenance, draft
+staging, and publishing-identity checks passed. Marketplace state lookup mixed
+npm stderr notices into its JSON input and failed before publication. The draft
+and its three attested assets are retained unchanged. Its capabilities and
+source-workbook migration notes are carried forward in 0.1.5 above.
 
 ## [0.1.3] - 2026-10-12
 
@@ -99,21 +120,21 @@ passed. A draft with all three assets was created, but its subsequent lookup
 used the published-release tag endpoint and failed with HTTP 404. Marketplace
 publication did not run; the draft and attested artifacts are retained unchanged.
 Its capabilities and source-workbook migration notes are carried forward in
-0.1.4 above.
+0.1.5 above.
 
 ## [0.1.2] - 2026-10-12
 
 Unpublished release attempt. The protected tag remains at `aa4a2e5`; hosted
 verification attempted real Excel fixture creation on the Excel-free runner
 and failed before artifact creation or Marketplace publication. Its capabilities
-and source-workbook migration notes are carried forward in 0.1.4 above.
+and source-workbook migration notes are carried forward in 0.1.5 above.
 
 ## [0.1.1] - 2026-10-10
 
 Unpublished release attempt. The protected tag remains at `bafe1c4`; hosted
 verification failed on a test-only short-path comparison before artifact
 creation or Marketplace publication. Its capabilities and source-workbook
-migration notes are carried forward in 0.1.4 above.
+migration notes are carried forward in 0.1.5 above.
 
 ## [0.1.0] - 2026-10-06
 

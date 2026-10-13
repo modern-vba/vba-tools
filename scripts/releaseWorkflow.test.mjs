@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { createWriteStream, promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -45,6 +46,87 @@ const vbaDevProps = `<Project>
   </PropertyGroup>
 </Project>
 `;
+
+test('Marketplace lookup workflow reads valid JSON despite npm notices on stderr', {
+  skip: process.platform !== 'win32'
+}, async (t) => {
+  const result = await runMarketplaceWorkflowStep(t);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(await fs.readFile(result.githubOutput, 'utf8'), 'marketplace_visible=true\n');
+});
+
+test('Marketplace lookup workflow recognizes the pinned vsce missing-extension response', {
+  skip: process.platform !== 'win32'
+}, async (t) => {
+  const result = await runMarketplaceWorkflowStep(t, { stdout: 'undefined\n' });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(await fs.readFile(result.githubOutput, 'utf8'), 'marketplace_visible=false\n');
+});
+
+test('Marketplace visibility polling accepts JSON while retaining stderr notices', {
+  skip: process.platform !== 'win32'
+}, async (t) => {
+  const result = await runMarketplaceWorkflowStep(t, {
+    stepName: 'Poll for the exact Marketplace version and channel'
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+});
+
+test('Marketplace lookup rejects incomplete successful responses without authorizing publication', {
+  skip: process.platform !== 'win32'
+}, async (t) => {
+  const result = await runMarketplaceWorkflowStep(t, {
+    stdout: JSON.stringify({ publisher: { publisherName: 'modern-vba' }, extensionName: 'vba-tools' })
+  });
+  assert.notEqual(result.exitCode, 0);
+  await assert.rejects(fs.readFile(result.githubOutput), { code: 'ENOENT' });
+});
+
+test('Marketplace lookup fails closed on failed commands and malformed stdout', {
+  skip: process.platform !== 'win32'
+}, async (t) => {
+  for (const [name, response] of [
+    ['nonzero command, even with the missing-extension token', { stdout: 'undefined\n', exitCode: 7 }],
+    ['notice mixed into stdout, not discarded', { stdout: 'npm notice advisory\n{}' }],
+    ['invalid JSON despite JSON-looking stderr', { stdout: 'not JSON', stderr: '{"versions":[]}' }],
+    ['null is not definitive extension absence', { stdout: 'null' }],
+    ['incomplete version inventory', { stdout: JSON.stringify({ publisher: { publisherName: 'modern-vba' }, extensionName: 'vba-tools', versions: [{}] }) }],
+    ['wrong publisher', { stdout: JSON.stringify({ publisher: { publisherName: 'other' }, extensionName: 'vba-tools', versions: [] }) }]
+  ]) {
+    await t.test(name, async (caseTest) => {
+      const result = await runMarketplaceWorkflowStep(caseTest, response);
+      assert.notEqual(result.exitCode, 0);
+      await assert.rejects(fs.readFile(result.githubOutput), { code: 'ENOENT' });
+    });
+  }
+});
+
+test('Marketplace lookup keeps exact version target and channel admission', {
+  skip: process.platform !== 'win32'
+}, async (t) => {
+  for (const [name, version] of [
+    ['older version', { version: '0.1.4', targetPlatform: 'win32-x64', properties: [{ key: 'Microsoft.VisualStudio.Code.PreRelease', value: 'true' }] }],
+    ['other platform', { version: '0.1.5', targetPlatform: 'linux-x64', properties: [{ key: 'Microsoft.VisualStudio.Code.PreRelease', value: 'true' }] }],
+    ['stable channel', { version: '0.1.5', targetPlatform: 'win32-x64', properties: [] }]
+  ]) {
+    await t.test(name, async (caseTest) => {
+      const result = await runMarketplaceWorkflowStep(caseTest, {
+        stdout: JSON.stringify({ publisher: { publisherName: 'modern-vba' }, extensionName: 'vba-tools', versions: [version] })
+      });
+      assert.equal(result.exitCode, 0, result.stderr);
+      assert.equal(await fs.readFile(result.githubOutput, 'utf8'), 'marketplace_visible=false\n');
+    });
+  }
+});
+
+test('live Marketplace verification requires actual visibility, including extension absence', async () => {
+  await assert.rejects(runReleaseWorkflowCommand([
+    'verify-live-marketplace', '--extension-version', '0.1.5', '--channel', 'pre-release'
+  ], { runCommand: async () => ({ stdout: 'undefined\n', stderr: '' }) }), /not visible/);
+  await assert.rejects(runReleaseWorkflowCommand([
+    'verify-live-marketplace', '--extension-version', '0.1.5', '--channel', 'pre-release'
+  ], { runCommand: async () => ({ stdout: JSON.stringify({ publisher: { publisherName: 'modern-vba' }, extensionName: 'vba-tools', versions: [] }), stderr: '' }) }), /not visible/);
+});
 
 test('release protection preflight accepts workflow-visible ruleset data and rejects policy drift', () => {
   const configuration = {
@@ -161,7 +243,7 @@ test('annotated release tag binds reviewed versions channel and Windows evidence
   });
 });
 
-for (const initialVersion of ['0.1.1', '0.1.2', '0.1.3', '0.1.4']) {
+for (const initialVersion of ['0.1.1', '0.1.2', '0.1.3', '0.1.4', '0.1.5']) {
   test(`initial ${initialVersion} tag rejects a skipped clean Windows smoke`, () => {
     const tagObject = validTagObject
       .replaceAll('0.1.0', initialVersion)
@@ -929,6 +1011,10 @@ test('release workflow pins secretless least-privilege publish and fail-closed r
   );
   assert.ok(identityScopeIndex > authenticationIndex);
   assert.ok(marketplacePublishIndex > identityScopeIndex);
+  assert.ok(publishSteps.some((step) => /releaseWorkflow\.mjs query-marketplace/.test(step.run ?? '')));
+  assert.ok(publishSteps.some((step) => /releaseWorkflow\.mjs verify-live-marketplace/.test(step.run ?? '')));
+  assert.ok(workflow.jobs.finalize.steps.some((step) => /releaseWorkflow\.mjs verify-live-marketplace/.test(step.run ?? '')));
+  assert.doesNotMatch(source, /npx[^\n]+vsce show|2>&1/);
   assert.match(source, /499b84ac-1321-427f-aa17-267ca6975798/);
   assert.match(source, /gh release verify/);
   assert.match(source, /gh attestation verify/);
@@ -1037,6 +1123,58 @@ function writeZip(filePath, entries) {
       .on('error', reject);
     zipFile.end();
   });
+}
+
+async function runMarketplaceWorkflowStep(t, {
+  stdout = JSON.stringify({
+    publisher: { publisherName: 'modern-vba' },
+    extensionName: 'vba-tools',
+    versions: [{
+      version: '0.1.5', targetPlatform: 'win32-x64',
+      properties: [{ key: 'Microsoft.VisualStudio.Code.PreRelease', value: 'true' }]
+    }]
+  }),
+  stderr = 'npm notice Example advisory, not part of the JSON response\n',
+  exitCode = 0,
+  stepName = 'Check whether the exact Marketplace package is already visible',
+  job = 'publish'
+} = {}) {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'vba-tools-marketplace-streams-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await fs.copyFile('distribution-manifest.json', path.join(directory, 'distribution-manifest.json'));
+  const fakeVscePath = path.join(directory, 'node_modules', '@vscode', 'vsce', 'vsce');
+  await fs.mkdir(path.dirname(fakeVscePath), { recursive: true });
+  await fs.writeFile(fakeVscePath,
+    `process.stderr.write(${JSON.stringify(stderr)});\n` +
+    `process.stdout.write(${JSON.stringify(stdout)});\n` +
+    `process.exitCode = ${exitCode};\n`);
+  const workflow = yaml.load(await fs.readFile('.github/workflows/release.yml', 'utf8'));
+  const step = workflow.jobs[job].steps.find((candidate) => candidate.name === stepName);
+  assert.ok(step, 'The actual Marketplace workflow step must exist.');
+  const quote = (value) => `'${value.replaceAll("'", "''")}'`;
+  const actualHelper = path.resolve('scripts/releaseWorkflow.mjs');
+  const githubOutput = path.join(directory, 'github-output.txt');
+  const script = path.join(directory, 'run-step.ps1');
+  await fs.writeFile(script,
+    `$env:EXTENSION_VERSION = '0.1.5'\n$env:CHANNEL = 'pre-release'\n` +
+    `$env:GITHUB_OUTPUT = ${quote(githubOutput)}\n` +
+    `function npx { & ${quote(process.execPath)} ${quote(fakeVscePath)} }\n` +
+    'function Start-Sleep {}\n' +
+    step.run.replaceAll('node scripts/releaseWorkflow.mjs',
+      `& ${quote(process.execPath)} ${quote(actualHelper)}`) +
+    '\nif (Test-Path Variable:LASTEXITCODE) { exit $LASTEXITCODE }\n');
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn('pwsh', ['-NoProfile', '-File', script], {
+      cwd: directory, windowsHide: true
+    });
+    let output = '';
+    let errors = '';
+    child.stdout.on('data', (chunk) => { output += chunk.toString('utf8'); });
+    child.stderr.on('data', (chunk) => { errors += chunk.toString('utf8'); });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ exitCode: code, stdout: output, stderr: errors }));
+  });
+  return { ...result, directory, githubOutput };
 }
 
 async function writeTestVsix(filePath, {
