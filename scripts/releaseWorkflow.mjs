@@ -94,7 +94,7 @@ export function validateAnnotatedReleaseTag({
   if (cleanWindowsSmoke !== 'pass' && cleanWindowsSmoke !== 'not-required') {
     throw new Error('Clean Windows smoke must be pass or not-required.');
   }
-  if (['0.1.0', '0.1.1', '0.1.2', '0.1.3', '0.1.4'].includes(extensionVersion) &&
+  if (['0.1.0', '0.1.1', '0.1.2', '0.1.3', '0.1.4', '0.1.5'].includes(extensionVersion) &&
       cleanWindowsSmoke !== 'pass') {
     throw new Error(`The initial ${extensionVersion} release requires Clean Windows smoke to pass.`);
   }
@@ -166,7 +166,14 @@ export function findMarketplaceVisibility(metadata, expected) {
   if (metadata?.extensionName !== expected.extensionName) {
     throw new Error(`Marketplace extension must be ${expected.extensionName}.`);
   }
-  const matchingVersion = metadata?.versions?.find((candidate) => {
+  if (!Array.isArray(metadata.versions)) {
+    throw new Error('Marketplace response must contain a versions array.');
+  }
+  if (metadata.versions.some((candidate) =>
+    typeof candidate?.version !== 'string' || !tagPattern.test(`vba-tools-v${candidate.version}`))) {
+    throw new Error('Marketplace response contains an invalid version entry.');
+  }
+  const matchingVersion = metadata.versions.find((candidate) => {
     const preReleaseProperty = candidate.properties?.find(
       (property) => property.key === 'Microsoft.VisualStudio.Code.PreRelease'
     );
@@ -604,7 +611,24 @@ export async function runReleaseWorkflowCommand(
       await readJson(parsed.roleAssignmentsJson)
     );
   } else {
-    const metadata = await readJson(parsed.marketplaceJson);
+    let metadata;
+    let missingExtension = false;
+    if (parsed.command === 'query-marketplace' || parsed.command === 'verify-live-marketplace') {
+      const { stdout, stderr } = await runCommand(process.execPath, [
+        path.join(root, 'node_modules', '@vscode', 'vsce', 'vsce'),
+        'show', 'modern-vba.vba-tools', '--json'
+      ], root);
+      if (stderr) {
+        process.stderr.write(stderr);
+      }
+      // The pinned vsce serializes an absent gallery extension as this exact token.
+      missingExtension = stdout.trim() === 'undefined';
+      if (!missingExtension) {
+        metadata = JSON.parse(stdout);
+      }
+    } else {
+      metadata = await readJson(parsed.marketplaceJson);
+    }
     const expected = {
       publisher: 'modern-vba',
       extensionName: 'vba-tools',
@@ -612,7 +636,12 @@ export async function runReleaseWorkflowCommand(
       targetPlatform: 'win32-x64',
       channel: parsed.channel
     };
-    const matchingVersion = parsed.command === 'verify-marketplace'
+    const requireVisible = parsed.command === 'verify-marketplace' ||
+      parsed.command === 'verify-live-marketplace';
+    if (missingExtension && requireVisible) {
+      throw new Error('The exact Marketplace package is not visible.');
+    }
+    const matchingVersion = missingExtension ? undefined : requireVisible
       ? assertMarketplaceVisibility(metadata, expected)
       : findMarketplaceVisibility(metadata, expected);
     result = { marketplaceVisible: Boolean(matchingVersion) };
@@ -656,6 +685,15 @@ function parseWorkflowCommandArguments(args) {
       ['--extension-version', 'extensionVersion'],
       ['--channel', 'channel'],
       ['--github-output', 'githubOutput']
+    ]),
+    'query-marketplace': new Map([
+      ['--extension-version', 'extensionVersion'],
+      ['--channel', 'channel'],
+      ['--github-output', 'githubOutput']
+    ]),
+    'verify-live-marketplace': new Map([
+      ['--extension-version', 'extensionVersion'],
+      ['--channel', 'channel']
     ]),
     'verify-marketplace': new Map([
       ['--marketplace-json', 'marketplaceJson'],
@@ -818,7 +856,7 @@ function runCommandWithSpawn(file, args, cwd) {
     child.stdout?.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
     child.stderr?.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
     child.on('error', reject);
-    child.on('exit', (exitCode) => {
+    child.on('close', (exitCode) => {
       if (exitCode !== 0) {
         reject(new Error(`${file} ${args.join(' ')} exited with code ${exitCode}.\n${stderr}`));
         return;

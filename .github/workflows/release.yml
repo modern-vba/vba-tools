@@ -567,23 +567,11 @@ jobs:
           EXTENSION_VERSION: ${{ needs.validate.outputs.extension_version }}
           CHANNEL: ${{ needs.validate.outputs.channel }}
         run: |
-          $output = npx --no-install vsce show modern-vba.vba-tools --json 2>&1
-          if ($LASTEXITCODE -eq 0) {
-            [System.IO.File]::WriteAllText(
-              (Join-Path $PWD 'marketplace.json'),
-              "$output`n",
-              [System.Text.UTF8Encoding]::new($false)
-            )
-            node scripts/releaseWorkflow.mjs marketplace-state `
-              --marketplace-json marketplace.json `
-              --extension-version $env:EXTENSION_VERSION `
-              --channel $env:CHANNEL `
-              --github-output $env:GITHUB_OUTPUT
-          } elseif (($output -join "`n") -match '(?i)extension.+not found|not found.+extension') {
-            "marketplace_visible=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          } else {
-            throw "Marketplace lookup failed without a definitive not-found response: $output"
-          }
+          node scripts/releaseWorkflow.mjs query-marketplace `
+            --extension-version $env:EXTENSION_VERSION `
+            --channel $env:CHANNEL `
+            --github-output $env:GITHUB_OUTPUT
+          if ($LASTEXITCODE -ne 0) { throw 'Marketplace lookup failed; publication is blocked.' }
       - name: Publish the staged pre-release package
         if: steps.marketplace.outputs.marketplace_visible != 'true'
         shell: pwsh
@@ -605,21 +593,12 @@ jobs:
         run: |
           $verified = $false
           for ($attempt = 1; $attempt -le 20; $attempt++) {
-            $output = npx --no-install vsce show modern-vba.vba-tools --json 2>&1
+            node scripts/releaseWorkflow.mjs verify-live-marketplace `
+              --extension-version $env:EXTENSION_VERSION `
+              --channel $env:CHANNEL
             if ($LASTEXITCODE -eq 0) {
-              [System.IO.File]::WriteAllText(
-                (Join-Path $PWD 'marketplace.json'),
-                "$output`n",
-                [System.Text.UTF8Encoding]::new($false)
-              )
-              node scripts/releaseWorkflow.mjs verify-marketplace `
-                --marketplace-json marketplace.json `
-                --extension-version $env:EXTENSION_VERSION `
-                --channel $env:CHANNEL
-              if ($LASTEXITCODE -eq 0) {
-                $verified = $true
-                break
-              }
+              $verified = $true
+              break
             }
             if ($attempt -lt 20) { Start-Sleep -Seconds 30 }
           }
@@ -692,15 +671,7 @@ jobs:
               --deny-self-hosted-runners
             if ($LASTEXITCODE -ne 0) { throw "Final provenance validation failed: $name" }
           }
-          $marketplace = npx --no-install vsce show modern-vba.vba-tools --json
-          if ($LASTEXITCODE -ne 0) { throw 'Final Marketplace lookup failed.' }
-          [System.IO.File]::WriteAllText(
-            (Join-Path $PWD 'final-marketplace.json'),
-            "$marketplace`n",
-            [System.Text.UTF8Encoding]::new($false)
-          )
-          node scripts/releaseWorkflow.mjs verify-marketplace `
-            --marketplace-json final-marketplace.json `
+          node scripts/releaseWorkflow.mjs verify-live-marketplace `
             --extension-version $env:EXTENSION_VERSION `
             --channel $env:CHANNEL
           if ($LASTEXITCODE -ne 0) { throw 'Exact Marketplace package is no longer visible.' }
