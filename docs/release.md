@@ -12,15 +12,18 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
 - Tag extension releases as `vba-tools-vX.Y.Z`.
 - Reserve `vba-dev-vX.Y.Z` tags for independently versioned standalone CLI
   releases so extension and CLI tag namespaces cannot collide.
-- Publish `0.1.5` as the initial Marketplace pre-release. Versions `0.1.0`,
+- Publish `0.1.6` as the initial Marketplace pre-release. Versions `0.1.0`,
   `0.1.1`, and `0.1.2` were tagged, but their workflows failed before artifact creation and
   neither a GitHub Release nor a Marketplace version was published. Version
   `0.1.3` passed build and provenance creation and retained a draft with all
   three assets, but draft lookup failed before Marketplace publication. Preserve
   that draft and its artifacts. Version `0.1.4` also retained its three attested
   draft assets, but npm notices contaminated the Marketplace JSON lookup before
-  publication. Preserve both drafts and their artifacts; never move or reuse
-  any of these tags.
+  publication. Version `0.1.5` failed during its first self-contained publish:
+  SDK patch roll-forward selected `10.0.402`, whose implicit ILLink `10.0.13`
+  dependency disagreed with the committed `10.0.12` locks. No release assets or
+  draft were created. Preserve both earlier drafts and their artifacts; never
+  move or reuse any of these tags.
   Use odd minor versions for pre-release channels and even minor versions for
   stable channels; the first planned stable line is `0.2.x`.
 - Pass `--pre-release` when packaging and publishing a pre-release. Marketplace
@@ -49,9 +52,9 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
   Generate later version sections from Conventional Commits since the previous
   tag in the matching namespace, then edit known limitations, requirements, and
   other user-facing context in the release preparation review record.
-- Curate the first publicly available `0.1.5` changelog section as a complete
+- Curate the first publicly available `0.1.6` changelog section as a complete
   user-facing summary, including capabilities carried forward from the tagged
-  but unpublished `0.1.0`, `0.1.1`, `0.1.2`, `0.1.3`, and `0.1.4`; do not dump the complete commit history.
+  but unpublished `0.1.0` through `0.1.5`; do not dump the complete commit history.
 - Do not let `vsce publish` increment the version or create a release commit.
   Publish the already-versioned, verified VSIX with `--packagePath`.
 - Run non-Excel release verification on a standard GitHub-hosted Windows runner.
@@ -75,8 +78,8 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
 - Declare Node.js 26 (Current) and npm 12 as the repository JavaScript toolchain.
   Pin the npm release through `packageManager`, restore dependencies with `npm ci`, and
   update the pin only through a reviewed dependency change.
-- Pin the .NET 10 SDK through `global.json` to the selected feature band and
-  allow patch roll-forward only. Keep JavaScript, .NET, and runner versions in
+- Pin the exact .NET 10 SDK through `global.json` with `rollForward: disable`.
+  Review SDK and SDK-dependent NuGet lock updates together. Keep JavaScript, .NET, and runner versions in
   release logs.
 - Reference third-party and GitHub-authored Actions by full commit SHA. Use
   Dependabot pull requests to propose npm and GitHub Actions updates rather than
@@ -121,7 +124,7 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
 - Serialize release workflows for the repository and do not cancel an active
   release when another run is requested. A protected tag starts a new release;
   manual dispatch may only resume an existing tagged draft release.
-- The initial published `vba-tools` `0.1.5` pre-release must include the independently
+- The initial published `vba-tools` `0.1.6` pre-release must include the independently
   versioned standalone `vba-dev` Windows x64 ZIP delivered by GitHub issue #243.
 - Block the initial Marketplace release until its listing metadata and packaged
   support documents pass the Marketplace readiness checks in this runbook.
@@ -140,8 +143,8 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
 
 Before starting, decide:
 
-- the extension version, such as `0.1.5`;
-- the release tag, such as `vba-tools-v0.1.5`;
+- the extension version, such as `0.1.6`;
+- the release tag, such as `vba-tools-v0.1.6`;
 - the Marketplace channel, `pre-release` or `stable`;
 - the bundled and standalone `vba-dev` version;
 - known limitations that must appear in the GitHub Release notes;
@@ -178,13 +181,26 @@ The initial release automation uses:
 - Node.js `26.9.0` from `.node-version` with npm `12.1.0` pinned by
   `packageManager` in `package.json`;
 - `npm ci` with the committed `package-lock.json`;
-- .NET SDK `10.0.401`, selected by `global.json` with patch-only roll-forward;
+- .NET SDK `10.0.402`, selected exactly by `global.json` with roll-forward disabled;
 - locked NuGet restore with a committed `packages.lock.json` beside every .NET
   project;
 - full commit SHAs for every referenced GitHub Action.
 
 Each Node.js workflow job installs the npm version declared in `packageManager`
 before restoring dependencies, independently of the npm bundled with Node.js.
+
+The pinned `setup-dotnet` action reads the root `global.json` and installs its
+exact SDK when roll-forward is disabled. Do not use a moving SDK channel or
+override locked restore to get a release build past a lock mismatch. An SDK
+update must explicitly refresh and review its affected locks, then pass normal
+locked restore and self-contained publish. The three CLI locks currently select
+`Microsoft.NET.ILLink.Tasks` `10.0.13`, matching SDK `10.0.402`.
+
+Artifact assembly waits for child process close, after both output streams have
+drained. A failed prerequisite includes labeled stdout and stderr in its error;
+both streams use stateful UTF-8 decoding so chunk boundaries do not corrupt
+diagnostics. The command still fails and does not proceed with stale artifacts.
+Keep potentially sensitive tool output under normal log-access controls.
 
 Configure Dependabot for the `npm` and `github-actions` ecosystems. Toolchain
 and action update pull requests must pass the same verification as product-code
@@ -624,8 +640,8 @@ Clean-Windows-Smoke: pass
 
 The clean Windows smoke value may be `not-required` only when the runbook allows
 the smoke to be skipped, and the tag message must then include a concise
-`Clean-Windows-Smoke-Reason` trailer. The initial published `0.1.5` release,
-as well as the already-tagged `0.1.0`, `0.1.1`, `0.1.2`, `0.1.3`, and `0.1.4` attempts, requires `pass` for
+`Clean-Windows-Smoke-Reason` trailer. The initial published `0.1.6` release,
+as well as the already-tagged `0.1.0` through `0.1.5` attempts, requires `pass` for
 both checks.
 
 The tag-triggered workflow must reject a lightweight tag, an unrecognized
