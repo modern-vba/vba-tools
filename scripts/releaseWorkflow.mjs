@@ -94,7 +94,7 @@ export function validateAnnotatedReleaseTag({
   if (cleanWindowsSmoke !== 'pass' && cleanWindowsSmoke !== 'not-required') {
     throw new Error('Clean Windows smoke must be pass or not-required.');
   }
-  if (['0.1.0', '0.1.1', '0.1.2', '0.1.3', '0.1.4', '0.1.5'].includes(extensionVersion) &&
+  if (['0.1.0', '0.1.1', '0.1.2', '0.1.3', '0.1.4', '0.1.5', '0.1.6'].includes(extensionVersion) &&
       cleanWindowsSmoke !== 'pass') {
     throw new Error(`The initial ${extensionVersion} release requires Clean Windows smoke to pass.`);
   }

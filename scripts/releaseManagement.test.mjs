@@ -5,6 +5,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 
 import {
   assembleReleaseArtifacts,
@@ -12,6 +14,7 @@ import {
   createReleaseTag,
   parseReleaseCommandArguments,
   prepareRelease,
+  runCommandWithSpawn,
   validateReleaseInputs,
   verifyReleaseArtifactSet
 } from './releaseManagement.mjs';
@@ -123,10 +126,17 @@ test('repository pins the release toolchain commands dependency updates and cura
   assert.equal(await fs.readFile(path.join(repositoryRoot, '.node-version'), 'utf8'), '26.9.0\n');
   const globalJson = await readJson(repositoryRoot, 'global.json');
   assert.deepEqual(globalJson.sdk, {
-    version: '10.0.401',
-    rollForward: 'latestPatch',
+    version: '10.0.402',
+    rollForward: 'disable',
     allowPrerelease: false
   });
+  for (const cli of ['vba-dev/src/VbaDev.Cli', 'vba-debug-adapter/src/VbaDebugAdapter.Cli',
+    'vba-language-server/src/VbaLanguageServer.Cli']) {
+    const lock = await readJson(repositoryRoot, `tools/${cli}/packages.lock.json`);
+    const linker = lock.dependencies['net10.0']['Microsoft.NET.ILLink.Tasks'];
+    assert.equal(linker.requested, '[10.0.13, )', cli);
+    assert.equal(linker.resolved, '10.0.13', cli);
+  }
   const dotnetProjects = [
     'tools/vba-dev/src/VbaDev.App/VbaDev.App.csproj',
     'tools/vba-dev/src/VbaDev.Cli/VbaDev.Cli.csproj',
@@ -390,7 +400,7 @@ test('release tag records reviewed commit and Windows evidence in a local annota
 });
 
 test('initial release tag fails closed on incomplete evidence or an unreviewed commit', async (t) => {
-  for (const initialVersion of ['0.1.1', '0.1.2', '0.1.3', '0.1.4', '0.1.5']) {
+  for (const initialVersion of ['0.1.1', '0.1.2', '0.1.3', '0.1.4', '0.1.5', '0.1.6']) {
     await t.test(`initial ${initialVersion} requires clean Windows smoke`, async (subtest) => {
       const { root } = await createPreparedReleaseCommit(subtest);
       const manifest = await readJson(root, 'package.json');
@@ -629,6 +639,50 @@ test('artifact assembly rejects a non-empty staging directory before running ver
   assert.equal(commandRan, false);
 });
 
+test('artifact CLI retains native stdout errors and stderr notices on verification failure', async (t) => {
+  const result = await runFailingArtifactCli(t, `
+    process.stdout.write('NU1004: dependency lock mismatch\\n');
+    process.stderr.write('npm notice verification command\\n');
+    process.exitCode = 7;
+  `);
+  assert.equal(result.exitCode, 1);
+  assert.match(result.stderr, /exited with 7/);
+  assert.match(result.stderr, /stdout:\nNU1004: dependency lock mismatch/);
+  assert.match(result.stderr, /stderr:\nnpm notice verification command/);
+});
+
+test('artifact process drains output delivered between child exit and close', async () => {
+  const child = Object.assign(new EventEmitter(), {
+    stdout: new PassThrough(), stderr: new PassThrough()
+  });
+  const pending = runCommandWithSpawn('verification-fixture', [], '.', () => child);
+  child.emit('exit', 9);
+  child.stdout.end('LATE-NU1004\n');
+  child.stderr.end('LATE-STDERR\n');
+  child.emit('close', 9);
+  await assert.rejects(pending, error => {
+    assert.match(error.message, /stdout:\nLATE-NU1004/);
+    assert.match(error.message, /stderr:\nLATE-STDERR/);
+    return true;
+  });
+});
+
+test('artifact CLI preserves split UTF-8 diagnostics in both output streams', async (t) => {
+  const result = await runFailingArtifactCli(t, `
+    const message = Buffer.from('日本語の診断\\n', 'utf8');
+    process.stdout.write(message.subarray(0, 1));
+    process.stderr.write(message.subarray(0, 2));
+    setTimeout(() => {
+      process.stdout.write(message.subarray(1));
+      process.stderr.write(message.subarray(2));
+      process.exitCode = 5;
+    }, 150);
+  `);
+  assert.equal(result.exitCode, 1);
+  assert.match(result.stderr, /stdout:\n日本語の診断/);
+  assert.match(result.stderr, /stderr:\n日本語の診断/);
+});
+
 test('VSIX release-channel metadata distinguishes pre-release from stable packages', () => {
   const preReleaseManifest = `
     <PackageManifest>
@@ -689,6 +743,38 @@ async function createReleaseRepository(t) {
   await run('git', ['add', '.'], root);
   await run('git', ['commit', '-m', 'chore: create release fixture'], root);
   return root;
+}
+
+async function runFailingArtifactCli(t, fixtureScript) {
+  const root = await createReleaseRepository(t);
+  await prepareInitialRelease(root);
+  const fixtureEntry = path.join(root, 'verification-fixture.mjs');
+  await fs.copyFile(fileURLToPath(new URL('../distribution-manifest.json', import.meta.url)),
+    path.join(root, 'distribution-manifest.json'));
+  await fs.writeFile(fixtureEntry, fixtureScript, 'utf8');
+  const cli = fileURLToPath(new URL('./releaseManagement.mjs', import.meta.url));
+  const child = spawn(process.execPath, [cli, 'artifacts', '--extension-version', '0.1.0',
+    '--channel', 'pre-release', '--vba-dev-version', '0.1.0',
+    '--output', path.join(root, 'release-set')], {
+    cwd: root, windowsHide: true, env: { ...process.env, npm_execpath: fixtureEntry }
+  });
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  const exitCode = await new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', resolve);
+  });
+  const assets = await fs.readdir(path.join(root, 'release-set')).catch(error => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  assert.deepEqual(assets, [],
+    'Failed verification must not assemble any release asset.');
+  return { stdout, stderr, exitCode };
 }
 
 function prepareInitialRelease(root) {

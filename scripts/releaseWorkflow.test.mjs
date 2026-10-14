@@ -243,7 +243,7 @@ test('annotated release tag binds reviewed versions channel and Windows evidence
   });
 });
 
-for (const initialVersion of ['0.1.1', '0.1.2', '0.1.3', '0.1.4', '0.1.5']) {
+for (const initialVersion of ['0.1.1', '0.1.2', '0.1.3', '0.1.4', '0.1.5', '0.1.6']) {
   test(`initial ${initialVersion} tag rejects a skipped clean Windows smoke`, () => {
     const tagObject = validTagObject
       .replaceAll('0.1.0', initialVersion)
