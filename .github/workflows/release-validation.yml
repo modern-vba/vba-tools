@@ -38,7 +38,7 @@ jobs:
         run: npm run verify:release
       - name: Retain isolated VBA failure evidence
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: release-preparation-vba-logs-${{ github.run_attempt }}
           path: .tmp/extension-host-failures/**/output_logging_*/*VBA*.log
