@@ -1,0 +1,151 @@
+name: Release scheduling probe (no publication)
+
+on:
+  workflow_call:
+    inputs:
+      release_event:
+        required: true
+        type: string
+      blocked_job:
+        default: none
+        type: string
+      failure_job:
+        # Diagnostic fault injection intentionally fails the workflow. Inspect
+        # assert_outcomes, never normalize the failure with continue-on-error.
+        default: none
+        type: string
+
+# This mirrors release.yml's dependency graph and job conditions, not its steps.
+# No checkout, environment, identity, artifact or publication command is allowed.
+permissions: {}
+
+jobs:
+  validate:
+    if: inputs.blocked_job != 'validate'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - env:
+          FAILURE_JOB: ${{ inputs.failure_job }}
+        run: |
+          if [ "$FAILURE_JOB" = validate ]; then exit 1; fi
+          echo 'Validation placeholder succeeded'
+
+  build:
+    if: inputs.release_event == 'push'
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo 'Build placeholder succeeded'
+
+  inspect:
+    if: inputs.release_event == 'push'
+    needs: [validate, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo 'Inspection placeholder succeeded'
+
+  attest:
+    if: inputs.release_event == 'push'
+    needs: [validate, inspect]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo 'Attestation placeholder succeeded'
+
+  stage:
+    if: inputs.release_event == 'push'
+    needs: [validate, build, inspect, attest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo 'Staging placeholder succeeded'
+
+  resume_stage:
+    if: inputs.release_event == 'workflow_dispatch'
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo 'Resume placeholder succeeded'
+
+  publish:
+    if: >-
+      inputs.blocked_job != 'publish' &&
+      (always() &&
+      needs.validate.result == 'success' &&
+      ((inputs.release_event == 'push' && needs.build.result == 'success' && needs.inspect.result == 'success' && needs.attest.result == 'success' && needs.stage.result == 'success' && needs.resume_stage.result == 'skipped') ||
+      (inputs.release_event == 'workflow_dispatch' && needs.build.result == 'skipped' && needs.inspect.result == 'skipped' && needs.attest.result == 'skipped' && needs.stage.result == 'skipped' && needs.resume_stage.result == 'success')))
+    needs: [validate, build, inspect, attest, stage, resume_stage]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - env:
+          FAILURE_JOB: ${{ inputs.failure_job }}
+        run: |
+          if [ "$FAILURE_JOB" = publish ]; then exit 1; fi
+          echo 'Publication placeholder succeeded without publishing'
+
+  legacy_finalize:
+    # Deliberate negative control: the original implicit success() condition.
+    needs: [validate, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo 'Legacy scheduling control executed'
+
+  finalize:
+    if: >-
+      !cancelled() &&
+      needs.validate.result == 'success' &&
+      needs.publish.result == 'success'
+    needs: [validate, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo 'Finalization placeholder executed without publishing'
+
+  assert_outcomes:
+    if: always()
+    needs: [validate, build, inspect, attest, stage, resume_stage, publish, legacy_finalize, finalize]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    env:
+      OBSERVED: ${{ toJSON(needs) }}
+      RELEASE_EVENT: ${{ inputs.release_event }}
+      BLOCKED_JOB: ${{ inputs.blocked_job }}
+      FAILURE_JOB: ${{ inputs.failure_job }}
+    steps:
+      - name: Assert scheduler outcomes, including the unchanged negative control
+        shell: bash
+        run: |
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const observed = JSON.parse(process.env.OBSERVED);
+          const blocked = process.env.BLOCKED_JOB;
+          const failure = process.env.FAILURE_JOB;
+          assert.ok(['none', 'validate', 'publish'].includes(blocked));
+          assert.ok(['none', 'validate', 'publish'].includes(failure));
+          assert.ok(['push', 'workflow_dispatch'].includes(process.env.RELEASE_EVENT));
+          const push = process.env.RELEASE_EVENT === 'push';
+          const valid = blocked !== 'validate' && failure !== 'validate';
+          const expected = {
+            validate: blocked === 'validate' ? 'skipped' : failure === 'validate' ? 'failure' : 'success',
+            build: valid && push ? 'success' : 'skipped',
+            inspect: valid && push ? 'success' : 'skipped',
+            attest: valid && push ? 'success' : 'skipped',
+            stage: valid && push ? 'success' : 'skipped',
+            resume_stage: valid && !push ? 'success' : 'skipped',
+            publish: !valid || blocked === 'publish' ? 'skipped' : failure === 'publish' ? 'failure' : 'success',
+            legacy_finalize: 'skipped',
+            finalize: blocked === 'none' && failure === 'none' ? 'success' : 'skipped'
+          };
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            '```json\n' + JSON.stringify({ expected, observed }, null, 2) + '\n```\n');
+          for (const [job, result] of Object.entries(expected)) {
+            assert.equal(observed[job].result, result, job);
+          }
+          NODE

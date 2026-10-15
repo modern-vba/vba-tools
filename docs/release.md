@@ -743,6 +743,26 @@ Use a repository-wide release concurrency group with `cancel-in-progress:
 false`. The tag-triggered path is the only path allowed to create a new draft or
 build artifacts.
 
+The finalization job explicitly requires `!cancelled()` and successful
+`validate` and `publish` results. An implicit `success()` check can suppress
+this job because one of the mutually exclusive initial/resume ancestors is
+intentionally skipped. Do not replace the guard with unconditional `always()`:
+failure, cancellation or missing prerequisites must still block publication.
+
+`release-scheduling-validation.yml` checks this handoff using a permission-free
+Actions probe. It mirrors the production dependency graph and conditions,
+replaces all release operations with harmless placeholders, and retains the
+old implicit condition as a negative control. Local tests reject probe drift
+and exercise the final guard's success/failure/skip/cancellation combinations.
+The reusable probe also accepts `failure_job: validate` or `publish` for a
+deliberately failing diagnostic run: its outcome assertion must pass and
+finalization must remain skipped. Do not add `continue-on-error` to make that
+run green, because it changes the downstream prerequisite result to success.
+This is scheduling evidence, not a new Marketplace upload or an end-to-end
+publication of another release. Published immutable tags retain their old
+workflow snapshots; do not move those tags or dispatch a published release to
+test a workflow correction. Future releases use the reviewed main correction.
+
 Provide a manual `workflow_dispatch` resume path that accepts an existing
 release tag. A separate privileged staging job must verify and hand off that
 tag's draft assets to the read-only publisher. The publisher skips Marketplace

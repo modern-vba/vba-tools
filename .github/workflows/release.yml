@@ -606,6 +606,12 @@ jobs:
 
   finalize:
     name: Recheck and publish the immutable GitHub release
+    # An intentionally skipped ancestor must not suppress successful handoff.
+    # Do not finalize after cancellation or failed/missing direct prerequisites.
+    if: >-
+      !cancelled() &&
+      needs.validate.result == 'success' &&
+      needs.publish.result == 'success'
     needs:
       - validate
       - publish
