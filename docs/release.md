@@ -4,6 +4,11 @@ This document is the release runbook for VBA Tools. Follow it when preparing a
 VS Code Marketplace release, the matching GitHub Release, and the standalone
 `vba-dev` artifact.
 
+For the maintainer's step-by-step commands, manual checks, and completion
+checklist, start with the [Release operator guide](release-operator-guide.md).
+The operator guide is also available in [Japanese](release-operator-guide-ja.md).
+This document remains the reference for release policy and automation contracts.
+
 ## Release Policy
 
 - Treat the VS Code Marketplace extension as the primary release unit.
