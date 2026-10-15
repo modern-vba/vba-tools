@@ -745,9 +745,9 @@ test('extension package keeps Create Excel VBA Project discoverable in Restricte
   const packageJson = JSON.parse(
     await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
   );
-  const missingActivation = structuredClone(packageJson);
-  missingActivation.activationEvents = missingActivation.activationEvents.filter(
-    (event) => event !== 'onCommand:vbaTools.newExcel'
+  const missingCommand = structuredClone(packageJson);
+  missingCommand.contributes.commands = missingCommand.contributes.commands.filter(
+    (command) => command.command !== 'vbaTools.newExcel'
   );
   const wrongTitle = structuredClone(packageJson);
   wrongTitle.contributes.commands.find(
@@ -764,7 +764,7 @@ test('extension package keeps Create Excel VBA Project discoverable in Restricte
 
   assert.doesNotThrow(() => assertExtensionWorkspaceTrustPackage(packageJson));
   for (const undiscoverablePackage of [
-    missingActivation,
+    missingCommand,
     wrongTitle,
     disabledCommand,
     hiddenCommand

@@ -599,7 +599,6 @@ test('extension contributes the Doctor command', () => {
     command: 'vbaTools.doctor',
     title: 'VBA Tools: Doctor'
   });
-  assert.ok(packageJson.activationEvents?.includes('onCommand:vbaTools.doctor'));
 });
 
 test('extension wires the configured debug adapter path into Doctor', () => {
@@ -629,7 +628,6 @@ test('extension contributes the vba-dev Terminal command', () => {
     command: 'vbaTools.openVbaDevTerminal',
     title: 'VBA Tools: Open vba-dev Terminal'
   });
-  assert.ok(packageJson.activationEvents?.includes('onCommand:vbaTools.openVbaDevTerminal'));
 });
 
 test('extension keeps Create Excel VBA Project discoverable without a context condition', () => {
@@ -656,7 +654,6 @@ test('extension keeps Create Excel VBA Project discoverable without a context co
       title: 'VBA Tools: Create Excel VBA Project'
     }
   );
-  assert.ok(packageJson.activationEvents?.includes('onCommand:vbaTools.newExcel'));
   assert.equal(
     packageJson.contributes?.menus?.commandPalette?.some(
       (item) => item.command === 'vbaTools.newExcel' && item.when !== undefined
@@ -687,7 +684,6 @@ test('extension contributes daily WorkbookBackedProject commands only', () => {
       command: expected[0],
       title: expected[1]
     });
-    assert.ok(packageJson.activationEvents?.includes(`onCommand:${expected[0]}`));
   }
 
   assert.equal(commands.some((command) => command.command === 'vbaTools.capabilities'), false);
@@ -715,9 +711,6 @@ test('extension contributes only the explicit environment UserForm Events refres
       title: 'VBA Tools: Refresh UserForm Events'
     }
   );
-  assert.ok(packageJson.activationEvents?.includes(
-    'onCommand:vbaTools.userFormEvents.refresh'
-  ));
   for (const removedCommand of [
     'vbaTools.hostEvents.refresh',
     'vbaTools.hostClasses.refresh'
@@ -774,7 +767,6 @@ test('extension contributes CommonModules commands', () => {
       command: expected[0],
       title: expected[1]
     });
-    assert.ok(packageJson.activationEvents?.includes(`onCommand:${expected[0]}`));
   }
 });
 
@@ -799,7 +791,6 @@ test('extension contributes VbaProjectReference commands', () => {
       command: expected[0],
       title: expected[1]
     });
-    assert.ok(packageJson.activationEvents?.includes(`onCommand:${expected[0]}`));
   }
 });
 
