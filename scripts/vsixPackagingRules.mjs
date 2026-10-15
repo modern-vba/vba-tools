@@ -429,8 +429,6 @@ export function assertExtensionWorkspaceTrustPackage(packageJson) {
       && Object.hasOwn(entry, 'when')
   );
   if (
-    !isStringArray(packageJson.activationEvents) ||
-    !packageJson.activationEvents.includes('onCommand:vbaTools.newExcel') ||
     !isRecord(createCommand) ||
     createCommand.title !== 'VBA Tools: Create Excel VBA Project' ||
     Object.hasOwn(createCommand, 'enablement') ||
