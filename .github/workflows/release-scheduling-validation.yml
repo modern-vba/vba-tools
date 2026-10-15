@@ -1,0 +1,59 @@
+name: Verify release scheduling without publication
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/release*.yml
+      - scripts/releaseScheduling.test.mjs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-scheduling-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install pinned npm
+        shell: pwsh
+        run: npm install --global (node -p "require('./package.json').packageManager")
+      - name: Restore pinned test dependencies without scripts
+        run: npm ci --ignore-scripts
+      - name: Check the probe against the production graph
+        run: node --test scripts/releaseScheduling.test.mjs
+
+  scheduler:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - release_event: push
+            blocked_job: none
+            failure_job: none
+          - release_event: workflow_dispatch
+            blocked_job: none
+            failure_job: none
+          - release_event: push
+            blocked_job: validate
+            failure_job: none
+          - release_event: workflow_dispatch
+            blocked_job: publish
+            failure_job: none
+    permissions: {}
+    uses: ./.github/workflows/release-scheduling-probe.yml
+    with:
+      release_event: ${{ matrix.release_event }}
+      blocked_job: ${{ matrix.blocked_job }}
+      failure_job: ${{ matrix.failure_job }}
