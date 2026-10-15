@@ -357,6 +357,11 @@ push前にannotationを確認します。チャネル、完全な検証SHA、Win
 `--clean-windows-smoke-reason`を併用し、未実施の確認を`pass`と記録してはいけません。
 タグコマンドはローカルに注釈付きタグを作るだけであり、pushによって公開処理が始まります。
 
+リリースcommitには、[PR #464](https://github.com/modern-vba/vba-tools/pull/464)の
+最終公開jobの実行条件修正、またはレビュー済みの同等の条件が含まれている必要があります。
+タグの実行には、そのタグ自身のworkflow snapshotが使われます。mainの更新だけでは古いタグのworkflowは直りません。
+新しいworkflowに置き換える目的で既存タグを移動したり、mainをrefにして再開したりしないでください。
+
 ## 8 公開処理を確認する
 
 正確なタグpushのrunを探し、`headSha`が`$VerifiedCommit`と一致することを確認します。
@@ -375,10 +380,43 @@ Marketplace公開、GitHubの正式公開を行います。
 必須の公開処理と最終処理は実際に完了していなければなりません。
 全体のバッジが緑色というだけではリリース受け入れ完了ではありません。
 
+run全体の結果だけでなく、各jobの結果と最終公開stepの実行を確認します。
+
+| job | 初回のタグpush | 承認済みの既存draft再開 |
+| --- | --- | --- |
+| `validate` | success | success |
+| `build`、`inspect`、`attest`、`stage` | success | 設計上のskipped |
+| `resume_stage` | 設計上のskipped | success |
+| `publish` | success。Marketplaceの正確な可視性を確認済み | success。正確な対象版が既に可視ならuploadしない |
+| `finalize` | success。公開と検証のstepを実行済み | success。公開と検証のstepを実行済み |
+
+`finalize`の直接の依存は`validate`と`publish`です。明示的な条件は
+`!cancelled() && needs.validate.result == 'success' && needs.publish.result == 'success'`です。
+意図した分岐のskipを許容しつつ、直接の前提のfailure、cancelled、skipped、欠落では公開しません。
+status guardを削除したり、無条件の`always()`へ置き換えたりしないでください。
+`finalize`は保持したdraft、provenance、Marketplace可視性を再検証してから公開し、
+release attestationと新たにダウンロードした公開配布物を検証します。
+
 必須jobの失敗、skip、停止、操作待ちがあれば、既存のタグ、draft、配布物を保持します。
 別のビルド、タグの再push、配布物の置き換え、公開の繰り返しを行わず、まず現在の状態を確認してください。
 [既存draftの正式公開](#既存draftの正式公開)は、Marketplace公開が既に完了しており、
 正確な検証済みGitHub draftだけを公開する必要がある、限定された場合の手順です。
+
+workflowによる再開を明示的に承認した場合は、保持したdraftと元の証明が揃い、
+正確なタグ内のworkflowに修正後の実行条件があることを先に確認します。両方の入力に同じタグを指定します。
+
+```powershell
+gh workflow run release.yml --repo $Repo --ref $Tag -f "release_tag=$Tag"
+if ($LASTEXITCODE -ne 0) { throw 'Resume dispatch was not confirmed; inspect runs before any further action.' }
+gh run list --repo $Repo --workflow release.yml --event workflow_dispatch --branch $Tag --json databaseId,headSha,status,conclusion,url
+```
+
+新しいdispatch runを記録して前述と同様に監視し、表の再開列の結果を要求して手順9も再実施します。
+再開では既存のbytesと証明を検証し、代わりのファイルのbuildや不足した証明の作成は行いません。
+これは通常の2段階目の公開、自動retry、公開済みReleaseを使ったworkflowの試験ではありません。
+古いimmutableタグでの再開は、mainの修正ではなく古いsnapshotを使います。
+そのsnapshotで最終公開できない場合は状態を調査し、後述の限定的な手動復旧を別途判断してください。
+refや保護設定を変えて回避してはいけません。
 
 ## 9 公開済み配布物を独立に検証する
 
@@ -454,6 +492,9 @@ MarketplaceのREADME、GitHub Releaseのリンクとダウンロードも確認�
 リリースIssueをcloseしてProject itemをDoneにします。公開できたことだけでは完了ではありません。
 
 ## 既存draftの正式公開
+
+これは別途承認する例外的な手動復旧であり、修正後のworkflowが成功した後の必須手順ではありません。
+通常は`finalize`がGitHub Releaseの公開と検証を自動で行います。既に完了している場合、この節は実行しません。
 
 対象のMarketplaceバージョン・チャネル・targetが既に表示され、実行中のrelease jobがなく、
 保持されたGitHub draftに元の証明付き配布物一式が揃っている場合だけ使います。

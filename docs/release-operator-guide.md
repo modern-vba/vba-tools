@@ -369,6 +369,12 @@ omitting smoke, use `--clean-windows-smoke not-required` together with
 `--clean-windows-smoke-reason`; do not report `pass` for a check not performed.
 The tag command creates only the local annotation; the push starts publication.
 
+The release commit must contain the reviewed finalization scheduling correction
+from [PR #464](https://github.com/modern-vba/vba-tools/pull/464), or its reviewed
+equivalent. A tag runs its own workflow snapshot: updating main does not repair
+an older tag's workflow. Never move an existing tag or dispatch from main to
+substitute a newer workflow for that tag.
+
 ## 8 Observe publication
 
 Find the exact tag-push run, compare its `headSha` with `$VerifiedCommit`, and
@@ -387,12 +393,49 @@ and finalizes GitHub. The mutually exclusive initial/resume branch can be
 skipped by design; the required publication and finalization work must actually
 finish. An overall green badge alone is not release acceptance.
 
+Check the job results and the finalization steps, not only the run conclusion:
+
+| Job | Initial tag push | Authorized existing-draft resume |
+| --- | --- | --- |
+| `validate` | success | success |
+| `build`, `inspect`, `attest`, `stage` | success | skipped by design |
+| `resume_stage` | skipped by design | success |
+| `publish` | success, exact Marketplace visibility verified | success; no upload if the exact version is already visible |
+| `finalize` | success, publication and verification steps executed | success, publication and verification steps executed |
+
+`finalize` depends directly on `validate` and `publish`. Its explicit condition
+is `!cancelled() && needs.validate.result == 'success' && needs.publish.result == 'success'`.
+This permits the intentional branch skips without admitting failed, cancelled,
+skipped, or missing direct prerequisites. Do not remove the status guard or
+replace it with unconditional `always()`. `finalize` rechecks the retained draft,
+provenance, and Marketplace visibility before publishing, then verifies the
+release attestation and freshly downloaded public assets.
+
 If a required job fails, is skipped, stops, or needs action, retain the existing
 tag, draft and assets. Do not start another build, re-push a tag, replace assets,
 or repeatedly publish. Read the current state first. The conditional
 [Existing draft finalization](#existing-draft-finalization) section covers only
 the narrow case where Marketplace publication is already complete and the exact
 verified GitHub draft still needs publication.
+
+For an explicitly authorized workflow resume, first confirm that the retained
+draft and original attestations are complete and the workflow in the exact tag
+supports the corrected scheduling. Use the same tag for both inputs:
+
+```powershell
+gh workflow run release.yml --repo $Repo --ref $Tag -f "release_tag=$Tag"
+if ($LASTEXITCODE -ne 0) { throw 'Resume dispatch was not confirmed; inspect runs before any further action.' }
+gh run list --repo $Repo --workflow release.yml --event workflow_dispatch --branch $Tag --json databaseId,headSha,status,conclusion,url
+```
+
+Record and watch the new dispatch run as above; require the resume column's
+results and repeat step 9. Resume validates existing bytes and attestations;
+it must not build replacements or create missing attestations. It is not a
+routine second publication step, an automatic retry, or a way to test the
+workflow using an already published release. For an older immutable tag,
+resuming still uses that older snapshot, not the fix on main. If that snapshot
+cannot finalize, inspect it and obtain a separate decision for the narrowly
+scoped manual fallback below; do not change its ref or protections.
 
 ## 9 Verify the public release independently
 
@@ -475,6 +518,11 @@ criteria are verified on current `origin/main`, or the maintainer explicitly
 excludes each remaining criterion. Publication alone is not completion.
 
 ## Existing draft finalization
+
+This is an exceptional, separately authorized manual recovery, not a required
+step after a successful corrected workflow. Normally `finalize` publishes and
+verifies the GitHub Release automatically. If it has already done so, do not
+run this section.
 
 Use this section only when the exact Marketplace version/channel/target is
 already visible, no release job is still running, and the retained GitHub draft
