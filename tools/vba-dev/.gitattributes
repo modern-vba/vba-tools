@@ -1,1 +1,9 @@
 * text eol=lf
+
+# PowerShell working files: UTF-16 LE with BOM and CRLF.
+*.ps1 text working-tree-encoding=UTF-16LE-BOM eol=crlf
+*.psm1 text working-tree-encoding=UTF-16LE-BOM eol=crlf
+*.psd1 text working-tree-encoding=UTF-16LE-BOM eol=crlf
+*.ps1xml text working-tree-encoding=UTF-16LE-BOM eol=crlf
+*.pssc text working-tree-encoding=UTF-16LE-BOM eol=crlf
+*.psrc text working-tree-encoding=UTF-16LE-BOM eol=crlf

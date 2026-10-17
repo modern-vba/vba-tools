@@ -1,0 +1,5 @@
+# PowerShell source files use UTF-16 LE with BOM.
+[*.{ps1,psm1,psd1,ps1xml,pssc,psrc}]
+charset = utf-16le
+end_of_line = crlf
+insert_final_newline = true
