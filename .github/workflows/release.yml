@@ -137,7 +137,7 @@ jobs:
       - name: Restore locked validation dependencies
         run: npm ci --ignore-scripts
       - name: Download the exact build artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: release-set
           path: release-set
@@ -164,7 +164,7 @@ jobs:
       id-token: write
     steps:
       - name: Download the exact inspected release set
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: release-set
           path: release-set
@@ -205,7 +205,7 @@ jobs:
       - name: Restore locked validation dependencies
         run: npm ci --ignore-scripts
       - name: Download the build-once release set
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: release-set
           path: release-set
@@ -433,12 +433,12 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Download the immutable current-run release set
         if: github.event_name == 'push'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: release-set
           path: staged
       - name: Download the verified draft snapshot from the staging job
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: verified-draft
           path: verified-draft
