@@ -37,7 +37,12 @@ Disk reads and writes, raw-byte compare-and-swap authority, the mutation lease,
 recovery ownership, and atomic commitment remain outside it. An invalid input
 fails before mutation rebasing. Canonical output remains byte-exact UTF-16LE
 with BOM, two-space indentation, stable property order, CRLF, and one trailing
-CRLF. The schema and command contract versions do not change.
+CRLF. Issue #465 keeps Japanese names, document keys, and paths readable in
+every canonical writing path while preserving JSON-required escaping for
+quotes, backslashes, and control characters. Saving an unchanged manifest
+repeatedly produces identical bytes. These authoring rules do not narrow the
+accepted input encodings or rewrite files during reads. The schema and command
+contract versions do not change.
 
 ## Product boundaries
 

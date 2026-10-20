@@ -1737,7 +1737,11 @@ decode, canonical encoding, atomic-write preparation, and initial-project
 staging. It owns strict decode, JSON/schema validation, physical
 DocumentSourceSet isolation, expected exception projection, and canonical
 encoding. Canonical bytes remain UTF-16LE with BOM, two-space indentation,
-stable property order, CRLF, and one trailing CRLF. Disk I/O, original raw-byte
+stable property order, CRLF, and one trailing CRLF. Japanese names, document
+keys, and paths remain literal while JSON-required escaping is preserved.
+Creation, saves, mutations, and recovery use this authoring format; broader
+ProjectManifestByteAdmission compatibility does not cause read-side rewriting.
+Disk I/O, original raw-byte
 comparison, the mutation lease, recovery artifacts, and atomic commitment stay
 with their existing owners outside the codec.
 An absent legacy `binPath` is not synthesized during encoding or mutation.
