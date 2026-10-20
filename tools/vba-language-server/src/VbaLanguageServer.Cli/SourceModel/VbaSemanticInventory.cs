@@ -4183,8 +4183,10 @@ public sealed class VbaSemanticInventory
         }
         var syntax = (document.SyntaxTree ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text))
             .GetPositionSyntax(occurrence.Range.Start.Line, occurrence.Range.Start.Character);
-        if (syntax.MemberAccess is not { IsLeadingDot: false, IsIncomplete: false, TargetSegmentIndex: 1 } access
-            || access.Segments.Count != 2)
+        if (syntax.MemberAccess is not { IsIncomplete: false } access
+            || (access.IsLeadingDot
+                ? access.TargetSegmentIndex != 0 || access.Segments.Count != 1
+                : access.TargetSegmentIndex != 1 || access.Segments.Count != 2))
         {
             return false;
         }

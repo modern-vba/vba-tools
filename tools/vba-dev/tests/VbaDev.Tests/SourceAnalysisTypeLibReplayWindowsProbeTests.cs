@@ -23,7 +23,7 @@ using Xunit.Abstractions;
 namespace VbaDev.Tests;
 
 /// <summary>
-/// Compares the exact installed-TypeLib BFW analysis with a fresh-process replay that
+/// Compares the exact installed-TypeLib downstream analysis with a fresh-process replay that
 /// reads only captured metadata and the original source tree. Neither test opens Excel.
 /// Run the facts separately: the unconditioned replay requires a fresh process
 /// with no installed-TypeLib acquisition history.
@@ -565,7 +565,7 @@ public sealed class SourceAnalysisTypeLibReplayWindowsProbeTests(ITestOutputHelp
     private sealed class RejectingHostEventCatalogAutomation : IHostEventCatalogAutomation
     {
         public Task<IntrinsicHostEventCatalog> ReadAsync(CancellationToken cancellationToken)
-            => throw new InvalidOperationException("The BFW replay must not acquire an Excel-backed host Event catalog.");
+            => throw new InvalidOperationException("The downstream replay must not acquire an Excel-backed host Event catalog.");
     }
 
     private sealed class ExactStringConverter : JsonConverter<string>

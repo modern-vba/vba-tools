@@ -5257,6 +5257,9 @@ _Avoid_: vba-reference file, generated source file, decompiled definition
 
 **NameResolution**:
 The case-insensitive process of matching an identifier reference to the closest visible `VbaDefinition` or `VbaProjectReferenceDefinition`. Procedure-local definitions outrank current-module definitions, current-module definitions outrank public project definitions, and project definitions outrank referenced-library definitions. `HostGlobalReferenceDefinition`s, `LibraryGlobalReferenceDefinition`s, standard-library constants, and reference qualifier names all use referenced-library rank rather than shadowing source definitions. Among referenced-library definitions, a `MainVbaProjectReference` match outranks matches from other active `VbaProjectReference`s.
+Unqualified project member candidates come from standard modules. Public class
+and form instance members require the enclosing instance or an explicit receiver;
+public type and enum declarations retain their existing visibility.
 _Avoid_: lookup, binding, search
 
 **ModuleIdentity**:

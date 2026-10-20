@@ -10,7 +10,7 @@ AIアシスタント、私的な補助スクリプト、過去のチャットセ
 リリースの単位は拡張機能です。拡張機能のバージョンとMarketplaceチャネルは、
 同梱CLI、言語サーバー、デバッグアダプターのバージョンとは独立しています。
 公開方針と詳細なスモークテスト要件は[Release](release.md)、
-ブランチとレビューの規則は[Contributing](../CONTRIBUTING.md)を参照してください。
+ブランチとレビューの規則は[Contributing](https://github.com/modern-vba/vba-tools/blob/main/CONTRIBUTING.md)を参照してください。
 
 ## リリースの流れ
 
@@ -575,7 +575,7 @@ MarketplaceのREADME、GitHub Releaseのリンクとダウンロードも確認�
 ## コマンドと方針の参照先
 
 - [リリース方針と自動化contract](release.md)
-- [開発参加と統合の規則](../CONTRIBUTING.md)
+- [開発参加と統合の規則](https://github.com/modern-vba/vba-tools/blob/main/CONTRIBUTING.md)
 - [GitHub immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
 - [GitHub CLIのrelease検証](https://cli.github.com/manual/gh_release_verify)
 - [GitHub CLIのbuild attestation検証](https://cli.github.com/manual/gh_attestation_verify)

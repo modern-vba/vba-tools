@@ -10,7 +10,7 @@ assistant, private helper script, or previous chat session is required.
 The extension is the release unit. Its version and Marketplace channel are
 independent of the bundled CLI, language server, and debug adapter versions.
 Release policy and the detailed smoke contract are in [Release](release.md);
-branch and review rules are in [Contributing](../CONTRIBUTING.md).
+branch and review rules are in [Contributing](https://github.com/modern-vba/vba-tools/blob/main/CONTRIBUTING.md).
 
 ## Release sequence
 
@@ -606,7 +606,7 @@ The maintainer must deliberately choose this action for the specific Release ID.
 ## Reference commands and policies
 
 - [Release policy and automation contracts](release.md)
-- [Contribution and integration rules](../CONTRIBUTING.md)
+- [Contribution and integration rules](https://github.com/modern-vba/vba-tools/blob/main/CONTRIBUTING.md)
 - [GitHub immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
 - [GitHub CLI release verification](https://cli.github.com/manual/gh_release_verify)
 - [GitHub CLI build attestation verification](https://cli.github.com/manual/gh_attestation_verify)

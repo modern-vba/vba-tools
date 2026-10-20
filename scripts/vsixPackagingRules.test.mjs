@@ -533,8 +533,12 @@ test('VSIX content rules exclude local verification artifacts', async () => {
   assert.throws(() => assertVsixContents([
     ...validFiles, '.artifacts/source-workbook/verification.trx'
   ]), /exclude development files.*\.artifacts\/source-workbook\/verification\.trx/i);
+  assert.throws(() => assertVsixContents([
+    ...validFiles, '.local/diagnostics/source-snapshot/source.bas'
+  ]), /exclude development files.*\.local\/diagnostics\/source-snapshot\/source\.bas/i);
   const ignore = await fs.readFile(new URL('../.vscodeignore', import.meta.url), 'utf8');
   assert.match(ignore, /^\.artifacts\/\*\*$/m);
+  assert.match(ignore, /^\.local\/\*\*$/m);
 });
 
 test('extension changelog provides the curated initial 0.1.0 release summary', async () => {

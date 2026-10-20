@@ -190,7 +190,7 @@ the sanitized pair: 50,000,000 calls, ten passes, no observed exceptions. The
 frozen pre-change DLL had failed in two of six analogous runs. These bounded
 observations support the mitigation but do not prove long-term stability or a
 root cause. A three-trial read-only semantic-analysis probe of the affected
-six-TypeLib BFW project also passed. A later ten-trial run completed with zero
+six-TypeLib downstream project also passed. A later ten-trial run completed with zero
 diagnostics on each trial and unchanged project-tree and Excel-process checks.
 After adding SourceIdentity to the probe's assembly inventory, a further
 one-trial run passed and recorded the loaded test-path SourceIdentity DLL as
@@ -203,7 +203,7 @@ keep the local dump private.
 The freshly published Windows vba-dev executable (SHA-256
 `DD9C25D5F383B3DCCAABC1AEB890A50DCDD8444D8901821EDB03179790EB6CBC`)
 also completed one ordinary `build --project` against an isolated copy of the
-affected BFW project. The copy contained the same 41 files and 2,468,110
+affected downstream project. The copy contained the same 41 files and 2,468,110
 bytes before Build; the command imported 35 source files and wrote a nonempty
 workbook only under the ignored diagnostic copy. The original bin workbook
 retained its pre-run length and UTC modification time, no Excel process
@@ -212,10 +212,10 @@ has a different absolute path, this validates the published CLI workflow but
 does not replay the historical URI spellings exactly or prove that a rare NRE
 cannot recur.
 
-## Exact BFW input and process-boundary investigation on 2026-09-26
+## Exact downstream input and process-boundary investigation on 2026-09-26
 
 The opt-in, read-only `SourceAnalysisUriResolutionWindowsProbeTests` used the
-original BFW source root and installed TypeLibs on Windows .NET 10.0.8. It
+original downstream source root and installed TypeLibs on Windows .NET 10.0.8. It
 admitted 35 source trees and six catalogs with 16,246 active definitions; the
 successful trials produced zero diagnostics. It compared the original project
 tree (41 files, 2,468,110 bytes) and Excel process IDs before and after each
@@ -278,7 +278,7 @@ observations resolves #415 or satisfies its original-URI regression criterion.
 
 A later original-input control independently acquired the installed TypeLibs
 in five fresh Debug test hosts and completed ten analyses per host (50/50),
-again with unchanged BFW project-tree and Excel-process checks. Thus this
+again with unchanged downstream project-tree and Excel-process checks. Thus this
 bounded comparison saw no failure on either the COM-backed (50/50) or
 COM-free (60/60) path. It provides no causal distinction between them and is
 not a correction or release-gate result.
@@ -300,7 +300,7 @@ does not distinguish their process histories, identify a cause, or complete
 
 ## First-chance lexer fault dump on 2026-09-26
 
-In the exact-input BFW probe's `issue-415-nre-procdump-20260926-j01` run,
+In the exact-input downstream probe's `issue-415-nre-procdump-20260926-j01` run,
 the first eight of ten analyses completed with zero diagnostics. Trial 9
 failed with `NullReferenceException` at `VbaLexer.ReadIdentifierOrKeyword`
 line 339. The post-test project tree remained 41 files with SHA-256
@@ -325,7 +325,7 @@ offset was 77, `start.Offset` was 71, `identifierLength` was 6, and the source
 string was 127 UTF-16 code units (object size 276 bytes), with SHA-256
 `813C67DFA5F08AEA60B7F42C38EB582DB602E35C49EEF7C37E0B523E38FEC15A`.
 Its exact line matches `common-modules/WorksheetService.cls:1010` in the
-unchanged BFW source tree; the line content is not copied into this document.
+unchanged downstream source tree; the line content is not copied into this document.
 The getter source uses
 `cachedPosition ??= new VbaSyntaxPosition(...)`, which should not return null
 under ordinary managed execution. SOS `verifyobj` found four inspected objects
@@ -349,7 +349,7 @@ some admitted reference URIs. Its finite unit-test passes therefore could not
 justify a #415 correction. The normal identity admission path remains in use.
 
 After extending the temporary lexer recorder to the faulted
-`ReadIdentifierOrKeyword` position access, the exact-input BFW probe passed ten
+`ReadIdentifierOrKeyword` position access, the exact-input downstream probe passed ten
 analyses in one fresh Debug host (10/10, zero diagnostics). The next fresh host
 failed on its first attempted analysis, before any completed trial, with a
 managed `NullReferenceException` at `VbaPositionSyntaxIndex.FindIdentifier`
@@ -371,7 +371,7 @@ were non-null; raw and reread offsets were both 148, start offset 137,
 identifier length 11, and source length 195 UTF-16 code units. The source-line
 SHA-256 over UTF-16LE units was
 `6F17A8ADE7FDD515BA38451BC1937D064B0831C34B2A65604DF71DBC447AD21F`,
-matching the unchanged BFW `common-modules/WorksheetService.cls` line 1021.
+matching the unchanged downstream `common-modules/WorksheetService.cls` line 1021.
 The reread describes state *after* the exception; without a second fault-time
 dump it does not itself prove the getter's return value at the failing
 instruction. The earlier one-dump native context supplies that stronger
@@ -382,7 +382,7 @@ observation for a different line and trial. The probe again verified the
 ## COM-free frozen-catalog recurrence on 2026-09-27
 
 The `ReplayCapturedMetadataWithoutComOrRegistry` arm then used the same original
-BFW source root and the previously hashed six TypeLib metadata snapshots in
+downstream source root and the previously hashed six TypeLib metadata snapshots in
 fresh Debug hosts. It verifies ordered source URI/text fingerprints, catalog
 input hashes, reference selection, definition count, and the zero-diagnostic
 baseline before and during each analysis, without installed TypeLib/COM or
@@ -421,7 +421,7 @@ The next fresh frozen-catalog replay failed during source admission, **before**
 it rebuilt any catalog from the snapshot or called semantic `Analyze`. The
 failure was `ArgumentOutOfRangeException` from `System.String.Substring`,
 reached through `VbaLexer.LexerState.Slice`, `CreateToken`, and
-`ReadFixedLength` while parsing one of the original BFW sources. Its in-test
+`ReadFixedLength` while parsing one of the original downstream sources. Its in-test
 post-state guard passed: the project tree hash was identical before and after,
 and no Excel process appeared. A separate read-only check found all 35 source
 text hashes equal to the frozen baseline. The ordinary cursor transitions in
@@ -468,7 +468,7 @@ and `00877DDFFC366F70450026AB24ED5F46ABBE2ABD80FBE29BFB95AB0CE371282D`,
 respectively. These are newly built assemblies, **not** the historical
 published binary.
 
-A COM-free, read-only harness parsed the same 35 current BFW sources after
+A COM-free, read-only harness parsed the same 35 current downstream sources after
 checking every raw UTF-16 text hash against the frozen baseline, and built
 six reference catalogs from the locally captured TypeLib metadata JSON. One
 uninstrumented trial completed. A diagnostic-only version then surrounded

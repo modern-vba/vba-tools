@@ -1,4 +1,6 @@
 
+using VbaTools.Syntax;
+
 namespace VbaTools.Semantics;
 
 /// <summary>
@@ -401,6 +403,7 @@ public sealed class VbaNameResolutionService
             .Where(candidate => resolutionPolicy.IsReferenceTarget(candidate.Definition))
             .Where(candidate => candidate.Definition.Kind
                 != VbaSourceDefinitionKind.TypeMember)
+            .Where(IsUnqualifiedProjectCandidate)
             .Where(candidate => candidate.Visibility.IsProjectVisible()))
         {
             yield return new VbaRankedDefinition(candidate.Definition, VbaResolutionPolicy.ProjectRank);
@@ -414,6 +417,25 @@ public sealed class VbaNameResolutionService
                 yield return new VbaRankedDefinition(candidate.Definition, VbaResolutionPolicy.ReferenceRank);
             }
         }
+    }
+
+    private static bool IsUnqualifiedProjectCandidate(VbaNameCandidate candidate)
+    {
+        if (candidate.Definition.Kind is VbaSourceDefinitionKind.Type
+            or VbaSourceDefinitionKind.Enum or VbaSourceDefinitionKind.EnumMember)
+        {
+            return true;
+        }
+
+        // Public instance members need an enclosing instance, not just project visibility.
+        if (candidate.Document?.SyntaxTree is { } syntax)
+        {
+            return syntax.Module.Kind == VbaModuleKind.StandardModule;
+        }
+
+        return candidate.Document is null
+            || !candidate.Document.Definitions.Any(definition =>
+                definition.Kind is VbaSourceDefinitionKind.Class or VbaSourceDefinitionKind.Form);
     }
 
     private IEnumerable<VbaRankedDefinition> GetQualifiedCandidates(VbaSourceDocument currentDocument, string qualifier)
@@ -471,6 +493,7 @@ public sealed class VbaNameResolutionService
                 candidate.Uri,
                 currentDocument.Uri))
             .Where(candidate => resolutionPolicy.IsReferenceTarget(candidate.Definition))
+            .Where(IsUnqualifiedProjectCandidate)
             .Any(candidate => candidate.Visibility.IsProjectVisible());
     }
 

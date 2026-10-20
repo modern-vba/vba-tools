@@ -150,9 +150,9 @@ mitigation. ProcDump may stop at the first dump before reporting the child's
 final exit; record that exit as unknown rather than substituting the monitor
 exit. A native access violation cannot be made safe by an in-process retry.
 
-## Exact BFW-input first-chance follow-up on 2026-09-26
+## Exact downstream input first-chance follow-up on 2026-09-26
 
-An opt-in Debug test host read the original BFW source tree and the six installed
+An opt-in Debug test host read the original downstream source tree and the six installed
 TypeLibs, then called shared analysis repeatedly without starting Excel. Eight
 complete analyses produced zero diagnostics. The ninth failed with a managed
 `NullReferenceException` at `VbaLexer.ReadIdentifierOrKeyword` line 339. The

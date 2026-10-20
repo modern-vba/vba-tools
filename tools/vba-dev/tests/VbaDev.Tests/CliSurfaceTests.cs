@@ -45,7 +45,7 @@ public sealed class CliSurfaceTests
             CancellationToken.None);
 
         Assert.Equal(0, exitCode);
-        Assert.Equal($"vba-dev 0.1.0{Environment.NewLine}", standardOutput.ToString());
+        Assert.Equal($"vba-dev 0.1.1{Environment.NewLine}", standardOutput.ToString());
         Assert.Empty(standardError.ToString());
     }
 
@@ -105,7 +105,7 @@ public sealed class CliSurfaceTests
             ? $"\"activeWindowsCodePage\":{capabilities.RootElement.GetProperty("activeWindowsCodePage").GetInt32()},"
             : string.Empty;
         Assert.Equal(
-            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"build.sourceWorkbook\":\"1.0\",\"export.sourceWorkbook\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"test.sourceWorkbook\":\"1.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"projectManifest.optionalBinPath\":\"1.0\",\"hostEvent.list\":\"1.0\"}," +
+            "{\"toolVersion\":\"0.1.1\",\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"build.sourceWorkbook\":\"1.0\",\"export.sourceWorkbook\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"test.sourceWorkbook\":\"1.0\",\"debug.sourceWorkbookPreparation\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"invocation.stdinWorkbookConfirmation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"projectManifest.optionalBinPath\":\"1.0\",\"hostEvent.list\":\"1.0\"}," +
             activeCodePageProperty +
             "\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"import\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"prepare-debug\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}}}" + Environment.NewLine,
             standardOutput.ToString());
@@ -849,7 +849,7 @@ public sealed class CliSurfaceTests
         var result = application.Run(["--version"]);
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Equal($"vba-dev 0.1.0{Environment.NewLine}", result.StandardOutput);
+        Assert.Equal($"vba-dev 0.1.1{Environment.NewLine}", result.StandardOutput);
         Assert.Empty(result.StandardError);
     }
 
@@ -863,7 +863,7 @@ public sealed class CliSurfaceTests
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
             .InformationalVersion;
 
-        Assert.Equal("0.1.0", informationalVersion);
+        Assert.Equal("0.1.1", informationalVersion);
         Assert.Equal($"vba-dev {informationalVersion}{Environment.NewLine}", versionResult.StandardOutput);
         Assert.Equal(
             informationalVersion,
