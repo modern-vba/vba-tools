@@ -25,7 +25,7 @@ trials, with its before/after hashes recorded; its existence alone is not proof
 that a failed Build saved it. Workbook bin configuration is neither required nor
 selected. No timings from a mock executable establish real Excel performance.
 .EXAMPLE
-pwsh -File scripts/measureWorkbookBuildPerformance.ps1 -ExecutablePath .local/performance/baseline/vba-dev.exe -ProjectPath .local/performance/inputs/ces/Project -DocumentName Book -EvidenceDirectory .local/performance/evidence/ces -Variant baseline
+pwsh -File scripts/measureWorkbookBuildPerformance.ps1 -ExecutablePath .local/performance/baseline/vba-dev.exe -ProjectPath .local/performance/inputs/sample/Project -DocumentName Book -EvidenceDirectory .local/performance/evidence/sample -Variant baseline
 #>
 [CmdletBinding()]
 param(

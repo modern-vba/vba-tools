@@ -4,7 +4,7 @@ All notable user-facing changes to the VBA Tools extension are recorded here.
 The extension history is versioned independently from the bundled `vba-dev`
 CLI history.
 
-## [0.1.6] - 2026-10-13
+## [0.1.6] - 2026-10-20
 
 This is the first public VBA Tools pre-release candidate. Versions 0.1.0,
 0.1.1, 0.1.2, 0.1.3, 0.1.4, and 0.1.5 were tagged but were not published to the VS Code Marketplace or as a
@@ -19,7 +19,7 @@ GitHub Release. This section carries forward their unreleased capabilities.
   workflows through bundled `vba-dev`, with Test Explorer integration.
 - Native VBE debugging for supported public parameterless procedures, Doctor
   diagnostics, and an environment-scoped UserForm Event catalog.
-- Self-contained companion executables and a standalone `vba-dev` 0.1.0 ZIP;
+- Self-contained companion executables and a standalone `vba-dev` 0.1.1 ZIP;
   no separately installed .NET runtime is required.
 
 ### Changed
@@ -61,6 +61,13 @@ and explicit-workbook Export retain their separate output and lifetime contracts
 
 ### Fixed
 
+- Release packages exclude local diagnostic captures and keep the operator
+  guides' contribution-workflow links usable outside the source checkout.
+- Unqualified library calls are no longer mistaken for unrelated class or form
+  instance members in source analysis and editor name resolution. Typed receiver
+  and enclosing-instance access retain their existing behavior.
+- Generated `vba-project.json` manifests preserve readable Japanese names and
+  paths using canonical UTF-16LE with BOM and CRLF.
 - Artifact assembly preserves a failed prerequisite's stdout and stderr, waits
   for both streams to drain, and decodes split UTF-8 diagnostics correctly.
   Build failures remain failures; existing outputs are not used as substitutes.

@@ -3,6 +3,22 @@
 All notable user-facing changes to the independently versioned `vba-dev` CLI
 are recorded here. Extension changes remain in the repository root changelog.
 
+## [0.1.1] - 2026-10-20
+
+### Fixed
+
+- Unqualified library calls no longer bind to unrelated public class or form
+  instance members during source analysis. Standard-module globals, enclosing
+  members, typed receivers, and genuine argument-count diagnostics remain valid.
+- Generated project manifests and recovery files retain readable Japanese names
+  and paths in canonical UTF-16LE with BOM, CRLF, and one trailing newline.
+
+### Packaging
+
+- Includes the standalone Windows x64 self-contained CLI and command contract.
+  The CLI contract remains `1.0`; source-workbook and snapshot capabilities remain
+  unchanged. See 0.1.0 below for the complete initial command surface.
+
 ## [0.1.0] - 2026-10-06
 
 ### Added

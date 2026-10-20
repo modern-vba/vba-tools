@@ -35,7 +35,7 @@ assembly versions, informational versions, configurations and SHA-256 values,
 the harness build SDK, runtime/core-library identity, OS, architecture and CPU.
 Only Release baseline/candidate results count as performance evidence.
 
-The main request's end-to-end CES and small-control Build measurements remain
+The main request's end-to-end sample and small-control Build measurements remain
 separate. Use unchanged complete source/template/catalog inputs and isolated
 workbook output, verify Excel cleanup, and distinguish profiler timings from
 ordinary elapsed time. This generated corpus is not a replacement for those

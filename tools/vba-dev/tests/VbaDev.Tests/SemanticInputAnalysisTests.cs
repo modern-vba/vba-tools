@@ -7,6 +7,48 @@ namespace VbaDev.Tests;
 public sealed class SemanticInputAnalysisTests
 {
     [Fact]
+    public void UnqualifiedLibraryCallDoesNotBindToAnotherClassInstanceMember()
+    {
+        var caller = VbaSyntaxTree.ParseModule("file:///C:/semantic-inputs/Caller.cls", """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Caller"
+            Public Sub Run(ByVal first As Object, ByVal second As Object)
+                Dim result As Object
+                Set result = Intersect(first, second)
+            End Sub
+            """);
+        var bounds = VbaSyntaxTree.ParseModule("file:///C:/semantic-inputs/Bounds.cls", """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Bounds"
+            Public Function Intersect(ByVal other As Object) As Object
+            End Function
+            """);
+        const string referenceName = "Example Host Library";
+        var catalog = new VbaProjectReferenceCatalog(referenceName, ["ExampleHost"],
+        [
+            new(referenceName, "Intersect", VbaSourceDefinitionKind.Procedure,
+                Signature: new("Function Intersect(ByVal first As Object, ByVal second As Object) As Object",
+                    [new("first", TypeReference: new("Object"), IsByRef: false),
+                     new("second", TypeReference: new("Object"), IsByRef: false)],
+                    CallableKind: VbaCallableKind.Function, SupportsNamedArguments: true),
+                GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal,
+                IsCallableMetadataComplete: true)
+        ]);
+        var inputs = VbaProjectSemanticInputs.Capture(
+            VbaReferenceSelection.Capture([referenceName], null),
+            VbaProjectReferenceCatalogSet.Empty.WithCatalog(catalog));
+
+        Assert.Empty(VbaProjectSourceAnalysis.Analyze([caller], inputs));
+        Assert.Empty(VbaProjectSourceAnalysis.Analyze([caller, bounds], inputs));
+
+        var invalidCaller = VbaSyntaxTree.ParseModule(caller.Uri,
+            caller.SourceText.Text.Replace("Intersect(first, second)", "Intersect(first, second, first)", StringComparison.Ordinal));
+        var diagnostic = Assert.Single(VbaProjectSourceAnalysis.Analyze([invalidCaller, bounds], inputs));
+        Assert.Equal("validation.incompatibleCallArgumentList", diagnostic.Code);
+        Assert.Null(Assert.Single(diagnostic.Details!).Location);
+    }
+
+    [Fact]
     public void SharedAnalysisPreservesEscapedJapaneseDocumentIdentityAndSourceShadowing()
     {
         const string currentUri =
