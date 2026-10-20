@@ -1,6 +1,8 @@
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Unicode;
 
 namespace VbaDev.Domain;
 
@@ -12,6 +14,7 @@ public static class ProjectManifestCanonicalSerializer
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        Encoder = JavaScriptEncoder.Create(UnicodeRanges.All),
         IndentCharacter = ' ',
         IndentSize = 2,
         NewLine = "\r\n",
