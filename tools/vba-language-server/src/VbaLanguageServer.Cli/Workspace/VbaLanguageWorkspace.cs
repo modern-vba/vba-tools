@@ -2019,7 +2019,9 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         }
 
         var completedFileRenames = new List<VbaRenameFileOperation>();
-        foreach (var fileRename in plan.FileRenames)
+        var formSidecars = plan.FormSourceUnits.Select(unit => unit.SidecarUri)
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var fileRename in plan.FileRenames.Where(operation => !formSidecars.Contains(operation.OldUri)))
         {
             if (VbaProjectResolver.TryGetLocalPath(fileRename.OldUri) is not { }
                     sourcePath

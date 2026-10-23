@@ -530,7 +530,8 @@ internal sealed class VbaLspRequestExecution : IDisposable
             request.Uri,
             cancellationToken);
         var captureOwner = new RenameCaptureOwner(renameCapture);
-        var canConfirm = clientCapabilities.Snapshot.RenameConfirmation;
+        var capabilitySnapshot = clientCapabilities.Snapshot;
+        var canConfirm = capabilitySnapshot.RenameConfirmation;
         string? offeredConfirmationId = null;
         return captured(executionToken =>
         {
@@ -546,46 +547,10 @@ internal sealed class VbaLspRequestExecution : IDisposable
                             request.NewName,
                             renameCapture.ProjectIdentityRead);
 
-                RequestOutcome? GetSourceTemplateChangeOutcome()
-                {
-                    if (!requiresSourceTemplateIdentityFence
-                        || renameCapture.GetSourceTemplateChangeFailure()
-                            is not { } failure)
-                    {
-                        return null;
-                    }
-
-                    return RequestOutcome.Error(
-                        -32803,
-                        failure.Message,
-                        CreateRenameFailureData(failure));
-                }
-
-                if (!canConfirm && renameCapture.SemanticInventory
-                        .RequiresFileFollowingModuleRename(
-                            request.Uri,
-                            request.Line,
-                            request.Character,
-                            request.NewName,
-                            renameCapture.ProjectIdentityRead)
-                    && !clientCapabilities.Snapshot.WorkspaceEdit
-                        .SupportsRenameFile)
-                {
-                    if (GetSourceTemplateChangeOutcome()
-                        is { } capabilitySourceTemplateChangeOutcome)
-                    {
-                        return capabilitySourceTemplateChangeOutcome;
-                    }
-
-                    var failure = new VbaRenameFailure(
-                        "clientCapabilityMissing",
-                        "File-following module Rename requires ordered "
-                        + "documentChanges and the rename resource operation.");
-                    return RequestOutcome.Error(
-                        -32803,
-                        failure.Message,
-                        CreateRenameFailureData(failure));
-                }
+                var evidence = new RenameEvidencePolicy(renameCapture,
+                    requiresSourceTemplateIdentityFence, capabilitySnapshot.WorkspaceEdit.SupportsRenameFile);
+                if (evidence.ValidateEvidence() is { } initialFailure)
+                    return RenameFailed(initialFailure);
 
                 var rename = renameCapture.SemanticInventory.CreateRenameResult(
                     request.Uri,
@@ -598,48 +563,15 @@ internal sealed class VbaLspRequestExecution : IDisposable
                         ? VbaRenameCollisionMode.PrepareConfirmation
                         : VbaRenameCollisionMode.Reject);
                 executionToken.ThrowIfCancellationRequested();
-                var sourceChangeFailure =
-                    renameCapture.GetParticipatingSourceChangeFailure();
-                if (sourceChangeFailure is not null)
-                {
-                    return RequestOutcome.Error(
-                        -32803,
-                        sourceChangeFailure.Message,
-                        CreateRenameFailureData(sourceChangeFailure));
-                }
-
-                if ((rename.Plan is null || rename.Failure is not null)
-                    && GetSourceTemplateChangeOutcome()
-                        is { } incompleteOutcome)
-                {
-                    return incompleteOutcome;
-                }
-
-                if (rename.Failure?.Reason == "invalidName")
-                {
-                    return RequestOutcome.Error(
-                        -32803,
-                        rename.Failure.Message,
-                        CreateRenameFailureData(rename.Failure));
-                }
-
-                if (rename.Plan is null && rename.Failure is null)
-                {
-                    return RequestOutcome.Success(null);
-                }
-
-                if (rename.Failure is not null)
-                {
-                    return RequestOutcome.Error(
-                        -32803,
-                        rename.Failure.Message,
-                        CreateRenameFailureData(rename.Failure));
-                }
+                if (evidence.ValidateEvidence() is { } semanticEvidenceFailure)
+                    return RenameFailed(semanticEvidenceFailure);
+                if (rename.Failure is not null) return RenameFailed(rename.Failure);
+                if (rename.Plan is null) return RequestOutcome.Success(null);
 
                 VbaRenamePathDecision? pathDecision = null;
                 if (canConfirm)
                 {
-                    var decision = renameCapture.PrepareRenamePathDecision(rename.Plan!);
+                    var decision = evidence.PreparePaths(rename.Plan!);
                     if (decision.Failure is { } pathFailure)
                     {
                         return RenameFailed(pathFailure);
@@ -653,6 +585,8 @@ internal sealed class VbaLspRequestExecution : IDisposable
                             renameCapture.ProjectIdentityRead,
                             VbaRenameCollisionMode.PrepareConfirmation,
                             retainOriginalPaths: true);
+                        if (evidence.ValidateEvidence(pathDecision) is { } retainedEvidenceFailure)
+                            return RenameFailed(retainedEvidenceFailure);
                         if (rename.Failure is { } retainedFailure)
                         {
                             return RenameFailed(retainedFailure);
@@ -665,102 +599,18 @@ internal sealed class VbaLspRequestExecution : IDisposable
                     }
                 }
 
-                if (rename.Plan!.FileRenames.Count > 0
-                    && !clientCapabilities.Snapshot.WorkspaceEdit.SupportsRenameFile)
-                {
-                    if (GetSourceTemplateChangeOutcome()
-                        is { } plannedCapabilitySourceTemplateChangeOutcome)
-                    {
-                        return plannedCapabilitySourceTemplateChangeOutcome;
-                    }
+                if (evidence.ValidateEvidence(pathDecision) is { } plannedEvidenceFailure)
+                    return RenameFailed(plannedEvidenceFailure);
+                if (renameCapture.AnalysisFailureMessage is { } analysisFailure)
+                    return RenameFailed(new VbaRenameFailure("analysisIncomplete", analysisFailure));
 
-                    var failure = new VbaRenameFailure(
-                        "clientCapabilityMissing",
-                        "File-following module Rename requires ordered "
-                        + "documentChanges and the rename resource operation.");
-                    return RequestOutcome.Error(
-                        -32803,
-                        failure.Message,
-                        CreateRenameFailureData(failure));
-                }
-
-                if (renameCapture.AnalysisFailureMessage is not null)
-                {
-                    if (GetSourceTemplateChangeOutcome()
-                        is { } analysisSourceTemplateChangeOutcome)
-                    {
-                        return analysisSourceTemplateChangeOutcome;
-                    }
-
-                    var failure = new VbaRenameFailure(
-                        "analysisIncomplete",
-                        renameCapture.AnalysisFailureMessage);
-                    return RequestOutcome.Error(
-                        -32803,
-                        failure.Message,
-                        CreateRenameFailureData(failure));
-                }
-
-                var fileRenamePreflight =
-                    renameCapture.PreflightFileRenames(rename.Plan);
-                if (GetSourceTemplateChangeOutcome()
-                    is { } postPreflightSourceTemplateChangeOutcome)
-                {
-                    return postPreflightSourceTemplateChangeOutcome;
-                }
-
-                if (fileRenamePreflight.Failure is not null)
-                {
-                    return RequestOutcome.Error(
-                        -32803,
-                        fileRenamePreflight.Failure.Message,
-                        CreateRenameFailureData(fileRenamePreflight.Failure));
-                }
-
-                if (fileRenamePreflight.Plan.FileRenames.Count > 0
-                    && !clientCapabilities.Snapshot.WorkspaceEdit
-                        .SupportsRenameFile)
-                {
-                    var failure = new VbaRenameFailure(
-                        "clientCapabilityMissing",
-                        "File-following module Rename requires ordered "
-                        + "documentChanges and the rename resource operation.");
-                    return RequestOutcome.Error(
-                        -32803,
-                        failure.Message,
-                        CreateRenameFailureData(failure));
-                }
-
-                var finalSourceChangeFailure =
-                    renameCapture.GetParticipatingSourceChangeFailure();
-                if (finalSourceChangeFailure is not null)
-                {
-                    return RequestOutcome.Error(
-                        -32803,
-                        finalSourceChangeFailure.Message,
-                        CreateRenameFailureData(finalSourceChangeFailure));
-                }
-
-                if (GetSourceTemplateChangeOutcome()
-                    is { } finalSourceTemplateChangeOutcome)
-                {
-                    return finalSourceTemplateChangeOutcome;
-                }
-
-                if (pathDecision?.GetChangeFailure() is { } pathChangeFailure)
-                {
-                    return RenameFailed(pathChangeFailure);
-                }
+                var fileRenamePreflight = evidence.ValidatePlan(rename.Plan!, pathDecision);
+                if (fileRenamePreflight.Failure is { } preflightFailure)
+                    return RenameFailed(preflightFailure);
 
                 if (canConfirm && (rename.CollisionReview is not null
                     || pathDecision?.RetainOriginalPaths == true))
                 {
-                    if (renameCapture.GetConfirmationAuthorityChangeFailure()
-                        is { } authorityFailure)
-                    {
-                        return RenameFailed(authorityFailure);
-                    }
-
                     var finalPlan = fileRenamePreflight.Plan;
                     var originalName = rename.CollisionReview?.OriginalName
                         ?? renameCapture.SemanticInventory.PrepareRename(
@@ -772,16 +622,7 @@ internal sealed class VbaLspRequestExecution : IDisposable
                     }
 
                     VbaRenameFailure? ValidateConfirmedEvidence()
-                        => renameCapture.GetParticipatingSourceChangeFailure()
-                            ?? renameCapture.GetConfirmationAuthorityChangeFailure()
-                            ?? (requiresSourceTemplateIdentityFence
-                                ? renameCapture.GetSourceTemplateChangeFailure() : null)
-                            ?? pathDecision?.GetChangeFailure()
-                            ?? renameCapture.PreflightFileRenames(finalPlan).Failure
-                            ?? renameCapture.GetParticipatingSourceChangeFailure()
-                            ?? renameCapture.GetConfirmationAuthorityChangeFailure()
-                            ?? (requiresSourceTemplateIdentityFence
-                                ? renameCapture.GetSourceTemplateChangeFailure() : null);
+                        => evidence.ValidatePlan(finalPlan, pathDecision, retainCompletePlan: true).Failure;
 
                     var pending = new PendingRename(
                         Guid.NewGuid().ToString("N"), finalPlan,

@@ -18827,7 +18827,7 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
-    public async Task Server_rejects_an_incapable_file_following_client_before_semantic_collision_planning()
+    public async Task Server_reports_semantic_collision_before_capability_when_no_final_file_plan_exists()
     {
         var sourceRoot = Directory.CreateTempSubdirectory(
             "vba-ls-module-rename-entry-capability-").FullName;
@@ -18866,12 +18866,8 @@ public sealed class LanguageServerProcessTests
             var error = rename.GetProperty("error");
             Assert.Equal(-32803, error.GetProperty("code").GetInt32());
             Assert.Equal(
-                "clientCapabilityMissing",
+                "sameScopeCollision",
                 error.GetProperty("data").GetProperty("reason").GetString());
-            Assert.Contains(
-                "documentChanges",
-                error.GetProperty("message").GetString(),
-                StringComparison.Ordinal);
             Assert.False(rename.TryGetProperty("result", out _));
 
             await process.ShutdownAsync(3);

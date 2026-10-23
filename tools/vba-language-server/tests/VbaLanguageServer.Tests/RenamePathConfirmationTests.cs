@@ -9,6 +9,38 @@ namespace VbaLanguageServer.Tests;
 
 public sealed class RenamePathConfirmationTests
 {
+    [Fact]
+    public async Task ConfirmedFormFileOperationsKeepTheCompleteSidecarPlanExactlyOnce()
+    {
+        var root = Directory.CreateTempSubdirectory("vba-ls-confirm-form-following-").FullName;
+        try
+        {
+            var form = Path.Combine(root, "Original.frm");
+            var sidecar = Path.Combine(root, "Original.frx");
+            const string text = "VERSION 5.00\nBegin VB.Form Original\n  OleObjectBlob = \"Original.frx\":0000\nEnd\nAttribute VB_Name = \"Original\"\n";
+            File.WriteAllText(form, text);
+            byte[] bytes = [1, 2, 3];
+            File.WriteAllBytes(sidecar, bytes);
+            File.WriteAllText(Path.Combine(root, "Other.bas"), "Attribute VB_Name = \"Existing\"\n");
+            var uri = new Uri(form).AbsoluteUri;
+            await using var server = await LanguageServerProcessHarness.StartAsync();
+            await InitializeConfirmationClientAsync(server);
+            await OpenDocumentAsync(server, uri, text);
+            var challenge = await RequestChallengeAsync(server, uri, 4, "Existing");
+            Assert.Empty(challenge.GetProperty("retainedPaths").EnumerateArray());
+            var confirmed = await ConfirmAsync(server, challenge);
+            Assert.False(confirmed.TryGetProperty("error", out _), confirmed.ToString());
+            var operations = confirmed.GetProperty("result").GetProperty("documentChanges").EnumerateArray()
+                .Where(item => item.TryGetProperty("kind", out var kind) && kind.GetString() == "rename").ToArray();
+            Assert.Equal(2, operations.Length);
+            Assert.Equal(new[] { new Uri(form).AbsoluteUri, new Uri(sidecar).AbsoluteUri },
+                operations.Select(item => item.GetProperty("oldUri").GetString()).ToArray());
+            Assert.Equal(text, File.ReadAllText(form));
+            Assert.Equal(bytes, File.ReadAllBytes(sidecar));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     [Theory]
     [InlineData("missing-sidecar", "sidecarMissing")]
     [InlineData("mismatched-sidecar", "sidecarReferenceConflict")]

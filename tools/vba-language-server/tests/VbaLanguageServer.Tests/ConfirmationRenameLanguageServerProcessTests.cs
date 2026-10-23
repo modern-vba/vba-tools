@@ -71,9 +71,10 @@ public sealed class ConfirmationRenameLanguageServerProcessTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Containing_project_collision_requires_confirmation_bound_to_the_original_template(bool changeTemplate)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Containing_project_collision_requires_confirmation_bound_to_the_original_template(bool changeTemplate, bool changeSource)
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-confirm-project-name-").FullName;
         try
@@ -115,6 +116,11 @@ public sealed class ConfirmationRenameLanguageServerProcessTests
             {
                 File.WriteAllBytes(template, VbaProjectIdentityWorkbookFixture.Create("DifferentProject", 1252));
             }
+            if (changeSource)
+                await process.SendNotificationAsync("textDocument/didChange", new
+                {
+                    textDocument = new { uri, version = 2 }, contentChanges = new[] { new { text = text + "\n' changed after capture" } }
+                });
             var confirmed = await process.SendRequestAsync(3, "vba/confirmRename", new
             {
                 confirmationId = confirmationId.GetString(), decision = "continue"
@@ -122,7 +128,8 @@ public sealed class ConfirmationRenameLanguageServerProcessTests
             if (changeTemplate)
             {
                 Assert.True(confirmed.TryGetProperty("error", out var staleError), confirmed.ToString());
-                Assert.Equal("analysisIncomplete", staleError.GetProperty("data").GetProperty("reason").GetString());
+                Assert.Equal(changeSource ? "resourceOperationConflict" : "analysisIncomplete", staleError.GetProperty("data").GetProperty("reason").GetString());
+                if (changeSource) Assert.Equal("sourceChanged", staleError.GetProperty("data").GetProperty("condition").GetString());
                 Assert.False(confirmed.TryGetProperty("result", out _));
             }
             else

@@ -5325,6 +5325,22 @@ the same entry is not a destination collision. No automatic save, Excel launch,
 workbook mutation, declaration merge or background retry is part of this mode.
 _Avoid_: always-ignore setting, unchecked retry flag, merged-target edit discovery
 
+**RenameEvidencePolicy**:
+The shared ordinary/confirmed validation order: participating source revisions,
+project/catalog authority, required template identity, captured path/source-unit
+decision, file preflight, then capability for actual final file operations.
+Applicable freshness fences run before and after preflight even when preflight
+reports a failure; newly stale evidence takes precedence. Semantic rejection
+and NoChange also validate the evidence they used. Unexpected inspection faults
+remain internal errors. Retained-path plans require no absent file operation.
+
+Before an offer, the retained-path alternative may be finalized against the
+same captured snapshot. After confirmation, validate the stored complete plan;
+changed meaning or closure rejects without replanning, retry or expansion.
+Repeated form preflight preserves each already materialized sidecar operation
+exactly once. Capture and pending ownership remain unchanged in this slice.
+See ADR 0072, refining ADRs 0029 and 0050.
+
 **RenameFailure**:
 An actionable LSP `RequestFailed` response with code `-32803` for a
 well-formed Prepare Rename or Rename request whose recognized semantic occurrence cannot produce a `RenamePlan`. Stable
