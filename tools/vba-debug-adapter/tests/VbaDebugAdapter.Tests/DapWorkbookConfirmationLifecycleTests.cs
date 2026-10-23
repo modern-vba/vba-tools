@@ -181,12 +181,12 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
     }
 
     [Theory]
-    [InlineData(SourceVbeDebugSessionEndReason.WorkbookClosed, null, "Source workbook closed")]
-    [InlineData(SourceVbeDebugSessionEndReason.ProcessExited, null, "exit code unavailable")]
-    [InlineData(SourceVbeDebugSessionEndReason.ProcessExited, 7, "exited with code 7")]
-    [InlineData(SourceVbeDebugSessionEndReason.Detached, null, "debug connection was detached")]
+    [InlineData(DebugSessionEndReason.WorkbookClosed, null, "Source workbook closed")]
+    [InlineData(DebugSessionEndReason.ProcessExited, null, "exit code unavailable")]
+    [InlineData(DebugSessionEndReason.ProcessExited, 7, "exited with code 7")]
+    [InlineData(DebugSessionEndReason.Detached, null, "debug connection was detached")]
     public async Task SourceCompletionReportsOnlyObservedProcessExitCodes(
-        SourceVbeDebugSessionEndReason reason, int? exitCode, string message)
+        DebugSessionEndReason reason, int? exitCode, string message)
     {
         using var temp = TempDirectory.Create();
         await using var lease = await new VbaDebugSessionWorkspaceManager(temp.Path)
@@ -221,17 +221,24 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
 
     private sealed class ClosedSourceRunningSession : IStandaloneVbaDebugRunningSession, IDebugResourceOwnerEvidence
     {
-        private readonly TaskCompletionSource<SourceVbeDebugSessionCompletion> closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public ClosedSourceRunningSession() => Completion = ObserveCompletionAsync();
-        internal void Complete(SourceVbeDebugSessionEndReason reason, int? exitCode)
-            => closed.TrySetResult(new(reason, exitCode));
-        internal void FailObservation(Exception failure) => closed.TrySetException(failure);
+        private readonly TaskCompletionSource<DebugSessionCompletion> closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal void Complete(DebugSessionEndReason reason, int? exitCode)
+        {
+            Liveness.Revoke();
+            closed.TrySetResult(new(reason, exitCode));
+        }
+        internal void FailObservation(Exception failure)
+        {
+            Liveness.Revoke();
+            closed.TrySetResult(new(DebugSessionEndReason.ObservationFailed, null)
+            { Outcome = new DebugFailureCompletion(failure).Complete() });
+        }
         internal Exception? ResetFailure { get; init; }
         internal int ResetCalls { get; private set; }
         internal int DisposeCalls { get; private set; }
-        public Task<SourceVbeDebugSessionCompletion>? SourceWorkbookCompletion => closed.Task;
-        public Task<int> Completion { get; }
-        private async Task<int> ObserveCompletionAsync() { _ = await closed.Task; return 0; }
+        public DebugSessionLiveness Liveness { get; } = new();
+        public DebugSessionOwnership Ownership => DebugSessionOwnership.RetainedSource;
+        public Task<DebugSessionCompletion> Completion => closed.Task;
         public int ProcessId => 12345;
         public string TargetModuleName => "Module1";
         public string TargetProcedureName => "Run";

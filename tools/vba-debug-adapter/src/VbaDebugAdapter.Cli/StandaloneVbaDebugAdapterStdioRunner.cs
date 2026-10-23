@@ -130,19 +130,15 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     runningSession = null;
                     var processId = completedSession.ProcessId;
                     int? exitCode = null;
-                    SourceVbeDebugSessionCompletion? sourceCompletion = null;
-                    var sourceCompletionTask = completedSession.SourceWorkbookCompletion;
-                    var sessionOwner = sourceCompletionTask is null ? "owned Excel session" : "source workbook session";
+                    DebugSessionCompletion? sessionCompletion = null;
+                    var sessionOwner = completedSession.Ownership == DebugSessionOwnership.RetainedSource
+                        ? "source workbook session" : "owned Excel session";
                     Exception? failure = null;
                     try
                     {
-                        if (sourceCompletionTask is not null)
-                        {
-                            sourceCompletion = await sourceCompletionTask.ConfigureAwait(false);
-                            exitCode = sourceCompletion.Reason == SourceVbeDebugSessionEndReason.ProcessExited
-                                ? sourceCompletion.ProcessExitCode : null;
-                        }
-                        else exitCode = await completedSession.Completion.ConfigureAwait(false);
+                        sessionCompletion = await completedSession.Completion.ConfigureAwait(false);
+                        exitCode = sessionCompletion.ProcessExitCode;
+                        sessionCompletion.ThrowWithEvidence();
                     }
                     catch (Exception exception)
                     {
@@ -195,16 +191,21 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                         {
                             category = failure is null ? "console" : "important",
                             output = failure is null
-                                ? sourceCompletion?.Reason switch
+                                ? sessionCompletion?.Reason switch
                                 {
-                                    SourceVbeDebugSessionEndReason.WorkbookClosed => $"Source workbook closed; the debug session ended without reopening it.{Environment.NewLine}",
-                                    SourceVbeDebugSessionEndReason.ProcessExited => exitCode is { } observedExit
+                                    DebugSessionEndReason.WorkbookClosed when completedSession.Ownership == DebugSessionOwnership.RetainedSource => $"Source workbook closed; the debug session ended without reopening it.{Environment.NewLine}",
+                                    DebugSessionEndReason.ProcessExited when completedSession.Ownership == DebugSessionOwnership.RetainedSource => exitCode is { } observedExit
                                         ? $"Source Excel process {processId} exited with code {observedExit}.{Environment.NewLine}"
                                         : $"Source Excel process {processId} exited; exit code unavailable.{Environment.NewLine}",
-                                    SourceVbeDebugSessionEndReason.Detached => $"Source workbook debug connection was detached.{Environment.NewLine}",
-                                    _ => $"Owned Excel process {processId} exited with code {exitCode}.{Environment.NewLine}"
+                                    DebugSessionEndReason.Detached => $"Source workbook debug connection was detached.{Environment.NewLine}",
+                                    DebugSessionEndReason.ProcessExited => exitCode is { } ownedExit
+                                        ? $"Owned Excel process {processId} exited with code {ownedExit}.{Environment.NewLine}"
+                                        : $"Owned Excel process {processId} exited; exit code unavailable.{Environment.NewLine}",
+                                    DebugSessionEndReason.WorkbookClosed => $"Owned workbook closed; its debug session ended.{Environment.NewLine}",
+                                    DebugSessionEndReason.Stopped => $"Owned Excel debug session stopped.{Environment.NewLine}",
+                                    _ => $"Debug session ended.{Environment.NewLine}"
                                 }
-                                : $"DebugSessionError: {failure.Message}{Environment.NewLine}"
+                                : $"DebugSessionError: {failure.Message}{Environment.NewLine}{sessionCompletion?.RecoveryGuidance}"
                         }, cancellationToken).ConfigureAwait(false);
                         if (exitCode is not null)
                         {
@@ -529,7 +530,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                             throw new DebugSetupException(
                                 "The VBA debug session already ended.");
                         }
-                        if (runningSession.Completion.IsCompleted)
+                        if (!runningSession.Liveness.IsLive)
                         {
                             throw new DebugSetupException(
                                 "The VBA debug session ended before restart code replacement committed.");
@@ -865,9 +866,15 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
         if (retainedSession is null && restartBinding is not null)
         {
             restartSwapAuthority!.InvalidateForCleanupFailure();
-            if (restartBinding.BoundSession.Completion.IsCompleted)
+            if (!restartBinding.BoundSession.Liveness.IsLive)
             {
                 endedSession = restartBinding.BoundSession;
+                if (endedSession is IDebugResourceOwnerEvidence { CleanupOutcome: { } endedOutcome })
+                {
+                    completion = new DebugFailureCompletion(new DebugFailureException(outcome));
+                    completion.Merge(endedOutcome);
+                    outcome = completion.Complete();
+                }
             }
             else if (!SessionReleaseIsProved(restartBinding.BoundSession))
             {
@@ -897,7 +904,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
             {
                 var invalidatedSession = retainedSession;
                 retainedSession = null;
-                if (invalidatedSession.Completion.IsCompleted)
+                if (!invalidatedSession.Liveness.IsLive)
                 {
                     endedSession = invalidatedSession;
                 }
@@ -969,7 +976,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
     private static async Task CompleteSessionCleanupAsync(DebugFailureCompletion completion,
         IStandaloneVbaDebugRunningSession session, string resource)
     {
-        var isSourceSession = session.SourceWorkbookCompletion is not null;
+        var isSourceSession = session.Ownership == DebugSessionOwnership.RetainedSource;
         if (isSourceSession) resource = "source workbook session";
         try { await session.TerminateAsync().ConfigureAwait(false); }
         catch (Exception exception)
@@ -999,7 +1006,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
         IStandaloneVbaDebugRunningSession session, CancellationToken cancellationToken)
     {
         try { await StopSessionAsync(session).ConfigureAwait(false); }
-        catch (Exception failure) when (session.SourceWorkbookCompletion is not null)
+        catch (Exception failure) when (session.Ownership == DebugSessionOwnership.RetainedSource)
         {
             var completion = new DebugFailureCompletion(failure);
             var explanation = $"DebugSessionError: {failure.Message}{Environment.NewLine}" +
@@ -1028,7 +1035,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
     private static async Task StopSessionAsync(
         IStandaloneVbaDebugRunningSession runningSession)
     {
-        var resource = runningSession.SourceWorkbookCompletion is null
+        var resource = runningSession.Ownership == DebugSessionOwnership.OwnedExcel
             ? "owned Excel session" : "source workbook session";
         Exception? cause = null;
         try { await runningSession.TerminateAsync().ConfigureAwait(false); }
@@ -1246,9 +1253,11 @@ internal interface IStandaloneVbaDebugLaunchService
 
 public interface IStandaloneVbaDebugRunningSession : IAsyncDisposable
 {
-    Task<int> Completion { get; }
+    Task<DebugSessionCompletion> Completion { get; }
 
-    Task<SourceVbeDebugSessionCompletion>? SourceWorkbookCompletion => null;
+    DebugSessionLiveness Liveness { get; }
+
+    DebugSessionOwnership Ownership => DebugSessionOwnership.OwnedExcel;
 
     int ProcessId { get; }
 

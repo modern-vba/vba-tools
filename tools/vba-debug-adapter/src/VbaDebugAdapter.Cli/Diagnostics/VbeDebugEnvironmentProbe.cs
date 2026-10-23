@@ -166,14 +166,16 @@ internal sealed class VbeDebugEnvironmentProbe(
                     "Close any Excel process created by the failed Doctor startup before running scoped cleanup."
             };
         }
-        if (debugSession.Completion.IsCompleted)
+        if (!debugSession.Liveness.IsLive)
         {
             var completedSession = debugSession;
             await CompleteSessionReleaseAsync(completedSession, terminate: false).ConfigureAwait(false);
             debugSession = null;
             ownedProcessCleanupVerified = true;
-            return DebugEnvironmentProbeCheckResult.Pass(
-                "Owned Excel process exit was observed before cooperative close, and its session ownership was disposed.");
+            var receipt = await completedSession.Completion.ConfigureAwait(false);
+            return DebugEnvironmentProbeCheckResult.Pass(receipt.ProcessExitCode is not null
+                ? "Owned Excel process exit was observed before cooperative close, and its session ownership was disposed."
+                : "The owned debug session ended and its owner proved cleanup without fabricating a process exit code.");
         }
         if (debugSession is not IVbeDebugDoctorControl doctorControl)
         {
@@ -199,7 +201,8 @@ internal sealed class VbeDebugEnvironmentProbe(
             return DebugEnvironmentProbeCheckResult.Pass(
                 "No native Doctor breakpoint remained to clear.");
         }
-        if (debugSession?.Completion.IsCompletedSuccessfully == true)
+        if (debugSession?.Completion is { IsCompletedSuccessfully: true } completed
+            && !completed.Result.Failed && completed.Result.ProcessExitCode is not null)
         {
             breakpointSet = false;
             return DebugEnvironmentProbeCheckResult.Pass(

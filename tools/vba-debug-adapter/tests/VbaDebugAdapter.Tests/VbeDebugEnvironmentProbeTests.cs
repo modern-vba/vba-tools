@@ -701,7 +701,7 @@ public sealed class VbeDebugEnvironmentProbeTests
         Exception? commandContextException = null)
         : IVbeDebugSession, IVbeDebugDoctorControl, IDebugResourceOwnerEvidence
     {
-        private readonly TaskCompletionSource<DebugProcessExit> completion = new(
+        private readonly TaskCompletionSource<DebugSessionCompletion> completion = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
         private Exception? retainedFailure;
 
@@ -711,7 +711,8 @@ public sealed class VbeDebugEnvironmentProbeTests
         {
             RecordReleasedResources(failure);
             retainedFailure = failure;
-            completion.TrySetException(failure);
+            Liveness.Revoke();
+            completion.TrySetResult(new(DebugSessionEndReason.ObservationFailed, null) { Outcome = CleanupOutcome! });
             _ = completion.Task.Exception;
         }
 
@@ -751,7 +752,8 @@ public sealed class VbeDebugEnvironmentProbeTests
 
         public List<string> CleanupEvents { get; } = [];
 
-        public Task<DebugProcessExit> Completion => completion.Task;
+        public DebugSessionLiveness Liveness { get; } = new();
+        public Task<DebugSessionCompletion> Completion => completion.Task;
 
         public Task<DebugCompilationHostFacts> GetCompilationHostFactsAsync(
             CancellationToken cancellationToken)
@@ -789,7 +791,8 @@ public sealed class VbeDebugEnvironmentProbeTests
         {
             CleanupEvents.Add("terminate-session");
             if (retainedFailure is not null) { return ValueTask.FromException(retainedFailure); }
-            completion.TrySetResult(new DebugProcessExit(-1));
+            Liveness.Revoke();
+            completion.TrySetResult(new(DebugSessionEndReason.Stopped, -1));
             return ValueTask.CompletedTask;
         }
 
@@ -860,12 +863,15 @@ public sealed class VbeDebugEnvironmentProbeTests
             cancellationToken.ThrowIfCancellationRequested();
             CleanupEvents.Add("cooperative-close");
             if (retainedFailure is not null) { return Task.FromException(retainedFailure); }
-            completion.TrySetResult(new DebugProcessExit(0));
+            completion.TrySetResult(new(DebugSessionEndReason.ProcessExited, 0));
             return Task.CompletedTask;
         }
 
         public void MarkProcessExited()
-            => completion.TrySetResult(new DebugProcessExit(0));
+        {
+            Liveness.Revoke();
+            completion.TrySetResult(new(DebugSessionEndReason.ProcessExited, 0));
+        }
 
         public Task WaitForBreakModeAsync(
             TimeSpan timeout,

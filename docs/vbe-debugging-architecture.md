@@ -781,7 +781,7 @@ compatibility-only workbook-confirmation sinks. Tests exercise immutable source
 capture, exact binding,
 capture/ready/Reset/import/Run ordering, dirty-workbook launch and Restart without
 confirmation or Save, readiness rejection before replacement, same-process
-Restart, and typed source-workbook versus process completion. Workspace tests
+Restart, and the single typed session completion and early liveness contract. Workspace tests
 prove create-new leases/generations and durable companion retention before child
 start; unproved child release prevents snapshot deletion and stale reaping.
 Malicious paths and symlink/reparse substitutions never become ownership
@@ -1028,3 +1028,35 @@ A later clean COM quit left the probe Excel process alive until explicit
 termination, which confirms that graceful COM cleanup is not a sufficient
 disposable-probe lifetime guarantee. Strong process ownership remains mandatory
 for Doctor and other disposable probes, not for source Debug's borrowed lifetime.
+
+## Early authority revocation and final session receipt
+
+Source and owned Excel sessions expose one `DebugSessionCompletion`. Its initial
+trigger, termination reason, optional actual exit code and retained
+`DebugFailureOutcome` coexist; final-task success alone is not successful debug
+termination. No unknown code is synthesized. An explicit ownership policy keeps
+Source Reset/manual guidance separate from owned-process cleanup without an
+optional second completion task.
+
+At first terminal observation the existing owner synchronously revokes
+`DebugSessionLiveness`, then signals its internal raw ending task. Every native
+execution, Restart binding, retention check and commit fence reads early
+liveness. Revocation notifications accelerate cancellation but do not substitute
+for these checks. Consumed planned Restart authority is distinct from an
+unplanned end before cutover.
+
+Source modal supervision waits on raw ending, retires its phase, and never waits
+on the final receipt that includes that retirement. Ordinary Run returning to
+Design mode does not revoke liveness. Source Stop performs at most one bounded
+exact-project Reset; Dispose detaches, and all terminal causes share one cleanup
+and retained failure replay. Observer loss preserves failure and manual Reset
+guidance. Neither path saves, closes or kills the Source workbook/application.
+The owned session retains its process/Job-before-observer cleanup order.
+
+The final receipt is sealed only after the existing owner's bounded release
+attempts. Cancelling an external wait cannot cancel shared cleanup. Available
+process facts may be included through sealing without waiting solely for an
+exit that need not occur. Late faults are observed and cannot rewrite the
+receipt or release retained material. DAP uses the actual code only when one
+was observed and sends terminated once over a healthy transport. These rules
+refine ADRs 0044, 0048 and 0062; see ADR 0071.

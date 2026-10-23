@@ -149,10 +149,11 @@ public sealed class SourceVbeDebugAutomationTests
         var session = await automation.AttachOrOpenAsync(path, CancellationToken.None);
         try
         {
-            var failure = await Assert.ThrowsAnyAsync<Exception>(() => session.Completion.WaitAsync(TimeSpan.FromSeconds(1)));
-            var retained = Assert.IsAssignableFrom<IDebugFailureEvidence>(failure).FailureOutcome;
-            Assert.Same(primary, retained.PrimaryFailure);
-            Assert.Contains("Use Reset", failure.Message);
+            var receipt = await session.Completion.WaitAsync(TimeSpan.FromSeconds(1));
+            Assert.Equal(DebugSessionEndReason.ObservationFailed, receipt.Reason);
+            Assert.False(session.Liveness.IsLive);
+            Assert.True(receipt.Failed);
+            Assert.Same(primary, receipt.Outcome.PrimaryFailure);
         }
         finally
         {
@@ -252,8 +253,10 @@ public sealed class SourceVbeDebugAutomationTests
                 new SourceInputWaitSink(), CancellationToken.None);
             windows.Fail(primary);
 
-            var failure = await Assert.ThrowsAsync<DebugSetupException>(() =>
-                session.Completion.WaitAsync(TimeSpan.FromSeconds(1)));
+            var receipt = await session.Completion.WaitAsync(TimeSpan.FromSeconds(1));
+            Assert.Equal(DebugSessionEndReason.ObservationFailed, receipt.Reason);
+            Assert.True(receipt.Failed);
+            var failure = Assert.IsType<DebugSetupException>(receipt.Outcome.PrimaryFailure);
 
             Assert.Contains("Use Reset", failure.Message);
             Assert.Same(primary, failure.InnerException);
@@ -345,13 +348,17 @@ public sealed class SourceVbeDebugAutomationTests
             completionProbe: () => throw new InvalidOperationException("Live inventory unavailable."));
         var automation = new SourceVbeDebugAutomation(new FakeSourceVbeDesktopConnector(binding),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()), new FakeDebugWindowActivator());
-        await using var session = await automation.AttachOrOpenAsync(path, CancellationToken.None);
+        var session = await automation.AttachOrOpenAsync(path, CancellationToken.None);
 
-        var failure = await Assert.ThrowsAsync<DebugSetupException>(() =>
-            session.Completion.WaitAsync(TimeSpan.FromSeconds(1)));
+        var receipt = await session.Completion.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(DebugSessionEndReason.ObservationFailed, receipt.Reason);
+        Assert.True(receipt.Failed);
+        var failure = Assert.IsType<DebugSetupException>(receipt.Outcome.PrimaryFailure);
 
         Assert.Contains("Use Reset", failure.Message);
         Assert.IsType<InvalidOperationException>(failure.InnerException);
+        var repeated = await Assert.ThrowsAnyAsync<Exception>(() => session.DisposeAsync().AsTask());
+        Assert.Same(receipt.Outcome, Assert.IsAssignableFrom<IDebugFailureEvidence>(repeated).FailureOutcome);
     }
 
     [Fact]
@@ -463,7 +470,7 @@ public sealed class SourceVbeDebugAutomationTests
         var path = Path.Combine(temp.Path, "Source.xlsm");
         File.WriteAllText(path, "source fixture");
         var model = FakeVbeModel.Create(path, []);
-        SourceVbeDebugSessionCompletion? observed = null;
+        DebugSessionTermination? observed = null;
         var binding = new SourceVbeDesktopBinding(model.Excel, model.Workbook, path,
             12345, 638000000000000000, true, () => true, () => { },
             completionProbe: () => observed);
@@ -474,10 +481,10 @@ public sealed class SourceVbeDebugAutomationTests
         // A canceled BeforeClose still leaves the workbook in the live inventory.
         await Task.Delay(150);
         Assert.False(session.Completion.IsCompleted);
-        observed = new(SourceVbeDebugSessionEndReason.WorkbookClosed, null);
+        observed = new(DebugSessionEndReason.WorkbookClosed, null);
         var result = await session.Completion.WaitAsync(TimeSpan.FromSeconds(1));
 
-        Assert.Equal(SourceVbeDebugSessionEndReason.WorkbookClosed, result.Reason);
+        Assert.Equal(DebugSessionEndReason.WorkbookClosed, result.Reason);
         Assert.Null(result.ProcessExitCode);
     }
 
@@ -647,7 +654,7 @@ public sealed class SourceVbeDebugAutomationTests
         var session = await automation.AttachOrOpenAsync(workbookPath, CancellationToken.None);
         await session.DisposeAsync();
 
-        Assert.Equal(SourceVbeDebugSessionEndReason.Detached,
+        Assert.Equal(DebugSessionEndReason.Detached,
             (await session.Completion).Reason);
         Assert.Contains("release-binding", events);
         Assert.DoesNotContain("excel-quit", events);

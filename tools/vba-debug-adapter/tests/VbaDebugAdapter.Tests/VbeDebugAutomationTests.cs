@@ -771,7 +771,7 @@ public sealed class VbeDebugAutomationTests
         Assert.False(session.Completion.IsCompleted);
 
         process.Exit(0);
-        Assert.Equal(0, (await session.Completion).ExitCode);
+        Assert.Equal(0, (await session.Completion).ProcessExitCode);
     }
 
     [Fact]
@@ -860,7 +860,7 @@ public sealed class VbeDebugAutomationTests
         model.Workbook.Close();
         var completion = await session.Completion.WaitAsync(TimeSpan.FromSeconds(2));
 
-        Assert.Equal(-1, completion.ExitCode);
+        Assert.Equal(-1, completion.ProcessExitCode);
         Assert.Equal(1, job.TerminateCalls);
         Assert.Equal(1, process.KillCalls);
     }
@@ -1018,6 +1018,14 @@ public sealed class VbeDebugAutomationTests
         }
     }
 
+    private static async Task ReplayFailedCompletionAsync(IVbeDebugSession session)
+    {
+        var result = await session.Completion;
+        Assert.True(result.Failed);
+        Assert.Same(result.Outcome, Assert.IsAssignableFrom<IDebugResourceOwnerEvidence>(session).CleanupOutcome);
+        await session.DisposeAsync();
+    }
+
     private sealed class ExpectedSetupFailureDisposal(IVbeDebugSession session, bool cancelled = false) : IAsyncDisposable
     {
         public async ValueTask DisposeAsync()
@@ -1029,7 +1037,8 @@ public sealed class VbeDebugAutomationTests
             else { Assert.IsType<DebugSetupException>(failure); }
             Assert.Same(outcome.PrimaryFailure, failure);
             Assert.False(outcome.HasCleanupFailure);
-            Assert.Same(failure, await Record.ExceptionAsync(() => session.Completion));
+            Assert.Same(outcome, (await session.Completion).Outcome);
+            Assert.True((await session.Completion).Failed);
         }
     }
 
@@ -1235,8 +1244,7 @@ public sealed class VbeDebugAutomationTests
             await session.RunTargetAsync(new DebugTargetProcedure("DebugModule", "RunTarget"), sink, CancellationToken.None);
             windows.FailAfterRun();
 
-            var actual = await Assert.ThrowsAsync<IOException>(() =>
-                session.Completion.WaitAsync(TimeSpan.FromSeconds(1)));
+            var actual = await Assert.ThrowsAsync<IOException>(() => ReplayFailedCompletionAsync(session).WaitAsync(TimeSpan.FromSeconds(1)));
             Assert.Same(failure, actual);
             Assert.True(process.HasExited);
             Assert.False(Directory.Exists(fixture.GenerationWorkspace.GenerationWorkspacePath));
@@ -1277,8 +1285,7 @@ public sealed class VbeDebugAutomationTests
         if (observationWins) { observation.SetException(monitorFailure); }
         else { _ = session.TerminateAsync(); }
 
-        var failure = await Assert.ThrowsAsync<VbeDebugSessionLifetimeException>(() =>
-            session.Completion.WaitAsync(TimeSpan.FromSeconds(2)));
+        var failure = await Assert.ThrowsAsync<VbeDebugSessionLifetimeException>(() => ReplayFailedCompletionAsync(session).WaitAsync(TimeSpan.FromSeconds(2)));
         Assert.Equal(observationWins ? "modal observation" : "Stop", failure.TerminalCause);
         Assert.Same(observationWins ? monitorFailure : null, failure.PrimaryFailure);
         Assert.Contains(cleanupFailure, failure.CleanupFailures.SelectMany(FlattenFailures));
@@ -1316,7 +1323,7 @@ public sealed class VbeDebugAutomationTests
         Assert.Contains(workbookFailure, failure.CleanupFailures);
         Assert.Contains(excelFailure, failure.CleanupFailures);
         Assert.Contains(dispatcherFailure, failure.CleanupFailures);
-        Assert.Same(failure, await Assert.ThrowsAsync<VbeDebugSessionLifetimeException>(() => session.Completion));
+        Assert.Same(failure, await Assert.ThrowsAsync<VbeDebugSessionLifetimeException>(() => ReplayFailedCompletionAsync(session)));
         Assert.Same(failure, await Assert.ThrowsAsync<VbeDebugSessionLifetimeException>(() => session.DisposeAsync().AsTask()));
         Assert.Single(events, entry => entry == "process-dispose");
         Assert.False(Directory.Exists(fixture.GenerationWorkspace.GenerationWorkspacePath));
@@ -2203,7 +2210,7 @@ public sealed class VbeDebugAutomationTests
             var setupFailure = await Assert.ThrowsAsync<DebugSetupException>(() => session.RunTargetAsync(
                 new DebugTargetProcedure("DebugModule", "RunTarget"),
                 observeInputWait ? new RecordingDebugInputWaitSink() : null, CancellationToken.None));
-            var terminalFailure = await Record.ExceptionAsync(() => session.Completion.WaitAsync(TimeSpan.FromSeconds(2)));
+            var terminalFailure = await Record.ExceptionAsync(() => ReplayFailedCompletionAsync(session).WaitAsync(TimeSpan.FromSeconds(2)));
 
             Assert.Same(setupFailure, terminalFailure);
             var outcome = Assert.IsType<DebugFailureOutcome>(
@@ -2293,8 +2300,7 @@ public sealed class VbeDebugAutomationTests
             Assert.Contains(jobFailure, FlattenFailures(failure));
             Assert.Contains(killFailure, FlattenFailures(failure));
             Assert.True(outcome.HasUnprovedRelease);
-            var terminalFailure = await Record.ExceptionAsync(() =>
-                session.Completion.WaitAsync(TimeSpan.FromSeconds(2)));
+            var terminalFailure = await Record.ExceptionAsync(() => ReplayFailedCompletionAsync(session).WaitAsync(TimeSpan.FromSeconds(2)));
             var terminalOutcome = Assert.IsAssignableFrom<IDebugFailureEvidence>(terminalFailure).FailureOutcome;
             Assert.Same(primary, terminalOutcome.PrimaryFailure);
             Assert.Equal(1, process.KillCalls);

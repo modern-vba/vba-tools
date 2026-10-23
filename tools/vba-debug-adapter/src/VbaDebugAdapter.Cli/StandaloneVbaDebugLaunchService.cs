@@ -561,10 +561,12 @@ internal sealed class StandaloneVbaDebugRunningSession : IStandaloneVbaDebugRunn
         this.verifiedBreakpoints = verifiedBreakpoints;
         TargetModuleName = targetModuleName;
         TargetProcedureName = targetProcedureName;
-        Completion = AwaitExitCodeAsync(session.Completion);
+        Completion = session.Completion;
     }
 
-    public Task<int> Completion { get; }
+    public Task<DebugSessionCompletion> Completion { get; }
+
+    public DebugSessionLiveness Liveness => session.Liveness;
 
     public int ProcessId => session.ProcessId;
 
@@ -590,6 +592,5 @@ internal sealed class StandaloneVbaDebugRunningSession : IStandaloneVbaDebugRunn
     private async Task DisposeSessionAsync()
         => await session.DisposeAsync().ConfigureAwait(false);
 
-    private static async Task<int> AwaitExitCodeAsync(Task<DebugProcessExit> completion)
-        => (await completion.ConfigureAwait(false)).ExitCode;
+
 }

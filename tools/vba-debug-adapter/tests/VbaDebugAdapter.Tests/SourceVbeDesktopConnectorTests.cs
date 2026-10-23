@@ -305,14 +305,14 @@ public sealed class SourceVbeDesktopConnectorTests
         {
             Assert.Equal(process, observed);
             return ++processProbes == 1 ? null
-                : new SourceVbeDebugSessionCompletion(SourceVbeDebugSessionEndReason.ProcessExited, null);
+                : new DebugSessionTermination(DebugSessionEndReason.ProcessExited, null);
         };
         api.IdentityReadFailure = new COMException("The bound Excel exited during the COM read.", unchecked((int)0x80010108));
 
         var completion = binding.ProbeCompletion();
 
         Assert.NotNull(completion);
-        Assert.Equal(SourceVbeDebugSessionEndReason.ProcessExited, completion.Reason);
+        Assert.Equal(DebugSessionEndReason.ProcessExited, completion.Reason);
         Assert.Null(completion.ProcessExitCode);
         Assert.Equal(2, processProbes);
         Assert.Equal(0, application.Workbooks.OpenCount);
@@ -341,12 +341,12 @@ public sealed class SourceVbeDesktopConnectorTests
         released.Clear();
         var processProbes = 0;
         api.CompletionOverride = _ => ++processProbes == 1 ? null
-            : new SourceVbeDebugSessionCompletion(SourceVbeDebugSessionEndReason.ProcessExited, null);
+            : new DebugSessionTermination(DebugSessionEndReason.ProcessExited, null);
         application.Workbooks.BeforeCount = () => throw new COMException("Excel exited during workbook inventory.");
 
         var completion = binding.ProbeCompletion();
 
-        Assert.Equal(SourceVbeDebugSessionEndReason.ProcessExited, completion!.Reason);
+        Assert.Equal(DebugSessionEndReason.ProcessExited, completion!.Reason);
         Assert.Equal(2, processProbes);
         Assert.Single(released, value => ReferenceEquals(value, application.Workbooks));
         Assert.DoesNotContain(released, value => ReferenceEquals(value, workbook));
@@ -371,7 +371,7 @@ public sealed class SourceVbeDesktopConnectorTests
         rejectRelease = true;
         var processProbes = 0;
         api.CompletionOverride = _ => ++processProbes == 1 ? null
-            : new SourceVbeDebugSessionCompletion(SourceVbeDebugSessionEndReason.ProcessExited, null);
+            : new DebugSessionTermination(DebugSessionEndReason.ProcessExited, null);
         var readFailure = new COMException("Excel exited during workbook inventory.");
         application.Workbooks.BeforeCount = () => throw readFailure;
 
@@ -517,7 +517,7 @@ public sealed class SourceVbeDesktopConnectorTests
         public FakeApplication? CreatedApplication { get; init; }
         public SourceVbeProcessIdentity? ProcessIdentityOverride { get; set; }
         public Exception? IdentityReadFailure { get; set; }
-        public Func<SourceVbeProcessIdentity, SourceVbeDebugSessionCompletion?>? CompletionOverride { get; set; }
+        public Func<SourceVbeProcessIdentity, DebugSessionTermination?>? CompletionOverride { get; set; }
         public Func<IReadOnlyList<SourceVbeProcessIdentity>>? CaptureOverride { get; init; }
         private static readonly SourceVbeProcessIdentity CreatedProcess = new(12003, 638000000000000003);
 
@@ -541,7 +541,7 @@ public sealed class SourceVbeDesktopConnectorTests
                 : applications.Single(item => ReferenceEquals(item.Application, application)).Process);
         }
 
-        public SourceVbeDebugSessionCompletion? ReadProcessCompletion(SourceVbeProcessIdentity process)
+        public DebugSessionTermination? ReadProcessCompletion(SourceVbeProcessIdentity process)
             => CompletionOverride?.Invoke(process);
     }
 

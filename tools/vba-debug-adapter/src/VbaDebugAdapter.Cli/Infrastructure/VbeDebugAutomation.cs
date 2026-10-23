@@ -377,7 +377,9 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         private readonly TaskCompletionSource<object> workbookOpenedSignal =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly object generationOwnershipGate = new();
-        private readonly Task<DebugProcessExit> completion;
+        private readonly Task<DebugSessionCompletion> completion;
+        private Task? terminalReplay;
+        private bool completionSealed;
         private readonly int processId;
         private readonly TaskCompletionSource<SessionEnd> terminalEnd =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -428,7 +430,9 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         public bool StrongProcessOwnershipEstablished =>
             processOwner.KillOnCloseJobAssigned;
 
-        public Task<DebugProcessExit> Completion => completion;
+        public Task<DebugSessionCompletion> Completion => completion;
+
+        public DebugSessionLiveness Liveness { get; } = new();
 
         public async Task CreateFixtureWorkbookAsync(
             string workbookPath,
@@ -501,7 +505,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             lock (generationOwnershipGate)
             {
                 ObjectDisposedException.ThrowIf(disposed != 0, this);
-                ObjectDisposedException.ThrowIf(terminalEnd.Task.IsCompleted, this);
+                ObjectDisposedException.ThrowIf(!Liveness.IsLive, this);
                 if (this.generationWorkspace is not null)
                 {
                     throw new InvalidOperationException(
@@ -828,16 +832,24 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         public ValueTask TerminateAsync()
         {
             EstablishEnd("Stop", null);
-            return new ValueTask(completion);
+            lock (generationOwnershipGate) return new ValueTask(terminalReplay ??= ReplayCompletionAsync());
         }
 
         public ValueTask DisposeAsync() => TerminateAsync();
+
+        private async Task ReplayCompletionAsync()
+        {
+            var result = await completion.ConfigureAwait(false);
+            if (result.Outcome.HasCleanupFailure)
+                throw new VbeDebugSessionLifetimeException(result.InitialTrigger, result.Outcome);
+            result.Throw();
+        }
 
         private IDebugModalPromptPhase? StartPromptPhase(DebugInputWait inputWait, IDebugInputWaitSink? sink)
         {
             lock (generationOwnershipGate)
             {
-                ObjectDisposedException.ThrowIf(disposed != 0 || terminalEnd.Task.IsCompleted, this);
+                ObjectDisposedException.ThrowIf(disposed != 0 || !Liveness.IsLive, this);
                 if (sink is null) { return null; }
                 try
                 {
@@ -868,7 +880,10 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         {
             lock (generationOwnershipGate)
             {
-                if (failure is not null) { lifetimeFailures.Add(failure); }
+                if (failure is not null && !completionSealed) { lifetimeFailures.Add(failure); }
+                if (!Liveness.IsLive) return;
+                try { Liveness.Revoke(); }
+                catch (Exception callbackFailure) { lifetimeFailures.Add(callbackFailure); }
                 terminalEnd.TrySetResult(new SessionEnd(cause, failure));
             }
         }
@@ -905,7 +920,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             await workbookLifetimeMonitor.WaitForCloseAsync(workbook, dispatcher, rawProcessCompletion).ConfigureAwait(false);
         }
 
-        private async Task<DebugProcessExit> CompleteLifetimeAsync()
+        private async Task<DebugSessionCompletion> CompleteLifetimeAsync()
         {
             var established = await terminalEnd.Task.ConfigureAwait(false);
             IVbaDebugGenerationWorkspace? ownedGenerationWorkspace;
@@ -1009,13 +1024,24 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     failureCompletion.AddFailure("session observation", "session observers", DebugResourceKind.Observation, failure, processId);
                 }
                 CleanupOutcome = failureCompletion.Complete();
+                completionSealed = true;
             }
-            if (CleanupOutcome.HasCleanupFailure)
+            var reason = established.Failure is not null ? DebugSessionEndReason.ObservationFailed
+                : established.Cause switch
+                {
+                    "process exit" => DebugSessionEndReason.ProcessExited,
+                    "workbook close" => DebugSessionEndReason.WorkbookClosed,
+                    "Stop" => DebugSessionEndReason.Stopped,
+                    _ => DebugSessionEndReason.ObservationFailed
+                };
+            // Process cleanup can supply an observed code, but a workbook close
+            // never waits solely to manufacture one. Keep the initial trigger.
+            var exitCode = processOwner.Completion.IsCompletedSuccessfully
+                ? (int?)processOwner.Completion.Result.ExitCode : null;
+            return new DebugSessionCompletion(reason, exitCode)
             {
-                throw new VbeDebugSessionLifetimeException(established.Cause, CleanupOutcome);
-            }
-            CleanupOutcome.Throw();
-            return await processOwner.Completion.ConfigureAwait(false);
+                InitialTrigger = established.Cause, Outcome = CleanupOutcome
+            };
         }
 
         private sealed record SessionEnd(string Cause, Exception? Failure);
@@ -1035,7 +1061,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             {
                 // The raw process exit can win the phase race while the session is
                 // completing the setup failure that caused that same exit.
-                await completion.ConfigureAwait(false);
+                (await completion.ConfigureAwait(false)).Throw();
                 throw;
             }
         }
@@ -1044,6 +1070,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             Func<T> operation,
             CancellationToken cancellationToken)
         {
+            ObjectDisposedException.ThrowIf(!Liveness.IsLive, this);
             using var cancellationRegistration = cancellationToken.UnsafeRegister(
                 static state =>
                 {
@@ -1114,7 +1141,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         private async Task ThrowSetupFailureAsync(Exception failure, string cause)
         {
             EstablishEnd(cause, failure);
-            await completion.ConfigureAwait(false);
+            await TerminateAsync().ConfigureAwait(false);
         }
 
         private void RequestCancellationTermination(CancellationToken cancellationToken)
@@ -1125,7 +1152,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 {
                     var failure = new OperationCanceledException("VBE debug setup was cancelled.", cancellationToken);
                     lifetimeFailures.Add(failure);
-                    terminalEnd.TrySetResult(new SessionEnd("setup cancellation", failure));
+                    EstablishEnd("setup cancellation", failure);
                 }
             }
             _ = TerminateAfterCancellationAsync();
@@ -1177,7 +1204,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
 
         object IVbeNativeOperationAdapter.GetCurrentWorkbook()
         {
-            if (terminalEnd.Task.IsCompleted || completion.IsCompleted)
+            if (!Liveness.IsLive)
                 throw new DebugSetupException("The owned Excel session has ended.");
             var workbook = GetOpenedWorkbook();
             if (openedWorkbookIdentity is { } expected

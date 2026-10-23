@@ -429,7 +429,7 @@ public sealed class SourceWorkbookVbaDebugLaunchServiceTests
     private sealed class NativeSession(string workbookPath, List<string> events)
         : ISourceVbeDebugSession, IDebugResourceOwnerEvidence
     {
-        private readonly TaskCompletionSource<SourceVbeDebugSessionCompletion> completion =
+        private readonly TaskCompletionSource<DebugSessionCompletion> completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal Exception? RunFailure { get; set; }
         internal TaskCompletionSource? RunContinuation { get; set; }
@@ -439,7 +439,13 @@ public sealed class SourceWorkbookVbaDebugLaunchServiceTests
         public int ProcessId => 12345;
         public long ProcessStartUtcTicks => 638000000000000000;
         public bool WasAlreadyOpen => true;
-        public Task<SourceVbeDebugSessionCompletion> Completion => completion.Task;
+        public DebugSessionLiveness Liveness { get; } = new();
+        public Task<DebugSessionCompletion> Completion => completion.Task;
+        public async ValueTask TerminateAsync()
+        {
+            Liveness.Revoke();
+            await ResetExecutionAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
+        }
         public DebugFailureOutcome? CleanupOutcome { get; private set; }
         public Task<SourceVbeDebugSessionInspection> InspectAsync(CancellationToken cancellationToken)
             => Task.FromResult(new SourceVbeDebugSessionInspection(
@@ -468,6 +474,7 @@ public sealed class SourceWorkbookVbaDebugLaunchServiceTests
         }
         public ValueTask DisposeAsync()
         {
+            Liveness.Revoke();
             events.Add("detach");
             var released = new DebugFailureCompletion();
             if (!ReportEmptyCleanup)
@@ -475,7 +482,7 @@ public sealed class SourceWorkbookVbaDebugLaunchServiceTests
                     released.AddEvidence(new("source-binding-release", workbookPath, kind, true,
                         "Fixture binding released; no workbook/process lifetime ownership was acquired.", ProcessId));
             CleanupOutcome = released.Complete();
-            completion.TrySetResult(new(SourceVbeDebugSessionEndReason.Detached, null));
+            completion.TrySetResult(new(DebugSessionEndReason.Detached, null));
             return ValueTask.CompletedTask;
         }
     }

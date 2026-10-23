@@ -12,7 +12,9 @@ public interface IVbeDebugSession : IAsyncDisposable
 {
     int ProcessId { get; }
 
-    Task<DebugProcessExit> Completion { get; }
+    Task<DebugSessionCompletion> Completion { get; }
+
+    DebugSessionLiveness Liveness { get; }
 
     Task<DebugCompilationHostFacts> GetCompilationHostFactsAsync(
         CancellationToken cancellationToken);

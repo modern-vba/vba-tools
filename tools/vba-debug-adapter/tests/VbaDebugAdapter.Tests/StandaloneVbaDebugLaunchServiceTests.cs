@@ -2016,10 +2016,12 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         Exception? terminateException = null,
         Exception? disposeException = null) : IStandaloneVbaDebugRunningSession, IDebugResourceOwnerEvidence
     {
-        private readonly TaskCompletionSource<int> completion = new(
+        private readonly TaskCompletionSource<DebugSessionCompletion> completion = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Task<int> Completion => completion.Task;
+        public DebugSessionLiveness Liveness { get; } = new();
+
+        public Task<DebugSessionCompletion> Completion => completion.Task;
 
         public int ProcessId => 4321;
 
@@ -2037,6 +2039,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
 
         public ValueTask TerminateAsync()
         {
+            Liveness.Revoke();
             TerminateCalls++;
             events.Add($"{label}:terminate");
             if (terminateException is not null) { throw terminateException; }
@@ -2057,7 +2060,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         List<string> events,
         string label) : IStandaloneVbaDebugRunningSession, IDebugResourceOwnerEvidence
     {
-        private readonly TaskCompletionSource<int> completion = new(
+        private readonly TaskCompletionSource<DebugSessionCompletion> completion = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource terminateStarted = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2068,7 +2071,9 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         private readonly TaskCompletionSource releaseDispose = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Task<int> Completion => completion.Task;
+        public DebugSessionLiveness Liveness { get; } = new();
+
+        public Task<DebugSessionCompletion> Completion => completion.Task;
 
         public DebugFailureOutcome? CleanupOutcome { get; private set; }
 
@@ -2090,6 +2095,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
 
         public async ValueTask TerminateAsync()
         {
+            Liveness.Revoke();
             events.Add($"{label}:terminate-start");
             terminateStarted.TrySetResult();
             await releaseTerminate.Task;
@@ -2141,8 +2147,10 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
 
         public IReadOnlyList<VbeBreakpoint> Breakpoints { get; private set; } = [];
 
-        public Task<DebugProcessExit> Completion { get; } =
-            Task.FromResult(new DebugProcessExit(0));
+        public DebugSessionLiveness Liveness { get; } = new();
+
+        public Task<DebugSessionCompletion> Completion { get; } =
+            new TaskCompletionSource<DebugSessionCompletion>().Task;
 
         public Task<DebugCompilationHostFacts> GetCompilationHostFactsAsync(
             CancellationToken cancellationToken)
@@ -2205,6 +2213,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
 
         public ValueTask TerminateAsync()
         {
+            Liveness.Revoke();
             events.Add("terminate");
             if (terminateException is not null)
             {

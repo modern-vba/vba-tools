@@ -67,7 +67,7 @@ public sealed class SourceWorkbookResetWindowsExcelIntegrationTests(ITestOutputH
         await fixture.AssertRetainedStateAsync();
 
         await session.DisposeAsync();
-        Assert.Equal(SourceVbeDebugSessionEndReason.Detached, (await session.Completion).Reason);
+        Assert.Equal(DebugSessionEndReason.Detached, (await session.Completion).Reason);
         Assert.Null((await session.Completion).ProcessExitCode);
         AssertReleasedWithoutProcessOwnership(session);
         await fixture.AssertRetainedStateAsync();
@@ -110,7 +110,7 @@ public sealed class SourceWorkbookResetWindowsExcelIntegrationTests(ITestOutputH
 
         await fixture.CloseSourceAsync();
         var completion = await session.Completion.WaitAsync(TimeSpan.FromSeconds(15));
-        Assert.Equal(SourceVbeDebugSessionEndReason.WorkbookClosed, completion.Reason);
+        Assert.Equal(DebugSessionEndReason.WorkbookClosed, completion.Reason);
         Assert.Null(completion.ProcessExitCode);
         await session.DisposeAsync();
         await Task.Delay(250);
@@ -274,7 +274,7 @@ public sealed class SourceWorkbookResetWindowsExcelIntegrationTests(ITestOutputH
             await session.ResetExecutionAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
             await session.DisposeAsync();
             AssertReleasedWithoutProcessOwnership(session);
-            Assert.Equal(SourceVbeDebugSessionEndReason.Detached, (await session.Completion).Reason);
+            Assert.Equal(DebugSessionEndReason.Detached, (await session.Completion).Reason);
             AssertExactProcessAlive(identity);
 
             // Reacquire only AFTER source COM/STA references were released, so a
@@ -454,7 +454,7 @@ public sealed class SourceWorkbookResetWindowsExcelIntegrationTests(ITestOutputH
             => failArchitectureFor == process
                 ? throw new InvalidOperationException("Native fixture acquisition boundary failed after exact binding.")
                 : inner.ReadProcessArchitecture(process);
-        public SourceVbeDebugSessionCompletion? ReadProcessCompletion(SourceVbeProcessIdentity process)
+        public DebugSessionTermination? ReadProcessCompletion(SourceVbeProcessIdentity process)
             => inner.ReadProcessCompletion(process);
     }
 

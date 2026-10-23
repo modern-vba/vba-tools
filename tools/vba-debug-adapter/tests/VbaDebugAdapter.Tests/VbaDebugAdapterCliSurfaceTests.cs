@@ -1528,10 +1528,10 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         const string sessionId = "0123456789abcdef0123456789abcdef";
         const string preparationId = "fedcba9876543210fedcba9876543210";
         var events = new List<string>();
-        var completion = new TaskCompletionSource<int>(
+        var completion = new DebugSessionTestCompletion(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var oldSession = new RecordingRunningSession(
-            completion: completion.Task,
+            completion: completion.Task, liveness: completion.Liveness,
             events: events,
             label: "old");
         var freshSession = new RecordingRunningSession(
@@ -1596,7 +1596,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             CancellationToken.None);
 
         await launchService.RestartBuildStarted.WaitAsync(TimeSpan.FromSeconds(2));
-        completion.TrySetResult(23);
+        completion.TrySetResult(new(DebugSessionEndReason.ProcessExited, 23));
         await launchService.RestartBuildCancellationObserved.WaitAsync(
             TimeSpan.FromSeconds(2));
         launchService.ReleaseRestartBuild();
@@ -2426,12 +2426,12 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
     [InlineData("response", true)]
     public async Task FileOnlyRestartFailureRetainsItsPathWhenTheOldSessionEnds(string phase, bool faulted)
     {
-        var oldCompletion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var oldSession = new RecordingRunningSession(completion: oldCompletion.Task);
+        var oldCompletion = new DebugSessionTestCompletion(TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldSession = new RecordingRunningSession(completion: oldCompletion.Task, liveness: oldCompletion.Liveness);
         void EndOldSession()
         {
             if (faulted) { oldCompletion.TrySetException(new IOException("The old session observer failed.")); }
-            else { oldCompletion.TrySetResult(23); }
+            else { oldCompletion.TrySetResult(new(DebugSessionEndReason.ProcessExited, 23)); }
         }
         var service = new FailingRestartPlanDebugLaunchService(oldSession, CreateFileOnlyGenerationFailure(),
             phase == "cleanup" ? EndOldSession : null);
@@ -2895,11 +2895,11 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
     {
         const string sessionId = "0123456789abcdef0123456789abcdef";
         const string preparationId = "fedcba9876543210fedcba9876543210";
-        var completion = new TaskCompletionSource<int>(
+        var completion = new DebugSessionTestCompletion(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var runningSession = new RecordingRunningSession(
             processId: 2718,
-            completion: completion.Task);
+            completion: completion.Task, liveness: completion.Liveness);
         var launchService = new RecordingDebugLaunchService(runningSession);
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
@@ -2940,7 +2940,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
                     StringComparison.Ordinal),
                 TimeSpan.FromSeconds(2)));
             if (faulted) { completion.TrySetException(new IOException("Delayed modal observation failure.")); }
-            else { completion.TrySetResult(23); }
+            else { completion.TrySetResult(new(DebugSessionEndReason.ProcessExited, 23)); }
             Assert.Equal(faulted ? 1 : 0, await invocation.WaitAsync(TimeSpan.FromSeconds(2)));
 
             var messages = ReadDapMessages(standardOutput);
@@ -2979,9 +2979,9 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
     {
         const string sessionId = "0123456789abcdef0123456789abcdef";
         const string preparationId = "fedcba9876543210fedcba9876543210";
-        var completion = new TaskCompletionSource<int>(
+        var completion = new DebugSessionTestCompletion(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var oldSession = new RecordingRunningSession(completion: completion.Task);
+        var oldSession = new RecordingRunningSession(completion: completion.Task, liveness: completion.Liveness);
         var freshSession = new RecordingRunningSession();
         var launchService = new SequencedDebugLaunchService(
             [oldSession, freshSession],
@@ -2991,7 +2991,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
                 if (request.RestartPreparation?.Generation.Value == 1)
                 {
                     if (faulted) { completion.TrySetException(new IOException("Modal observer failed during restart.")); }
-                    else { completion.TrySetResult(23); }
+                    else { completion.TrySetResult(new(DebugSessionEndReason.ProcessExited, 23)); }
                 }
             });
         var commandLine = CreateCommandLine(
@@ -3084,9 +3084,9 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
     {
         const string sessionId = "0123456789abcdef0123456789abcdef";
         const string preparationId = "fedcba9876543210fedcba9876543210";
-        var completion = new TaskCompletionSource<int>(
+        var completion = new DebugSessionTestCompletion(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var oldSession = new RecordingRunningSession(completion: completion.Task);
+        var oldSession = new RecordingRunningSession(completion: completion.Task, liveness: completion.Liveness);
         var freshSession = new RecordingRunningSession();
         var launchService = new SequencedDebugLaunchService(
             [oldSession, freshSession],
@@ -3147,7 +3147,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         try
         {
             await standardOutput.ResponseWriteStarted.WaitAsync(TimeSpan.FromSeconds(2));
-            completion.TrySetResult(23);
+            completion.TrySetResult(new(DebugSessionEndReason.ProcessExited, 23));
             standardOutput.ReleaseResponseWrite();
             Assert.True(SpinWait.SpinUntil(
                 () => ReadUtf8(standardOutput).Contains(
@@ -3695,7 +3695,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
                 string.Empty));
         var runningSession = new RecordingRunningSession(
             processId: 2718,
-            completion: Task.FromResult(7));
+            completion: Task.FromResult(new DebugSessionCompletion(DebugSessionEndReason.ProcessExited, 7)));
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(
                 new RecordingDebugLaunchService(runningSession)),
@@ -3788,7 +3788,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
     public async Task SessionFailureReportsItsCauseAndEveryTerminalCleanupFaultOnce()
     {
         var runningSession = new RecordingRunningSession(
-            completion: Task.FromException<int>(new IOException("Original modal observation failed.")),
+            completion: Task.FromException<DebugSessionCompletion>(new IOException("Original modal observation failed.")),
             terminationFailure: new IOException("Owned process termination failed."),
             disposalFailure: new IOException("Owned session handle release failed."));
         var commandLine = CreateCommandLine(
@@ -3830,7 +3830,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var primary = new IOException("Original modal observation failed.");
         var termination = new IOException("Owned process termination failed.");
         var disposal = new IOException("Owned session handle release failed.");
-        var runningSession = new RecordingRunningSession(completion: Task.FromException<int>(primary),
+        var runningSession = new RecordingRunningSession(completion: Task.FromException<DebugSessionCompletion>(primary),
             terminationFailure: termination, disposalFailure: disposal);
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService(runningSession)),
@@ -5548,7 +5548,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
                     throw new DebugSetupException(
                         "The fake prepared restart binding is stale.");
                 }
-                if (restartBinding.BoundSession.Completion.IsCompleted)
+                if (!restartBinding.BoundSession.Liveness.IsLive)
                 {
                     throw new DebugSetupException(
                         "The VBA debug session ended before restart code replacement committed.");
@@ -5592,15 +5592,18 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
     private sealed class RecordingRunningSession(
         IReadOnlyList<VbeBreakpoint>? verifiedBreakpoints = null,
         int processId = 2718,
-        Task<int>? completion = null,
+        Task<DebugSessionCompletion>? completion = null,
         List<string>? events = null,
         string label = "session",
         string targetModuleName = "Module1",
         string targetProcedureName = "Run",
         Exception? terminationFailure = null,
         Exception? disposalFailure = null,
-        DebugFailureOutcome? releaseOutcome = null) : IStandaloneVbaDebugRunningSession, IDebugResourceOwnerEvidence
+        DebugFailureOutcome? releaseOutcome = null,
+        DebugSessionLiveness? liveness = null) : IStandaloneVbaDebugRunningSession, IDebugResourceOwnerEvidence
     {
+        private Task? disposal;
+        private readonly object gate = new();
         public int ProcessId { get; } = processId;
 
         public int TerminateCalls { get; private set; }
@@ -5609,8 +5612,10 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
 
         public DebugFailureOutcome? CleanupOutcome { get; private set; }
 
-        public Task<int> Completion { get; } = completion ??
-            new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously).Task;
+        public DebugSessionLiveness Liveness { get; } = liveness ?? InitialLiveness(completion);
+
+        private readonly DebugSessionTestCompletion disposedCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task<DebugSessionCompletion> Completion => completion ?? disposedCompletion.Task;
 
         public IReadOnlyList<VbeBreakpoint> VerifiedBreakpoints { get; } =
             verifiedBreakpoints ?? [];
@@ -5621,6 +5626,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
 
         public ValueTask TerminateAsync()
         {
+            Liveness.Revoke();
             TerminateCalls++;
             events?.Add($"{label}:terminate");
             return terminationFailure is null ? ValueTask.CompletedTask : ValueTask.FromException(terminationFailure);
@@ -5628,18 +5634,31 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
 
         public ValueTask DisposeAsync()
         {
+            lock (gate) return new ValueTask(disposal ??= DisposeOnce());
+        }
+
+        private Task DisposeOnce()
+        {
             DisposeCalls++;
             events?.Add($"{label}:dispose");
-            if (disposalFailure is not null) { return ValueTask.FromException(disposalFailure); }
+            if (disposalFailure is not null) { return Task.FromException(disposalFailure); }
             CleanupOutcome ??= releaseOutcome ?? ProvedSessionRelease();
-            return ValueTask.CompletedTask;
+            disposedCompletion.TrySetResult(new(DebugSessionEndReason.Stopped, null) { Outcome = CleanupOutcome });
+            return Task.CompletedTask;
         }
+    }
+
+    private static DebugSessionLiveness InitialLiveness(Task<DebugSessionCompletion>? completion)
+    {
+        var result = new DebugSessionLiveness();
+        if (completion?.IsCompleted == true) result.Revoke();
+        return result;
     }
 
     private sealed class GatedTeardownRunningSession(List<string> events)
         : IStandaloneVbaDebugRunningSession
     {
-        private readonly TaskCompletionSource<int> completion = new();
+        private readonly DebugSessionTestCompletion completion = new();
         private readonly TaskCompletionSource terminateStarted = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource releaseTerminate = new(
@@ -5649,7 +5668,9 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         private readonly TaskCompletionSource releaseDispose = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Task<int> Completion => completion.Task;
+        public DebugSessionLiveness Liveness => completion.Liveness;
+
+        public Task<DebugSessionCompletion> Completion => completion.Task;
 
         public Task TerminateStarted => terminateStarted.Task;
 
@@ -5669,8 +5690,9 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
 
         public async ValueTask TerminateAsync()
         {
+            Liveness.Revoke();
             events.Add("old:terminate-start");
-            completion.TrySetResult(0);
+            completion.TrySetResult(new(DebugSessionEndReason.ProcessExited, 0));
             terminateStarted.TrySetResult();
             await releaseTerminate.Task;
             events.Add("old:terminate-complete");

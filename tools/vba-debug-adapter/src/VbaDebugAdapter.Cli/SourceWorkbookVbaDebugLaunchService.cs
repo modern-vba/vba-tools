@@ -277,6 +277,8 @@ internal sealed class SourceWorkbookVbaDebugLaunchService(
             cancellation.Token.ThrowIfCancellationRequested();
             ValidateLiveBinding(workbookPath, native, await native.InspectAsync(cancellationToken).ConfigureAwait(false));
             await native.ResetExecutionAsync(TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
+            if (!native.Liveness.IsLive)
+                throw new DebugSetupException("The source session ended before workbook replacement committed.");
             restartReleased = retained is not null;
             continuation.TrySetResult(true);
             var result = await invocation!.ConfigureAwait(false);
@@ -451,17 +453,16 @@ internal sealed class SourceWorkbookVbaDebugLaunchService(
         private PreparedDebugLaunchPlanSnapshot? snapshot;
         internal ISourceVbeDebugSession Native { get; } = native;
         internal string WorkbookPath { get; } = workbookPath;
-        public Task<SourceVbeDebugSessionCompletion>? SourceWorkbookCompletion => Native.Completion;
-        public Task<int> Completion { get; } = AwaitCompletionAsync(native.Completion);
+        public Task<DebugSessionCompletion> Completion => Native.Completion;
+        public DebugSessionLiveness Liveness => Native.Liveness;
+        public DebugSessionOwnership Ownership => DebugSessionOwnership.RetainedSource;
         public int ProcessId => Native.ProcessId;
         public string TargetModuleName => snapshot!.Target.ModuleName;
         public string TargetProcedureName => snapshot!.Target.ProcedureName;
         public IReadOnlyList<VbeBreakpoint> VerifiedBreakpoints => snapshot!.MappedBreakpoints;
         public DebugFailureOutcome? CleanupOutcome => CompleteBindingEvidence(Native);
         internal void ApplyGeneration(PreparedDebugLaunchPlanSnapshot generation) => snapshot = generation;
-        public ValueTask TerminateAsync() => new(Native.ResetExecutionAsync(TimeSpan.FromSeconds(10), CancellationToken.None));
+        public ValueTask TerminateAsync() => Native.TerminateAsync();
         public ValueTask DisposeAsync() => Native.DisposeAsync();
-        private static async Task<int> AwaitCompletionAsync(Task<SourceVbeDebugSessionCompletion> completion)
-            => (await completion.ConfigureAwait(false)).ProcessExitCode ?? 0;
     }
 }

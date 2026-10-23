@@ -20,7 +20,11 @@ public interface ISourceVbeDebugSession : IAsyncDisposable
 
     bool WasAlreadyOpen { get; }
 
-    Task<SourceVbeDebugSessionCompletion> Completion { get; }
+    Task<DebugSessionCompletion> Completion { get; }
+
+    DebugSessionLiveness Liveness { get; }
+
+    ValueTask TerminateAsync();
 
     Task<SourceVbeDebugSessionInspection> InspectAsync(CancellationToken cancellationToken);
 
@@ -49,14 +53,3 @@ public sealed record SourceVbeDebugSessionInspection(
     long ProcessStartUtcTicks,
     bool IsSaved,
     int ProjectMode);
-
-public enum SourceVbeDebugSessionEndReason
-{
-    WorkbookClosed,
-    ProcessExited,
-    Detached
-}
-
-public sealed record SourceVbeDebugSessionCompletion(
-    SourceVbeDebugSessionEndReason Reason,
-    int? ProcessExitCode);

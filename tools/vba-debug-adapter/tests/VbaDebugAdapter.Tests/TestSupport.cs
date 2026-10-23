@@ -211,3 +211,20 @@ internal sealed class FakeDebugOwnedProcess(
         HandleReleaseVerified = true;
     }
 }
+
+// Fake terminal detection revokes authority before any asynchronous completion callback.
+internal sealed class DebugSessionTestCompletion(TaskCreationOptions options = TaskCreationOptions.None)
+{
+    private readonly TaskCompletionSource<DebugSessionCompletion> source = new(options);
+    internal DebugSessionLiveness Liveness { get; } = new();
+    internal Task<DebugSessionCompletion> Task => source.Task;
+    internal bool TrySetResult(DebugSessionCompletion result)
+    {
+        Liveness.Revoke();
+        return source.TrySetResult(result);
+    }
+    internal void SetResult(DebugSessionCompletion result) { if (!TrySetResult(result)) throw new InvalidOperationException(); }
+    internal bool TrySetException(Exception failure) => TrySetResult(new(DebugSessionEndReason.ObservationFailed, null)
+        { Outcome = new DebugFailureCompletion(failure).Complete() });
+    internal void SetException(Exception failure) { if (!TrySetException(failure)) throw new InvalidOperationException(); }
+}

@@ -22,7 +22,7 @@ internal interface ISourceVbeDesktopApi
     DebugExcelProcessArchitecture ReadProcessArchitecture(SourceVbeProcessIdentity process)
         => DebugExcelProcessArchitecture.Unknown;
 
-    SourceVbeDebugSessionCompletion? ReadProcessCompletion(SourceVbeProcessIdentity process)
+    DebugSessionTermination? ReadProcessCompletion(SourceVbeProcessIdentity process)
         => null;
 }
 
@@ -333,7 +333,7 @@ internal sealed class WindowsSourceVbeDesktopConnector : ISourceVbeDesktopConnec
         }
     }
 
-    private SourceVbeDebugSessionCompletion? ProbeCompletion(object application, object workbook,
+    private DebugSessionTermination? ProbeCompletion(object application, object workbook,
         SourceVbeProcessIdentity process)
     {
         if (api.ReadProcessCompletion(process) is { } exited) return exited;
@@ -344,7 +344,7 @@ internal sealed class WindowsSourceVbeDesktopConnector : ISourceVbeDesktopConnec
             // COM/window read. COM disconnection alone never proves closure.
             // Confirm it independently, without hiding unproved COM release.
             if (failure is IDebugFailureEvidence retained && retained.FailureOutcome.HasCleanupFailure) throw;
-            SourceVbeDebugSessionCompletion? confirmedExit;
+            DebugSessionTermination? confirmedExit;
             try { confirmedExit = api.ReadProcessCompletion(process); }
             catch (Exception observationFailure)
             {
@@ -354,12 +354,12 @@ internal sealed class WindowsSourceVbeDesktopConnector : ISourceVbeDesktopConnec
                 outcome.Complete().ThrowWithEvidence();
                 throw;
             }
-            if (confirmedExit is { Reason: SourceVbeDebugSessionEndReason.ProcessExited }) return confirmedExit;
+            if (confirmedExit is { Reason: DebugSessionEndReason.ProcessExited }) return confirmedExit;
             throw;
         }
     }
 
-    private SourceVbeDebugSessionCompletion? ProbeWorkbookCompletion(object application, object workbook,
+    private DebugSessionTermination? ProbeWorkbookCompletion(object application, object workbook,
         SourceVbeProcessIdentity process)
     {
         if (api.ReadProcessIdentity(application) != process)
@@ -389,7 +389,7 @@ internal sealed class WindowsSourceVbeDesktopConnector : ISourceVbeDesktopConnec
                         releaseReference, ($"observed workbook {index}", candidate));
                 }
             }
-            return new(SourceVbeDebugSessionEndReason.WorkbookClosed, null);
+            return new(DebugSessionEndReason.WorkbookClosed, null);
         }
         catch (Exception failure) { inspectionFailure = failure; throw; }
         finally
@@ -503,21 +503,21 @@ internal sealed class WindowsSourceVbeDesktopApi : ISourceVbeDesktopApi
         return WindowsExcelProcessArchitecture.Read(process.Handle);
     }
 
-    public SourceVbeDebugSessionCompletion? ReadProcessCompletion(SourceVbeProcessIdentity identity)
+    public DebugSessionTermination? ReadProcessCompletion(SourceVbeProcessIdentity identity)
     {
         try
         {
             using var process = Process.GetProcessById(identity.ProcessId);
             if (process.StartTime.ToUniversalTime().Ticks != identity.StartUtcTicks)
-                return new(SourceVbeDebugSessionEndReason.ProcessExited, null);
+                return new(DebugSessionEndReason.ProcessExited, null);
             if (process.HasExited)
-                return new(SourceVbeDebugSessionEndReason.ProcessExited, process.ExitCode);
+                return new(DebugSessionEndReason.ProcessExited, process.ExitCode);
             return null;
         }
         catch (ArgumentException)
         {
             // The old PID entry vanished: exit is known, its code is not.
-            return new(SourceVbeDebugSessionEndReason.ProcessExited, null);
+            return new(DebugSessionEndReason.ProcessExited, null);
         }
     }
 }

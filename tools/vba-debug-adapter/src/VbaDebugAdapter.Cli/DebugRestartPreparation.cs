@@ -24,7 +24,7 @@ internal sealed class DebugRestartPreparation(DebugSessionId sessionId) : IDispo
         {
             return "DebugLaunchBusy: A VBA debug restart preparation is already pending.";
         }
-        if (session is null || activeLaunch?.RestartPreparation is not { } descriptor)
+        if (session is null || !session.Liveness.IsLive || activeLaunch?.RestartPreparation is not { } descriptor)
         {
             return "DebugSetupError: The active VBA debug session is not bound for restart.";
         }
@@ -163,25 +163,18 @@ internal sealed class DebugRestartSwapAuthority : IDisposable
     private readonly object gate = new();
     private readonly CancellationTokenSource invalidation = new();
     private RestartSwapState state;
+    private readonly CancellationTokenRegistration endingRegistration;
 
     public DebugRestartSwapAuthority(DebugRestartLaunchBinding binding)
     {
         Binding = binding ?? throw new ArgumentNullException(nameof(binding));
         var weakAuthority = new WeakReference<DebugRestartSwapAuthority>(this);
-        _ = binding.BoundSession.Completion.ContinueWith(
-            static (_, state) =>
+        endingRegistration = binding.BoundSession.Liveness.Revoked.Register(
+            static state =>
             {
-                var weakAuthority =
-                    (WeakReference<DebugRestartSwapAuthority>)state!;
-                if (weakAuthority.TryGetTarget(out var authority))
-                {
+                if (((WeakReference<DebugRestartSwapAuthority>)state!).TryGetTarget(out var authority))
                     authority.Invalidate(RestartSwapState.SessionEnded);
-                }
-            },
-            weakAuthority,
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
+            }, weakAuthority);
     }
 
     public DebugRestartLaunchBinding Binding { get; }
@@ -194,7 +187,8 @@ internal sealed class DebugRestartSwapAuthority : IDisposable
         {
             lock (gate)
             {
-                return state == RestartSwapState.SessionEnded;
+                return state == RestartSwapState.SessionEnded
+                    || (state == RestartSwapState.Pending && !Binding.BoundSession.Liveness.IsLive);
             }
         }
     }
@@ -266,6 +260,7 @@ internal sealed class DebugRestartSwapAuthority : IDisposable
 
     public void Dispose()
     {
+        endingRegistration.Dispose();
         lock (gate)
         {
             if (state == RestartSwapState.Pending)
@@ -359,7 +354,7 @@ internal sealed record DebugRestartLaunchBinding(
                 TargetProcedureName,
                 StringComparison.OrdinalIgnoreCase) ||
             DapRequestSequence < 0 ||
-            BoundSession.Completion.IsCompleted)
+            !BoundSession.Liveness.IsLive)
         {
             throw new DebugSetupException(
                 "The fresh VBA restart launch does not match its bound session, target, or request identity.");
@@ -367,7 +362,7 @@ internal sealed record DebugRestartLaunchBinding(
     }
 
     public bool IsBoundSessionCurrent =>
-        !BoundSession.Completion.IsCompleted &&
+        BoundSession.Liveness.IsLive &&
         BoundSession.TargetModuleName.Equals(
             TargetModuleName,
             StringComparison.OrdinalIgnoreCase) &&

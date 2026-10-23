@@ -20,7 +20,7 @@ internal sealed class SourceVbeDesktopBinding(
     Func<bool> isExactWorkbook,
     Action release,
     DebugExcelProcessArchitecture processArchitecture = DebugExcelProcessArchitecture.Unknown,
-    Func<SourceVbeDebugSessionCompletion?>? completionProbe = null)
+    Func<DebugSessionTermination?>? completionProbe = null)
 {
     private int released;
     internal object Application { get; } = application;
@@ -33,7 +33,7 @@ internal sealed class SourceVbeDesktopBinding(
     internal bool HasCompletionProbe => completionProbe is not null;
     internal bool ReleaseVerified { get; private set; }
     internal bool IsExactWorkbook() => isExactWorkbook();
-    internal SourceVbeDebugSessionCompletion? ProbeCompletion() => completionProbe?.Invoke();
+    internal DebugSessionTermination? ProbeCompletion() => completionProbe?.Invoke();
     internal void Release()
     {
         if (Interlocked.Exchange(ref released, 1) != 0) return;
@@ -192,8 +192,11 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
         IDebugModalPromptMonitor? promptMonitor,
         Func<object?, bool> releaseReference) : ISourceVbeDebugSession, IDebugResourceOwnerEvidence, IVbeNativeOperationAdapter
     {
-        private readonly TaskCompletionSource<SourceVbeDebugSessionCompletion> completion =
+        private readonly TaskCompletionSource<DebugSessionCompletion> completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<SourceEnd> terminalEnd =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public DebugSessionLiveness Liveness { get; } = new();
         private readonly CancellationTokenSource monitorStopping = new();
         private Task lifetimeMonitor = Task.CompletedTask;
         private readonly object disposalGate = new();
@@ -204,6 +207,7 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
         private Task targetPromptObservation = Task.CompletedTask;
         private Task? targetPromptRetirement;
         private Task? disposal;
+        private Task? terminalReplay;
         public DebugFailureOutcome? CleanupOutcome { get; private set; }
 
         internal void StartMonitoring()
@@ -226,7 +230,7 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
                         var observed = await probing.WaitAsync(token).ConfigureAwait(false);
                         if (observed is not null)
                         {
-                            completion.TrySetResult(observed);
+                            EstablishEnd(observed, null, reset: false);
                             return;
                         }
                     }
@@ -238,9 +242,9 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
                     catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
                     catch (Exception failure)
                     {
-                        completion.TrySetException(ExplainFailure(
+                        EstablishEnd(new(DebugSessionEndReason.ObservationFailed, null), ExplainFailure(
                             "The live source workbook could no longer be observed; closure and execution state are unproved. " +
-                            "Use Reset in the selected source workbook's VBE if needed. Excel was not terminated.", failure));
+                            "Use Reset in the selected source workbook's VBE if needed. Excel was not terminated.", failure), reset: true);
                         return;
                     }
                 }
@@ -251,12 +255,18 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
         public int ProcessId => binding.ProcessId;
         public long ProcessStartUtcTicks => binding.ProcessStartUtcTicks;
         public bool WasAlreadyOpen => binding.WasAlreadyOpen;
-        public Task<SourceVbeDebugSessionCompletion> Completion => completion.Task;
+        public Task<DebugSessionCompletion> Completion => completion.Task;
 
         public Task<SourceVbeDebugSessionInspection> InspectAsync(CancellationToken cancellationToken)
+        {
+            ObjectDisposedException.ThrowIf(!Liveness.IsLive, this);
+            return InspectCoreAsync(cancellationToken);
+        }
+
+        private Task<SourceVbeDebugSessionInspection> InspectCoreAsync(CancellationToken cancellationToken, bool allowEnding = false)
             => dispatcher.InvokeAsync(() =>
             {
-                if (!binding.IsExactWorkbook())
+                if ((!allowEnding && !Liveness.IsLive) || !binding.IsExactWorkbook())
                 {
                     throw new DebugSetupException(
                         "The selected source workbook is no longer bound to the exact Excel process and file.");
@@ -288,7 +298,7 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
             CancellationToken cancellationToken)
             => dispatcher.InvokeAsync(() =>
             {
-                if (!binding.IsExactWorkbook())
+                if (!Liveness.IsLive || !binding.IsExactWorkbook())
                     throw new DebugSetupException("The exact source workbook binding changed before live host inspection.");
                 object? vbeObject = null;
                 Exception? failure = null;
@@ -313,7 +323,7 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
 
         object IVbeNativeOperationAdapter.GetCurrentWorkbook()
         {
-            if (completion.Task.IsCompleted || !binding.IsExactWorkbook())
+            if (!Liveness.IsLive || !binding.IsExactWorkbook())
                 throw new DebugSetupException("The exact source workbook binding is no longer current.");
             return binding.Workbook;
         }
@@ -344,7 +354,7 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
             cancellationToken.ThrowIfCancellationRequested();
             lock (disposalGate)
             {
-                ObjectDisposedException.ThrowIf(disposal is not null, this);
+                ObjectDisposedException.ThrowIf(!Liveness.IsLive, this);
                 if (inputWaitSink is not null && targetPromptPhase is not null)
                     throw new DebugSetupException("Source native Run already has an active modal observation phase.");
             }
@@ -361,9 +371,10 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
             {
                 var running = RunAsync();
                 ObserveLateFailure(running);
-                _ = await Task.WhenAny(running, Completion).WaitAsync(cancellationToken).ConfigureAwait(false);
-                if (Completion.IsFaulted || Completion.IsCanceled) await Completion.ConfigureAwait(false);
-                if (!running.IsCompleted && Completion.IsCompleted)
+                _ = await Task.WhenAny(running, terminalEnd.Task).WaitAsync(cancellationToken).ConfigureAwait(false);
+                if (terminalEnd.Task.IsCompleted && terminalEnd.Task.Result.Failure is not null)
+                    (await Completion.ConfigureAwait(false)).Throw();
+                if (!running.IsCompleted && terminalEnd.Task.IsCompleted)
                 {
                     var ended = await Completion.ConfigureAwait(false);
                     throw new DebugSetupException($"The source session ended ({ended.Reason}) before native Run completed. " +
@@ -393,7 +404,7 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
             if (inputWaitSink is null) return null;
             lock (disposalGate)
             {
-                ObjectDisposedException.ThrowIf(disposal is not null, this);
+                ObjectDisposedException.ThrowIf(!Liveness.IsLive, this);
                 if (targetPromptPhase is not null)
                     throw new DebugSetupException("Source native Run already has an active modal observation phase.");
                 var monitor = promptMonitor ?? new DebugModalPromptMonitor(
@@ -406,9 +417,20 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
                 // The exact native context is already visible and verified.
                 // Its ordinary VBE windows belong in this baseline; only
                 // windows appearing after Execute can require new input.
-                var phase = monitor.BeginPhase(new(DebugInputWaitKind.ExcelOrVbe,
-                    DebugInputWaitPhase.TargetStart, ProcessId), noExitEvidence,
-                    new SourceLifecycleInputWaitSink(inputWaitSink));
+                IDebugModalPromptPhase phase;
+                try
+                {
+                    phase = monitor.BeginPhase(new(DebugInputWaitKind.ExcelOrVbe,
+                        DebugInputWaitPhase.TargetStart, ProcessId), noExitEvidence,
+                        new SourceLifecycleInputWaitSink(inputWaitSink));
+                }
+                catch (Exception failure)
+                {
+                    EstablishEnd(new(DebugSessionEndReason.ObservationFailed, null), ExplainFailure(
+                        "Source modal baseline observation failed. Use Reset in the selected source workbook's VBE if needed.",
+                        failure), reset: false, trigger: "modal baseline");
+                    throw;
+                }
                 targetPromptPhase = phase;
                 targetPromptObservation = ObserveTargetPromptLifetimeAsync(phase);
                 ObserveLateFailure(targetPromptObservation);
@@ -436,8 +458,8 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
         {
             try
             {
-                _ = await Task.WhenAny(phase.Completion, Completion).ConfigureAwait(false);
-                if (Completion.IsCompleted) await RetireTargetPromptAsync().ConfigureAwait(false);
+                _ = await Task.WhenAny(phase.Completion, terminalEnd.Task).ConfigureAwait(false);
+                if (terminalEnd.Task.IsCompleted) await RetireTargetPromptAsync().ConfigureAwait(false);
                 else await phase.Completion.ConfigureAwait(false);
             }
             catch (Exception failure)
@@ -445,9 +467,9 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
                 lock (disposalGate)
                 {
                     if (disposal is null && ReferenceEquals(targetPromptPhase, phase) && targetPromptRetirement is null)
-                        completion.TrySetException(ExplainFailure(
+                        EstablishEnd(new(DebugSessionEndReason.ObservationFailed, null), ExplainFailure(
                             "Source Excel/VBE modal observation failed; execution state is unconfirmed. " +
-                            "Use Reset in the selected source workbook's VBE if needed. Excel was not terminated.", failure));
+                            "Use Reset in the selected source workbook's VBE if needed. Excel was not terminated.", failure), reset: true);
                 }
             }
         }
@@ -464,7 +486,13 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
             }
         }
 
-        public async Task ResetExecutionAsync(TimeSpan timeout, CancellationToken cancellationToken)
+        public Task ResetExecutionAsync(TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            ObjectDisposedException.ThrowIf(!Liveness.IsLive, this);
+            return ResetExecutionCoreAsync(timeout, cancellationToken);
+        }
+
+        private async Task ResetExecutionCoreAsync(TimeSpan timeout, CancellationToken cancellationToken, bool retireObservation = true, bool terminalCleanup = false)
         {
             if (timeout <= TimeSpan.Zero)
             {
@@ -475,15 +503,15 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
             stopping.CancelAfter(timeout);
             try
             {
-                var state = await InspectAsync(stopping.Token).WaitAsync(stopping.Token).ConfigureAwait(false);
+                var state = await InspectCoreAsync(stopping.Token, allowEnding: terminalCleanup).WaitAsync(stopping.Token).ConfigureAwait(false);
                 if (state.ProjectMode == 2)
                 {
-                    await RetirePromptGenerationAsync(stopping.Token).ConfigureAwait(false);
+                    if (retireObservation) await RetirePromptGenerationAsync(stopping.Token).ConfigureAwait(false);
                     return;
                 }
                 await dispatcher.InvokeAsync(() =>
                 {
-                    if (!binding.IsExactWorkbook())
+                    if ((!terminalCleanup && !Liveness.IsLive) || !binding.IsExactWorkbook())
                         throw new DebugSetupException("The exact source workbook binding is no longer available.");
                     object? projectObject = null;
                     object? vbeObject = null;
@@ -525,6 +553,7 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
                         if ((int)control.Id != 228 || !(bool)control.BuiltIn || !(bool)control.Enabled)
                             throw new DebugSetupException("The built-in VBE Reset command is not enabled in the exact source project.");
                         stopping.Token.ThrowIfCancellationRequested();
+                        ObjectDisposedException.ThrowIf(!terminalCleanup && !Liveness.IsLive, this);
                         control.Execute();
                         return true;
                     }
@@ -540,10 +569,10 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
                 }, stopping.Token).WaitAsync(stopping.Token).ConfigureAwait(false);
                 while (true)
                 {
-                    state = await InspectAsync(stopping.Token).WaitAsync(stopping.Token).ConfigureAwait(false);
+                    state = await InspectCoreAsync(stopping.Token, allowEnding: terminalCleanup).WaitAsync(stopping.Token).ConfigureAwait(false);
                     if (state.ProjectMode == 2)
                     {
-                        await RetirePromptGenerationAsync(stopping.Token).ConfigureAwait(false);
+                        if (retireObservation) await RetirePromptGenerationAsync(stopping.Token).ConfigureAwait(false);
                         return;
                     }
                     await Task.Delay(50, stopping.Token).ConfigureAwait(false);
@@ -608,14 +637,56 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
             }
         }
 
-        public ValueTask DisposeAsync()
+        public ValueTask TerminateAsync()
         {
-            lock (disposalGate) return new ValueTask(disposal ??= DisposeOnceAsync());
+            EstablishEnd(new(DebugSessionEndReason.Detached, null), null, reset: true, trigger: "Stop");
+            lock (disposalGate) return new ValueTask(terminalReplay ??= ReplayCompletionAsync());
         }
 
-        private async Task DisposeOnceAsync()
+        public ValueTask DisposeAsync()
         {
-            var result = new DebugFailureCompletion();
+            EstablishEnd(new(DebugSessionEndReason.Detached, null), null, reset: false, trigger: "Dispose");
+            lock (disposalGate) return new ValueTask(terminalReplay ??= ReplayCompletionAsync());
+        }
+
+        private async Task ReplayCompletionAsync()
+            => (await Completion.ConfigureAwait(false)).ThrowWithEvidence();
+
+        private void EstablishEnd(DebugSessionTermination termination, Exception? failure, bool reset, string? trigger = null)
+        {
+            lock (disposalGate)
+            {
+                if (!Liveness.IsLive) return;
+                var established = new SourceEnd(termination, failure, reset, trigger ?? termination.Reason.ToString());
+                // Cancellation is synchronous; consumers cannot retain authority
+                // while modal/COM cleanup or final-completion callbacks are pending.
+                try { Liveness.Revoke(); }
+                catch (Exception callbackFailure)
+                {
+                    RecordReleaseOutcome(new DebugFailureCompletion(callbackFailure).Complete());
+                }
+                terminalEnd.TrySetResult(established);
+                disposal = CompleteLifetimeAsync(established);
+                ObserveLateFailure(disposal);
+            }
+        }
+
+        private sealed record SourceEnd(DebugSessionTermination Termination, Exception? Failure, bool Reset, string Trigger);
+
+        private async Task CompleteLifetimeAsync(SourceEnd established)
+        {
+            // Neither observer may await the cleanup task that is awaiting it.
+            await Task.Yield();
+            var result = new DebugFailureCompletion(established.Failure);
+            if (established.Reset)
+            {
+                try { await ResetExecutionCoreAsync(TimeSpan.FromSeconds(10), CancellationToken.None, retireObservation: false, terminalCleanup: true).ConfigureAwait(false); }
+                catch (Exception failure)
+                {
+                    result.AddFailure("source Reset", "source workbook execution", DebugResourceKind.Observation,
+                        failure, ProcessId, binding.WorkbookPath);
+                }
+            }
             var monitorReleased = false;
             var bindingReleased = false;
             var promptReleased = targetPromptPhase is null;
@@ -654,8 +725,6 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
             catch (Exception failure) { result.AddFailure("source STA retirement", "source COM dispatcher", DebugResourceKind.Handle, failure, ProcessId); }
             try { monitorStopping.Dispose(); }
             catch (Exception failure) { result.AddFailure("source monitor token", "source observer", DebugResourceKind.Handle, failure, ProcessId); }
-            completion.TrySetResult(new SourceVbeDebugSessionCompletion(
-                SourceVbeDebugSessionEndReason.Detached, null));
             lock (releaseObservationGate)
             {
                 releaseObservationsSealed = true;
@@ -673,7 +742,15 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
             result.AddEvidence(new("source STA retirement", "source COM dispatcher", DebugResourceKind.Handle, dispatcher.ReleaseVerified,
                 dispatcher.ReleaseVerified ? "The source COM STA retired." : "Source COM STA retirement is unproved; no Excel lifetime action was taken.", ProcessId));
             CleanupOutcome = result.Complete();
-            CleanupOutcome.ThrowWithEvidence();
+            completion.TrySetResult(new DebugSessionCompletion(established.Termination.Reason,
+                established.Termination.ProcessExitCode)
+            {
+                InitialTrigger = established.Trigger,
+                RecoveryGuidance = CleanupOutcome.PrimaryFailure is not null || CleanupOutcome.HasCleanupFailure
+                    ? "Use Reset in the selected source workbook's VBE if execution is unconfirmed. Excel was not saved, closed or terminated."
+                    : null,
+                Outcome = CleanupOutcome
+            });
         }
 
         private static void ObserveLateFailure(Task task)

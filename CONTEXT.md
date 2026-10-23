@@ -439,6 +439,28 @@ This Module does not classify arbitrary infrastructure exceptions or replace
 `DebugSourceAdmission`'s source-generation authority.
 _Avoid_: transport validator, source admission, generic JSON helper collection
 
+**DebugSessionCompletion**:
+The single sealed result shared by Source and owned Excel sessions. It keeps the
+initial terminal trigger, actual termination reason, nullable observed process
+exit code, retained exception dispatch and owner-release evidence together. A
+normal WorkbookClosed/Detached fact can coexist with failed cleanup. Observation
+failure is not successful detachment. No missing exit code becomes zero.
+
+`DebugSessionLiveness` revokes execution and Restart authority synchronously at
+first terminal detection, before modal retirement, bounded owner cleanup, or
+final-result callbacks. Binding validation and commit fences read that early
+state. Raw ending tasks remain inside existing owners so modal retirement never
+awaits the final completion it helps produce. Ordinary Sub completion remains
+live. Planned Restart cutover consumes its authority before retiring the old
+session and must still report a later replacement failure as its original cause.
+
+Stop/Dispose share the owner's terminal path and cached failure replay. Source
+Stop owns one bounded exact-project Reset; plain binding disposal detaches. A
+caller cancelling its wait does not cancel shared cleanup. Late task faults are
+observed without rewriting sealed evidence. DAP consumes the same final result
+for both policies, emits terminated once, and emits exited only with an actually
+observed code. See ADR 0071.
+
 **DebugFailureCompletion**:
 The internal DAP-owned Module that retains the original failure or cancellation
 with its stack, subsequent distinct cleanup failures, and resource-release

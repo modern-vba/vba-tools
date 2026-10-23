@@ -85,8 +85,8 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var manager = new VbaDebugSessionWorkspaceManager(Path.Combine(temp.Path, "adapter-root"));
         await using var lease = new RecordingSourceRejectionLease(
             await manager.ClaimAsync(DebugSessionId.Parse(sessionId), CancellationToken.None));
-        var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var currentSession = new RecordingRunningSession(completion: completion.Task);
+        var completion = new DebugSessionTestCompletion(TaskCreationOptions.RunContinuationsAsynchronously);
+        var currentSession = new RecordingRunningSession(completion: completion.Task, liveness: completion.Liveness);
         var initialService = new RecordingDebugLaunchService(currentSession);
         var resources = new SourceRejectionResourceSpy();
         var rejectingService = new StandaloneVbaDebugLaunchService(new DebugSourceAdmission(932), resources, resources);
@@ -127,7 +127,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             Assert.Equal(0, currentSession.TerminateCalls);
             Assert.Equal(0, currentSession.DisposeCalls);
 
-            completion.SetResult(0);
+            completion.SetResult(new(DebugSessionEndReason.ProcessExited, 0));
             output.ReleaseResponseWrite();
 
             Assert.Equal(0, await invocation.WaitAsync(TimeSpan.FromSeconds(2)));
@@ -168,8 +168,8 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var manager = new VbaDebugSessionWorkspaceManager(Path.Combine(temp.Path, "adapter-root"));
         await using var lease = new RecordingSourceRejectionLease(
             await manager.ClaimAsync(DebugSessionId.Parse(sessionId), CancellationToken.None));
-        var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var currentSession = new RecordingRunningSession(completion: completion.Task);
+        var completion = new DebugSessionTestCompletion(TaskCreationOptions.RunContinuationsAsynchronously);
+        var currentSession = new RecordingRunningSession(completion: completion.Task, liveness: completion.Liveness);
         var initialService = new RecordingDebugLaunchService(currentSession);
         var resources = new SourceRejectionResourceSpy();
         var rejectingService = new StandaloneVbaDebugLaunchService(new DebugSourceAdmission(932), resources, resources);
