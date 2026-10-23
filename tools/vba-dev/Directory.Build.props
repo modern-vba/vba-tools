@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
-    <VbaDevReleaseVersion>0.1.1</VbaDevReleaseVersion>
+    <VbaDevReleaseVersion>0.1.2</VbaDevReleaseVersion>
     <Version>$(VbaDevReleaseVersion)</Version>
     <VersionPrefix>$(VbaDevReleaseVersion)</VersionPrefix>
     <PackageVersion>$(VbaDevReleaseVersion)</PackageVersion>
