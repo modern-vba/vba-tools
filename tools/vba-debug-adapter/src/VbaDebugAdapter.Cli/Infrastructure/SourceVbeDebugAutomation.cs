@@ -190,7 +190,7 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
         IStaComDispatcher dispatcher,
         IDebugWindowActivator windowActivator,
         IDebugModalPromptMonitor? promptMonitor,
-        Func<object?, bool> releaseReference) : ISourceVbeDebugSession, IDebugResourceOwnerEvidence
+        Func<object?, bool> releaseReference) : ISourceVbeDebugSession, IDebugResourceOwnerEvidence, IVbeNativeOperationAdapter
     {
         private readonly TaskCompletionSource<SourceVbeDebugSessionCompletion> completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -331,76 +331,31 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
                 finally { ReleaseScope(failure, ("live host VBE", vbeObject)); }
             }, cancellationToken).WaitAsync(cancellationToken);
 
+        object IVbeNativeOperationAdapter.Application => binding.Application;
+
+        object IVbeNativeOperationAdapter.GetCurrentWorkbook()
+        {
+            if (!binding.IsExactWorkbook())
+                throw new DebugSetupException("The exact source workbook binding is no longer current.");
+            return binding.Workbook;
+        }
+
+        void IVbeNativeOperationAdapter.AllowForeground()
+            => _ = windowActivator.AllowComServerForeground(binding.Application);
+
+        void IVbeNativeOperationAdapter.BringVbeToForeground(nint handle)
+            => windowActivator.BringOwnedWindowToForeground(handle, ProcessId);
+
+        void IVbeNativeOperationAdapter.ReleaseScope(Exception? failure,
+            params (string Resource, object? Value)[] references)
+            => ReleaseScope(failure, references);
+
         public Task SetNativeBreakpointsAsync(
-            IReadOnlyList<VbeBreakpoint> breakpoints,
-            CancellationToken cancellationToken)
+            IReadOnlyList<VbeBreakpoint> breakpoints, CancellationToken cancellationToken)
             => dispatcher.InvokeAsync(() =>
             {
-                if (!binding.IsExactWorkbook())
-                    throw new DebugSetupException("The exact source workbook binding is no longer available.");
-                var references = new List<(string Resource, object? Value)>();
-                var modules = new Dictionary<string, (object Component, object Code, VbeCodeModuleSourceMap Map)>(
-                    StringComparer.OrdinalIgnoreCase);
-                Exception? failure = null;
-                try
-                {
-                    dynamic workbook = binding.Workbook;
-                    object projectObject = workbook.VBProject;
-                    references.Add(("source VBA project", projectObject));
-                    dynamic project = projectObject;
-                    if ((int)project.Mode != 2)
-                        throw new DebugSetupException("The source project is not in design mode before breakpoint transfer.");
-                    object componentsObject = project.VBComponents;
-                    references.Add(("source VBA components", componentsObject));
-                    dynamic components = componentsObject;
-                    // Validate the entire participating set before the first toggle.
-                    foreach (var breakpoint in breakpoints)
-                    {
-                        var map = breakpoint.SourceMap;
-                        if (!VbaIdentifier.IsIdentifier(map.ModuleName) || map.CodeLines.IsDefault
-                            || breakpoint.VbideLine < 1 || breakpoint.VbideLine > map.CodeLines.Length)
-                            throw new DebugSetupException("A native source breakpoint has no exact module/line source map.");
-                        if (modules.TryGetValue(map.ModuleName, out var existing))
-                        {
-                            if (existing.Map.ModuleKind != map.ModuleKind
-                                || !existing.Map.CodeLines.SequenceEqual(map.CodeLines, StringComparer.Ordinal))
-                                throw new DebugSetupException("Conflicting whole-module breakpoint source maps were supplied.");
-                            continue;
-                        }
-                        object componentObject = components.Item(map.ModuleName);
-                        references.Insert(0, ($"breakpoint component {map.ModuleName}", componentObject));
-                        dynamic component = componentObject;
-                        var expectedKind = map.ModuleKind switch
-                        {
-                            VbaModuleKind.StandardModule => 1,
-                            VbaModuleKind.ClassModule => 2,
-                            VbaModuleKind.FormModule => 3,
-                            _ => throw new DebugSetupException("The source breakpoint module kind is unsupported.")
-                        };
-                        if ((string)component.Name != map.ModuleName || (int)component.Type != expectedKind)
-                            throw new DebugSetupException("The live source breakpoint component identity/kind differs from its snapshot.");
-                        object codeObject = component.CodeModule;
-                        references.Insert(0, ($"breakpoint code {map.ModuleName}", codeObject));
-                        dynamic code = codeObject;
-                        if ((int)code.CountOfLines != map.CodeLines.Length)
-                            throw new DebugSetupException("The live source whole-module line count differs from its breakpoint snapshot.");
-                        for (var line = 1; line <= map.CodeLines.Length; line++)
-                            if ((string)code.Lines(line, 1) != map.CodeLines[line - 1])
-                                throw new DebugSetupException($"The live source whole-module code differs at '{map.ModuleName}:{line}'.");
-                        modules.Add(map.ModuleName, (componentObject, codeObject, map));
-                    }
-                    foreach (var breakpoint in breakpoints)
-                    {
-                        var module = modules[breakpoint.ModuleName];
-                        ExecuteNativeCommand(module.Component, module.Code, breakpoint.VbideLine, 51, "Toggle Breakpoint");
-                    }
-                    return true;
-                }
-                catch (Exception error) { failure = error; throw; }
-                finally
-                {
-                    ReleaseScope(failure, references.ToArray());
-                }
+                new VbeNativeOperations(this).TransferBreakpoints(breakpoints, cancellationToken);
+                return true;
             }, cancellationToken).WaitAsync(cancellationToken);
 
         public async Task RunTargetAsync(

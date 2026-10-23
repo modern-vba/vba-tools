@@ -632,6 +632,26 @@ setup is pending; any mapping or native command failure invalidates the entire
 launch.
 _Avoid_: breakpoint instrumentation, workspace-wide breakpoint copy, breakpoint fallback
 
+Source Debug and Doctor use the same exact-binding native-operation Module for
+transfer. Before any toggle, every participating map must have a valid module
+identifier of at most 31 Unicode scalars, supported kind, exact code lines, valid
+row, and consistent repeated-module identity/content. UI preparation is followed
+by fresh component membership/content, project mode, pane/selection, command
+identity/BuiltIn/Enabled, and workbook-binding checks before each invocation.
+Cancellation at the final fence invokes no command. Foreground acquisition is
+best effort. Failures retain the operation, original source URI, zero-based
+editor line and one-based VBE line, with distinct binding, map, pane, selection,
+missing/wrong/disabled-command and invocation reasons. Earlier successful
+toggles may remain after a later failure: there is no automatic retry,
+compensation, rollback, or request reordering. Inspect performs the same proof
+without toggling. An empty transfer has no native operations.
+
+The concrete Source and Doctor Adapters retain their STA, workbook/process and
+COM-release policies. Reacquired component/code aliases are held until transfer
+ends, so Doctor final-release cannot invalidate the cached RCWs between toggles.
+The Module neither acquires Excel ownership nor changes target admission.
+
+
 **BreakpointSourceMap**:
 The content-verified mapping from `.bas`, `.cls`, and `.frm`
 `ExportedVbaSource` positions to the corresponding VBE code-module positions.

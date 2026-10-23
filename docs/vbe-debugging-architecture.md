@@ -472,6 +472,22 @@ not command identities. The currently verified built-in IDs are 51 for Toggle Br
 and 186 for Run Sub/UserForm; Doctor must fail if either control cannot be
 resolved and enabled in the established context.
 
+Source Debug and Doctor transfer breakpoints through the same exact-binding
+native-operation Module. It validates the entire requested map set before the
+first toggle, then revalidates component membership, whole-module contents,
+design mode, pane/selection, command identity and current workbook after UI
+activation and before each invocation. Cancellation at the final fence executes
+nothing. Failure facts retain the original source and both editor/VBE positions;
+missing, wrong, disabled and failed commands remain distinct. Requests keep their
+order; a later failure neither retries nor undoes earlier native toggles.
+Inspection performs the proof without Execute.
+
+Each concrete Adapter owns its existing COM/STA and workbook/process policy.
+Fresh component/code aliases remain in the transfer's outer release scope:
+Doctor's final-release policy must not invalidate cached aliases between native
+commands. Shared native operations do not acquire an Excel lifetime or broaden
+DebugTargetProcedure eligibility.
+
 If the VBE reports a compile error before the target begins, the modal error
 remains visible and has no timeout. `DebugLifecycleOutput` reports a VBE-input
 wait. Dismissing the dialog may produce `DebugSetupError`; source cleanup does

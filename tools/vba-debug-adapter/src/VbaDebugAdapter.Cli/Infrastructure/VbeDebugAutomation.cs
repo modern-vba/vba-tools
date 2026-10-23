@@ -361,7 +361,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         }
     }
 
-    private sealed class VbeDebugSession : IVbeDebugSession, IVbeDebugDoctorControl, IDebugResourceOwnerEvidence
+    private sealed class VbeDebugSession : IVbeDebugSession, IVbeDebugDoctorControl, IDebugResourceOwnerEvidence, IVbeNativeOperationAdapter
     {
         private const int VbeBreakMode = 1;
         private const int VbeDesignMode = 2;
@@ -386,6 +386,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         private Task processObservation = Task.CompletedTask;
         private Task workbookObservation = Task.CompletedTask;
         private object? workbookObject;
+        private string? openedWorkbookIdentity;
         private IVbaDebugGenerationWorkspace? generationWorkspace;
         private Task targetPromptObservation = Task.CompletedTask;
         private IDebugModalPromptPhase? targetPromptPhase;
@@ -560,6 +561,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     : workbookOpener.OpenPathVerified(excelObject, expectedWorkbookPath),
                 cancellationToken);
             workbookObject = await ObserveSetupOperationAsync(phase, OpenAsync, cancellationToken).ConfigureAwait(false);
+            openedWorkbookIdentity = expectedWorkbookPath;
             workbookOpenedSignal.TrySetResult(workbookObject);
         }
 
@@ -632,7 +634,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             _ = await InvokeSetupAsync(
                 () =>
                 {
-                    SetNativeBreakpoints(breakpoints);
+                    SetNativeBreakpoints(breakpoints, cancellationToken: cancellationToken);
                     return true;
                 },
                 cancellationToken).ConfigureAwait(false);
@@ -648,7 +650,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             _ = await InvokeSetupAsync(
                 () =>
                 {
-                    SetNativeBreakpoints([breakpoint], execute: false);
+                    SetNativeBreakpoints([breakpoint], execute: false, cancellationToken);
                     ExecuteTargetCommand(
                         target,
                         VbeDesignMode,
@@ -1276,117 +1278,36 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             Bit64
         }
 
-        private void SetNativeBreakpoints(
-            IReadOnlyList<VbeBreakpoint> breakpoints,
-            bool execute = true)
+        object IVbeNativeOperationAdapter.Application => excelObject;
+
+        object IVbeNativeOperationAdapter.GetCurrentWorkbook()
         {
-            if (breakpoints.Count == 0)
-            {
-                return;
-            }
-
-            object? projectObject = null;
-            object? componentsObject = null;
-            var verifiedModules = new Dictionary<string, VerifiedCodeModule>(
-                StringComparer.OrdinalIgnoreCase);
-            Exception? primaryFailure = null;
-            try
-            {
-                var sourceMaps = CollectDistinctSourceMaps(breakpoints);
-                dynamic workbook = GetOpenedWorkbook();
-                projectObject = workbook.VBProject;
-                dynamic project = projectObject;
-                EnsureDesignMode(project);
-
-                componentsObject = project.VBComponents;
-                dynamic components = componentsObject;
-                foreach (var sourceMap in sourceMaps.Values)
-                {
-                    verifiedModules.Add(
-                        sourceMap.ModuleName,
-                        VerifyCodeModule(components, sourceMap));
-                }
-
-                foreach (var breakpoint in breakpoints)
-                {
-                    var verifiedModule = verifiedModules[breakpoint.ModuleName];
-                    ExecuteNativeCommand(
-                        verifiedModule.Component,
-                        verifiedModule.CodeModule,
-                        breakpoint.VbideLine,
-                        VbeNativeCommandContract.ToggleBreakpointCommandId,
-                        "Toggle Breakpoint",
-                        "breakpoint",
-                        CreateDisabledBreakpointMessage(breakpoint),
-                        execute: execute);
-                }
-            }
-            catch (Exception failure)
-            {
-                primaryFailure = failure;
-                throw;
-            }
-            finally
-            {
-                ReleaseComScope(primaryFailure,
-                    verifiedModules.SelectMany(pair => new (string Resource, object? Value)[]
-                    {
-                        ($"code module {pair.Key}", pair.Value.CodeModule),
-                        ($"component {pair.Key}", pair.Value.Component)
-                    }).Concat(new (string Resource, object? Value)[]
-                    {
-                        ("VBA components", componentsObject),
-                        ("VBA project", projectObject)
-                    }).ToArray());
-            }
+            if (completion.IsCompleted)
+                throw new DebugSetupException("The owned Excel session has ended.");
+            var workbook = GetOpenedWorkbook();
+            if (openedWorkbookIdentity is { } expected
+                && !string.Equals(Path.GetFullPath((string)((dynamic)workbook).FullName),
+                    expected, StringComparison.OrdinalIgnoreCase))
+                throw new DebugSetupException("The exact owned workbook identity changed.");
+            return workbook;
         }
 
-        private static Dictionary<string, VbeCodeModuleSourceMap> CollectDistinctSourceMaps(
-            IReadOnlyList<VbeBreakpoint> breakpoints)
+        void IVbeNativeOperationAdapter.AllowForeground()
+            => foregroundPermissionHResult = windowActivator.AllowComServerForeground(excelObject);
+
+        void IVbeNativeOperationAdapter.BringVbeToForeground(nint handle)
+            => windowActivator.BringOwnedWindowToForeground(handle, ProcessId);
+
+        void IVbeNativeOperationAdapter.ReleaseScope(Exception? failure,
+            params (string Resource, object? Value)[] references)
+            => ReleaseComScope(failure, references);
+
+        private void SetNativeBreakpoints(IReadOnlyList<VbeBreakpoint> breakpoints,
+            bool execute = true, CancellationToken cancellationToken = default)
         {
-            var sourceMaps = new Dictionary<string, VbeCodeModuleSourceMap>(
-                StringComparer.OrdinalIgnoreCase);
-            foreach (var breakpoint in breakpoints)
-            {
-                var sourceMap = breakpoint.SourceMap;
-                if (string.IsNullOrEmpty(sourceMap.ModuleName)
-                    || !VbaIdentifier.IsIdentifier(sourceMap.ModuleName)
-                    || sourceMap.ModuleName.EnumerateRunes().Take(32).Count() > 31)
-                {
-                    throw new DebugSetupException(
-                        "A native VBE breakpoint source map has no valid module identity.");
-                }
-
-                if (sourceMap.CodeLines.IsDefault)
-                {
-                    throw new DebugSetupException(
-                        $"The breakpoint source map for '{sourceMap.ModuleName}' has no code-module contents.");
-                }
-
-                if (breakpoint.VbideLine <= 0 || breakpoint.VbideLine > sourceMap.CodeLines.Length)
-                {
-                    throw new DebugSetupException(
-                        $"The native VBE breakpoint line for '{sourceMap.ModuleName}' is outside the exact code-module source map.");
-                }
-
-                if (sourceMaps.TryGetValue(sourceMap.ModuleName, out var existingSourceMap))
-                {
-                    if (existingSourceMap.ModuleKind != sourceMap.ModuleKind
-                        || !existingSourceMap.CodeLines.SequenceEqual(
-                            sourceMap.CodeLines,
-                            StringComparer.Ordinal))
-                    {
-                        throw new DebugSetupException(
-                            $"Conflicting whole code module source maps were supplied for '{sourceMap.ModuleName}'.");
-                    }
-
-                    continue;
-                }
-
-                sourceMaps.Add(sourceMap.ModuleName, sourceMap);
-            }
-
-            return sourceMaps;
+            var native = new VbeNativeOperations(this);
+            if (execute) native.TransferBreakpoints(breakpoints, cancellationToken);
+            else native.InspectBreakpoints(breakpoints, cancellationToken);
         }
 
         private VerifiedCodeModule VerifyCodeModule(
@@ -1401,44 +1322,8 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             {
                 componentObject = components.Item(sourceMap.ModuleName);
                 dynamic component = componentObject;
-                var actualModuleName = (string)component.Name;
-                if (!string.Equals(
-                        sourceMap.ModuleName,
-                        actualModuleName,
-                        StringComparison.Ordinal))
-                {
-                    throw new DebugSetupException(
-                        $"The generated workbook component identity '{actualModuleName}' does not exactly match breakpoint module '{sourceMap.ModuleName}'.");
-                }
-
-                var expectedComponentType = GetComponentType(sourceMap.ModuleKind);
-                if ((int)component.Type != expectedComponentType)
-                {
-                    throw new DebugSetupException(
-                        $"The generated workbook component kind for breakpoint module '{sourceMap.ModuleName}' does not match the saved source map.");
-                }
-
                 codeModuleObject = component.CodeModule;
-                dynamic codeModule = codeModuleObject;
-                var actualLineCount = (int)codeModule.CountOfLines;
-                if (actualLineCount != sourceMap.CodeLines.Length)
-                {
-                    throw new DebugSetupException(
-                        $"The generated workbook whole code module '{sourceMap.ModuleName}' does not exactly match the saved breakpoint source map (line count {actualLineCount}, expected {sourceMap.CodeLines.Length}).");
-                }
-
-                for (var line = 1; line <= actualLineCount; line++)
-                {
-                    var actualCodeLine = (string)codeModule.Lines(line, 1);
-                    if (!string.Equals(
-                            sourceMap.CodeLines[line - 1],
-                            actualCodeLine,
-                            StringComparison.Ordinal))
-                    {
-                        throw new DebugSetupException(
-                            $"The generated workbook whole code module '{sourceMap.ModuleName}' does not exactly match the saved breakpoint source map at line {line}.");
-                    }
-                }
+                VbeNativeOperations.VerifyContents(componentObject, codeModuleObject, sourceMap);
 
                 succeeded = true;
                 return new VerifiedCodeModule(componentObject, codeModuleObject);
@@ -1458,22 +1343,6 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 }
             }
         }
-
-        private static int GetComponentType(VbaModuleKind moduleKind)
-            => moduleKind switch
-            {
-                VbaModuleKind.StandardModule => 1,
-                VbaModuleKind.ClassModule => 2,
-                VbaModuleKind.FormModule => 3,
-                _ => throw new DebugSetupException(
-                    $"The breakpoint source map has unsupported module kind '{moduleKind}'.")
-            };
-
-        private static string CreateDisabledBreakpointMessage(VbeBreakpoint breakpoint)
-            => $"Invalid breakpoint at '{breakpoint.Source.SourceUri}:{breakpoint.Source.EditorLine + 1}' " +
-                $"mapped to '{breakpoint.ModuleName}:{breakpoint.VbideLine}': the native VBE Toggle Breakpoint " +
-                "command is disabled in the actual generated workbook compilation context, so the mapped " +
-                "line is inactive or non-executable. The breakpoint was not relocated.";
 
         private void RunTarget(DebugTargetProcedure target)
             => ExecuteTargetCommand(

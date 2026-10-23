@@ -1089,6 +1089,18 @@ public sealed class VbeDebugAutomationTests
                 "active-pane-read",
                 "selection-read",
                 "find-control:1:51:False",
+                "component:DebugModule",
+                "code-line:1:1",
+                "code-line:2:1",
+                "code-line:3:1",
+                "code-line:4:1",
+                "code-line:5:1",
+                "code-line:6:1",
+                "code-line:7:1",
+                "code-line:8:1",
+                "code-line:9:1",
+                "active-pane-read",
+                "selection-read",
                 "execute:51"
             ],
             events);
@@ -1789,7 +1801,7 @@ public sealed class VbeDebugAutomationTests
         Assert.Contains("disabled", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.StartsWith("Invalid breakpoint", error.Message, StringComparison.Ordinal);
         Assert.Contains(
-            "actual generated workbook compilation context",
+            "actual workbook compilation context",
             error.Message,
             StringComparison.OrdinalIgnoreCase);
         Assert.Contains("inactive or non-executable", error.Message, StringComparison.OrdinalIgnoreCase);
@@ -2724,7 +2736,9 @@ internal sealed record FakeVbeModel(
         int projectProtection = 0,
         int automationSecurity = 1,
         bool recordAutomationSecurityEvents = false,
-        bool recordVbProjectAccess = false)
+        bool recordVbProjectAccess = false,
+        bool breakpointCommandBuiltIn = true,
+        int breakpointCommandId = 51)
     {
         var codeWindow = new FakeVbeWindow(8642, events, "code-focus");
         var codePane = new FakeCodePane(codeWindow, events, selectionMatches);
@@ -2780,8 +2794,9 @@ internal sealed record FakeVbeModel(
         var mainWindow = new FakeVbeWindow(9753, events, "vbe-focus");
         var breakpointControl = breakpointCommandMissing
             ? null
-            : new FakeCommandBarControl(51, events)
+            : new FakeCommandBarControl(breakpointCommandId, events)
             {
+                BuiltIn = breakpointCommandBuiltIn,
                 Enabled = breakpointCommandEnabled,
                 ExecuteException = breakpointCommandException,
                 ExecuteAction = breakpointCommandExecuteAction
@@ -2943,10 +2958,12 @@ public sealed class FakeVbComponents(
 {
     public int Count => componentsByName.Count;
 
+    public Func<string, FakeVbComponent>? ItemOverride { get; set; }
+
     public object Item(string moduleName)
     {
         events.Add($"component:{moduleName}");
-        return componentsByName[moduleName];
+        return ItemOverride?.Invoke(moduleName) ?? componentsByName[moduleName];
     }
 
     public object Import(string sourcePath)
@@ -2979,6 +2996,8 @@ public sealed class FakeCodeModule(
 {
     public FakeCodePane CodePane { get; } = codePane;
 
+    public Action<int>? ReadAction { get; set; }
+
     public int CountOfLines => codeLines.Count;
 
     public int ProcBodyLine(string procedureName, int procedureKind)
@@ -2990,6 +3009,7 @@ public sealed class FakeCodeModule(
     public string Lines(int startLine, int count)
     {
         events.Add($"code-line:{startLine}:{count}");
+        ReadAction?.Invoke(startLine);
         return string.Join(
             "\r\n",
             codeLines.Skip(startLine - 1).Take(count));
@@ -3055,7 +3075,13 @@ public sealed class FakeVbeWindow(
         }
     }
 
-    public void SetFocus() => events.Add(focusEvent);
+    public Action? FocusAction { get; set; }
+
+    public void SetFocus()
+    {
+        events.Add(focusEvent);
+        FocusAction?.Invoke();
+    }
 }
 
 public sealed class FakeVbe(
@@ -3141,7 +3167,7 @@ public sealed class FakeCommandBarControl(int id, List<string> events)
 
     public bool BuiltIn { get; init; } = true;
 
-    public bool Enabled { get; init; } = true;
+    public bool Enabled { get; set; } = true;
 
     public Exception? ExecuteException { get; init; }
 

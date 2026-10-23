@@ -41,9 +41,14 @@ public sealed class SourceWorkbookResetWindowsExcelIntegrationTests(ITestOutputH
         var selectedLine = map.CodeLines.IndexOf(
             "    ThisWorkbook.Worksheets(1).Range(\"C1\").Value2 = \"ran\"") + 1;
         Assert.True(selectedLine > 0);
+        // The native transfer must select the exact source project even when
+        // another owned workbook is selected, without modifying that workbook.
+        await fixture.SelectProjectAsync(source: false);
+        var breakpointTransfer = Stopwatch.StartNew();
         await session.SetNativeBreakpointsAsync(
             [new VbeBreakpoint(new DebugSourceBreakpoint(new Uri(fixture.ModulePath).AbsoluteUri, selectedLine + 1),
-                map, selectedLine)], CancellationToken.None);
+                map, selectedLine)], CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        output.WriteLine($"Verified source breakpoint transfer: {breakpointTransfer.ElapsedMilliseconds} ms.");
         await session.RunTargetAsync(new DebugTargetProcedure("ResetProbe", "RunProbe"),
             null, CancellationToken.None);
         await WaitForModeAsync(session, BreakMode);
