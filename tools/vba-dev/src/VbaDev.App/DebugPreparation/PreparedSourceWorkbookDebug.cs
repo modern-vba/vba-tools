@@ -6,4 +6,4 @@ namespace VbaDev.App.Build;
 internal sealed record PreparedSourceWorkbookDebug(
     VbeImportSourceSet SourceSet,
     WorkbookMaterializationNamePreflightReport SourcePreflight,
-    WorkbookAutomationTimeouts Timeouts);
+    WorkbookAutomationTimeouts Timeouts) : IPreparedSourceWorkbookInput;

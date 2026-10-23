@@ -110,6 +110,6 @@ internal sealed class SourceWorkbookBuildCommand(
             execution.Prepared!.SourceSet.SourceFiles.Count,
             execution.Completed.Item1.Concat(execution.CleanupWarnings).ToArray(),
             execution.Completed.Item2,
-            execution.Prepared!.SourceAdmission);
+            ((PreparedSourceWorkbookBuild)execution.Prepared!).SourceAdmission);
     }
 }

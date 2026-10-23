@@ -1402,7 +1402,12 @@ bounded before Save starts. Source Test also uses this owner, with no-build
 allocating no replacement resources. Complete test rows survive purely late
 trusted cancellation only with all release proofs; failing rows remain failures.
 Snapshot input retains its own ledger and consumes the owner's terminal evidence.
-Debug still uses its direct capsule until its dependent migration.
+Debug also uses this owner; its strict snapshot preparation implements the
+same IPreparedSourceWorkbookInput resource contract as analyzed Build/Test
+preparation, without acquiring semantic-quality inputs. The direct capsule
+constructor and recovery ownership are private after migration. Debug's
+completed receipt carries cleanup warnings, displayed once only after the
+Adapter validates generation, workbook and process identity.
 _Avoid_: caller-supplied release flags, generic resource registry, Save rollback
 
 **ISourceWorkbookAutomation**:

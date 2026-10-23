@@ -65,8 +65,9 @@ internal sealed class SourceWorkbookTestCommand(
                         ? await materializer.PrepareSourceWorkbookBuildAsync(context, token).ConfigureAwait(false)
                         : null;
                 }, context.TemplateDocumentPath, automation, ownershipFactory,
-                async (prepared, replacement, session, token) =>
+                async (input, replacement, session, token) =>
                 {
+                    var prepared = (PreparedSourceWorkbookBuild?)input;
                     if (prepared is not null)
                         executedSourceIndex = sourceLocator.CreateIndex(prepared.SourceAdmission,
                             request.SourceSnapshotPath ?? context.DocumentSourceSetPath, context.DocumentSourceSetPath);

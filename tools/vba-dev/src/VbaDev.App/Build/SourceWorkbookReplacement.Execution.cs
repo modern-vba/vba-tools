@@ -18,15 +18,15 @@ internal sealed partial class SourceWorkbookReplacement
         TimeSpan? recoveryBudget = null)
         => RunOptionalAsync(async token => await prepare(token).ConfigureAwait(false), workbookPath,
             automation, ownershipFactory, (prepared, replacement, session, token) =>
-                operation(prepared!, replacement!, session, token), cancellationToken,
+                operation((PreparedSourceWorkbookBuild)prepared!, replacement!, session, token), cancellationToken,
             WorkbookAutomationTimeouts.Default, recoveryBudget);
 
     internal static async Task<SourceWorkbookExecutionResult<TResult>> RunOptionalAsync<TResult>(
-        Func<CancellationToken, Task<PreparedSourceWorkbookBuild?>> prepare,
+        Func<CancellationToken, Task<IPreparedSourceWorkbookInput?>> prepare,
         string workbookPath,
         ISourceWorkbookAutomation automation,
         IExactFileSystemObjectOwnershipFactory ownershipFactory,
-        Func<PreparedSourceWorkbookBuild?, SourceWorkbookReplacement?, ISourceWorkbookSession,
+        Func<IPreparedSourceWorkbookInput?, SourceWorkbookReplacement?, ISourceWorkbookSession,
             CancellationToken, Task<TResult>> operation,
         CancellationToken cancellationToken,
         WorkbookAutomationTimeouts fallbackTimeouts,
@@ -126,7 +126,7 @@ internal sealed partial class SourceWorkbookReplacement
 }
 
 internal sealed record SourceWorkbookExecutionResult<TResult>(
-    PreparedSourceWorkbookBuild? Prepared,
+    IPreparedSourceWorkbookInput? Prepared,
     bool CallbackReturned,
     TResult? Completed,
     Exception? Failure,
@@ -136,4 +136,11 @@ internal sealed record SourceWorkbookExecutionResult<TResult>(
 {
     internal bool RetainDependentScratch => TerminalFacts is { } facts &&
         (!facts.ProcessReleaseProven || !facts.DispatcherRetired || !facts.ComReferenceReleaseProven);
+}
+
+internal interface IPreparedSourceWorkbookInput
+{
+    VbeImportSourceSet SourceSet { get; }
+    WorkbookMaterializationNamePreflightReport SourcePreflight { get; }
+    WorkbookAutomationTimeouts Timeouts { get; }
 }

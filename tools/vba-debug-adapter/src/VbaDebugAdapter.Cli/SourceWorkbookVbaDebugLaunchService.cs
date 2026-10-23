@@ -280,7 +280,11 @@ internal sealed class SourceWorkbookVbaDebugLaunchService(
             restartReleased = retained is not null;
             continuation.TrySetResult(true);
             var result = await invocation!.ConfigureAwait(false);
-            ValidatePrepared(result);
+            var preparationWarnings = ValidatePrepared(result);
+            if (sink is not null)
+                foreach (var warning in preparationWarnings.Distinct(StringComparer.Ordinal))
+                    await sink.WriteAsync(new DebugLifecycleMessage(warning), cancellationToken)
+                        .ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             workspace.VerifySourceSnapshot();
             if (!Snapshot.MappedBreakpoints.IsEmpty)
@@ -300,7 +304,7 @@ internal sealed class SourceWorkbookVbaDebugLaunchService(
             return running;
         }
 
-        private void ValidatePrepared(ManagedDebugPreparationProcessResult result)
+        private IReadOnlyList<string> ValidatePrepared(ManagedDebugPreparationProcessResult result)
         {
             var ownerOutcome = CompleteCompanionEvidence(result.CleanupOutcome);
             if (!ConfirmCompanionRelease(ownerOutcome))
@@ -339,6 +343,7 @@ internal sealed class SourceWorkbookVbaDebugLaunchService(
                 || !Path.GetFullPath(reportedPath).Equals(workbookPath, StringComparison.OrdinalIgnoreCase)
                 || processId != native.ProcessId || startTicks != native.ProcessStartUtcTicks)
                 throw new DebugSetupException("The source preparation completion does not match its captured live binding.");
+            return root.GetProperty("warnings").EnumerateArray().Select(item => item.GetString()!).ToArray();
         }
 
         public ValueTask DisposeAsync()

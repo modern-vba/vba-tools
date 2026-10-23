@@ -2239,9 +2239,9 @@ function createIntegration(options: {
                 sessionIdFormat: 'lowercase-hex-32',
                 commands: ['cleanup', 'doctor'],
                 commandSchemaVersions: { doctor: '1.0' },
-                featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
+                featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '2.0' },
                 requiredVbaDevFeatureVersions: {
-                  'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '2.0',
+                  'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '3.0',
                   'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
                   'sourceSnapshot.activeWindowsCodePage': '1.0'
                 }
@@ -2357,7 +2357,7 @@ function fixtureIntegration(options: ConstructorParameters<typeof VscodeDebugInt
       contractVersion: '1.0', commandSchemaVersions: { 'prepare-debug': '1.0' },
       featureVersions: {
         'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0', 'test.sourceSnapshot': '2.0',
-        'debug.sourceWorkbookPreparation': '2.0', 'invocation.stdinCancellation': '1.0',
+        'debug.sourceWorkbookPreparation': '3.0', 'invocation.stdinCancellation': '1.0',
         'invocation.stdinWorkbookConfirmation': '1.0', 'sourceSnapshot.activeWindowsCodePage': '1.0'
       }
     },
@@ -2365,9 +2365,9 @@ function fixtureIntegration(options: ConstructorParameters<typeof VscodeDebugInt
       contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
       sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
       commandSchemaVersions: { doctor: '1.0' },
-      featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
+      featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '2.0' },
       requiredVbaDevFeatureVersions: {
-        'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '2.0',
+        'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '3.0',
         'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
         'sourceSnapshot.activeWindowsCodePage': '1.0'
       }
@@ -2379,7 +2379,7 @@ function fixtureIntegration(options: ConstructorParameters<typeof VscodeDebugInt
           toolVersion: '0.1.0', contractVersion: '1.0',
           commands: { 'prepare-debug': { outputSchemaVersion: '1.0' } }, activeWindowsCodePage: 65001,
           featureVersions: {
-            'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '2.0',
+            'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '3.0',
             'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
             'sourceSnapshot.activeWindowsCodePage': '1.0'
           }
@@ -2393,9 +2393,9 @@ function fixtureIntegration(options: ConstructorParameters<typeof VscodeDebugInt
           toolVersion: '0.1.0', contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
           sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
           commandSchemaVersions: { doctor: '1.0' },
-          featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
+          featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '2.0' },
           requiredVbaDevFeatureVersions: {
-            'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '2.0',
+            'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '3.0',
             'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
             'sourceSnapshot.activeWindowsCodePage': '1.0'
           }
@@ -2408,16 +2408,16 @@ function fixtureIntegration(options: ConstructorParameters<typeof VscodeDebugInt
         commands: { 'prepare-debug': { outputSchemaVersion: '1.0' } }, activeWindowsCodePage: 65001,
         featureVersions: {
           'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0', 'test.sourceSnapshot': '2.0',
-          'debug.sourceWorkbookPreparation': '2.0', 'invocation.stdinCancellation': '1.0',
+          'debug.sourceWorkbookPreparation': '3.0', 'invocation.stdinCancellation': '1.0',
           'invocation.stdinWorkbookConfirmation': '1.0', 'sourceSnapshot.activeWindowsCodePage': '1.0'
         }
       } : {
         toolVersion: '0.1.0', contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
         sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
         commandSchemaVersions: { doctor: '1.0' },
-        featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
+        featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '2.0' },
         requiredVbaDevFeatureVersions: {
-          'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '2.0',
+          'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '3.0',
           'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
           'sourceSnapshot.activeWindowsCodePage': '1.0'
         }

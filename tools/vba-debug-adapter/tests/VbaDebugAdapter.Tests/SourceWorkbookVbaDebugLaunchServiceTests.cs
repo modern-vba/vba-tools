@@ -10,6 +10,43 @@ namespace VbaDebugAdapter.Tests;
 public sealed class SourceWorkbookVbaDebugLaunchServiceTests
 {
     [Fact]
+    public async Task ValidatedPreparationWarningsAreDisplayedOnceBeforeNativeExecution()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        fixture.Process.TransformReceipt = json =>
+        {
+            var receipt = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+            receipt["warnings"] = new System.Text.Json.Nodes.JsonArray("Retained staging.", "Retained staging.");
+            return receipt.ToJsonString();
+        };
+        var sink = new RecordingLifecycleSink();
+        await using var plan = await fixture.PrepareAsync(sink);
+        var running = await plan.CommitAsync(null, CancellationToken.None);
+        Assert.Equal("Retained staging.", Assert.Single(sink.Messages).Output);
+        Assert.Contains("run:Boot.Start", fixture.Events);
+        await running.TerminateAsync();
+        await running.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task WarningFromAnUnboundPreparationReceiptIsNotDisplayed()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        fixture.Process.TransformReceipt = json =>
+        {
+            var receipt = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+            receipt["warnings"] = new System.Text.Json.Nodes.JsonArray("Untrusted warning.");
+            receipt["generationId"] = Guid.NewGuid().ToString("N");
+            return receipt.ToJsonString();
+        };
+        var sink = new RecordingLifecycleSink();
+        await using var plan = await fixture.PrepareAsync(sink);
+        await Assert.ThrowsAsync<DebugSetupException>(() => plan.CommitAsync(null, CancellationToken.None));
+        Assert.Empty(sink.Messages);
+        Assert.DoesNotContain("run:Boot.Start", fixture.Events);
+    }
+
+    [Fact]
     public async Task SuccessfulSourceLaunchDisplaysALegacyWorkbookBinWarningExactlyOnce()
     {
         const string warning = "[WARN] project-workbook-bin-deprecated: The binPath setting for document 'Book' "

@@ -1148,7 +1148,7 @@ internal sealed record PreparedSourceWorkbookBuild(
     WorkbookMaterializationNamePreflightReport SourcePreflight,
     AdmittedVbaSourceSet SourceAdmission,
     VbaProjectSemanticInputs? SemanticInputs,
-    WorkbookAutomationTimeouts Timeouts);
+    WorkbookAutomationTimeouts Timeouts) : IPreparedSourceWorkbookInput;
 
 internal sealed class SourceWorkbookTestInputPreparationException(Exception preparationFailure, Exception cleanupFailure)
     : InvalidOperationException(preparationFailure.Message, preparationFailure)

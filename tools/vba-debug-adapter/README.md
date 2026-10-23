@@ -15,7 +15,7 @@ the replacement authority; unsaved VBE-direct edits can be overwritten, while
 cell edits remain and no tool-initiated Save occurs. An already-open workbook
 keeps its exact file, Excel process and existing window state. Build and Test
 retain their own dirty-workbook confirmation policies. The adapter requires
-`debug.sourceWorkbookPreparation: 2.0` so an older prompting CLI cannot satisfy
+`debug.sourceWorkbookPreparation: 3.0` so an older prompting CLI cannot satisfy
 the current Debug contract. DAP and command-result schemas are unchanged.
 
 Debug omits the independent syntax/type/argument-error gate, but still requires

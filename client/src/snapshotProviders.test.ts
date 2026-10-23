@@ -7,7 +7,7 @@ import { resolveSnapshotProviders } from './snapshotProviders';
 test('Debug rejects the old confirmation-based CLI before inspecting the adapter', async () => {
   const requiredFeatures = {
     'build.sourceSnapshot': '2.0',
-    'debug.sourceWorkbookPreparation': '2.0',
+    'debug.sourceWorkbookPreparation': '3.0',
     'invocation.stdinCancellation': '1.0',
     'invocation.stdinWorkbookConfirmation': '1.0',
     'sourceSnapshot.activeWindowsCodePage': '1.0'
@@ -21,7 +21,7 @@ test('Debug rejects the old confirmation-based CLI before inspecting the adapter
     contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
     sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
     commandSchemaVersions: { doctor: '1.0' },
-    featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
+    featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '2.0' },
     requiredVbaDevFeatureVersions: requiredFeatures
   };
   const calls: string[] = [];
@@ -43,7 +43,7 @@ test('Debug rejects the old confirmation-based CLI before inspecting the adapter
       calls.push(file);
       return { stdout: JSON.stringify(oldCli), stderr: '' };
     }
-  }), /debug\.sourceWorkbookPreparation.*2\.0/);
+  }), /debug\.sourceWorkbookPreparation.*3\.0/);
 
   assert.deepEqual(calls, [cliPath]);
 });
@@ -53,7 +53,7 @@ test('Debug accepts source-workbook preparation without an independent snapshot 
     toolVersion: '0.1.1', contractVersion: '1.0', activeWindowsCodePage: 1252,
     featureVersions: {
       'build.sourceSnapshot': '2.0',
-      'debug.sourceWorkbookPreparation': '2.0',
+      'debug.sourceWorkbookPreparation': '3.0',
       'invocation.stdinCancellation': '1.0',
       'invocation.stdinWorkbookConfirmation': '1.0',
       'sourceSnapshot.activeWindowsCodePage': '1.0'
@@ -64,10 +64,10 @@ test('Debug accepts source-workbook preparation without an independent snapshot 
     toolVersion: '0.1.1', contractVersion: '1.0', protocolVersion: '2.0',
     transports: ['stdio'], sessionIdFormat: 'lowercase-hex-32',
     commands: ['cleanup', 'doctor'], commandSchemaVersions: { doctor: '1.0' },
-    featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
+    featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '2.0' },
     requiredVbaDevFeatureVersions: {
       'build.sourceSnapshot': '2.0',
-      'debug.sourceWorkbookPreparation': '2.0',
+      'debug.sourceWorkbookPreparation': '3.0',
       'invocation.stdinCancellation': '1.0',
       'invocation.stdinWorkbookConfirmation': '1.0',
       'sourceSnapshot.activeWindowsCodePage': '1.0'
@@ -94,8 +94,8 @@ test('Debug accepts source-workbook preparation without an independent snapshot 
     capabilitiesProcess: async () => ({ stdout: JSON.stringify(cliCapabilities), stderr: '' })
   });
 
-  assert.equal(providers.vbaDev.capabilities.featureVersions?.['debug.sourceWorkbookPreparation'], '2.0');
-  assert.equal(providers.adapter.capabilities.featureVersions['debug.sourceWorkbook'], '1.0');
+  assert.equal(providers.vbaDev.capabilities.featureVersions?.['debug.sourceWorkbookPreparation'], '3.0');
+  assert.equal(providers.adapter.capabilities.featureVersions['debug.sourceWorkbook'], '2.0');
 });
 
 test('Test snapshot admission still requires the CLI Test snapshot feature', async () => {
@@ -115,10 +115,10 @@ test('Test snapshot admission still requires the CLI Test snapshot feature', asy
     toolVersion: '0.1.1', contractVersion: '1.0', protocolVersion: '2.0',
     transports: ['stdio'], sessionIdFormat: 'lowercase-hex-32',
     commands: ['cleanup', 'doctor'], commandSchemaVersions: { doctor: '1.0' },
-    featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
+    featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '2.0' },
     requiredVbaDevFeatureVersions: {
       'build.sourceSnapshot': '2.0',
-      'debug.sourceWorkbookPreparation': '2.0',
+      'debug.sourceWorkbookPreparation': '3.0',
       'invocation.stdinCancellation': '1.0',
       'invocation.stdinWorkbookConfirmation': '1.0',
       'sourceSnapshot.activeWindowsCodePage': '1.0'
@@ -159,9 +159,9 @@ test('Test rejects an injected adapter that lacks the declared source-workbook d
     contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
     sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
     commandSchemaVersions: { doctor: '1.0' },
-    featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
+    featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '2.0' },
     requiredVbaDevFeatureVersions: {
-      'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '2.0',
+      'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '3.0',
       'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
       'sourceSnapshot.activeWindowsCodePage': '1.0'
     }
@@ -201,9 +201,9 @@ test('Test snapshot admission rejects an old bin-semantic CLI despite unchanged 
     toolVersion: '0.1.1', contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
     sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
     commandSchemaVersions: { doctor: '1.0' },
-    featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
+    featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '2.0' },
     requiredVbaDevFeatureVersions: {
-      'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '2.0',
+      'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '3.0',
       'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
       'sourceSnapshot.activeWindowsCodePage': '1.0'
     }

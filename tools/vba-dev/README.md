@@ -34,7 +34,7 @@ Source-workbook Build, project Export, and Test callers must additionally requir
 The unchanged command output schema alone does not distinguish an older
 bin-workbook provider from the source-workbook behavior.
 
-Debug preparation callers require `debug.sourceWorkbookPreparation: 2.0`.
+Debug preparation callers require `debug.sourceWorkbookPreparation: 3.0`.
 `prepare-debug --describe` resolves the selected source workbook without starting
 Excel. Managed preparation imports a complete immutable snapshot into an exact
 already-open source workbook bound by its Excel PID, UTC start ticks and

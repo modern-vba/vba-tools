@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using VbaDev.App.Build;
+using VbaDev.App.Cli;
 using VbaDev.App.DebugPreparation;
 using VbaDev.App.Projects;
 using VbaDev.App.References;
@@ -222,12 +223,70 @@ public sealed class DebugWorkbookPreparationCommandTests
         Assert.Equal(snapshotBytes, File.ReadAllBytes(snapshotPath));
     }
 
+    [Fact]
+    public async Task CompletedPreparationWithDeletionFailureKeepsItsReceiptAndWarnings()
+    {
+        using var fixture = new PreparationFixture();
+        fixture.Automation.Session.MutateStagedMirrorFileOnImport = true;
+        var result = await fixture.Command.RunAsync(fixture.Context, fixture.Request,
+            null, (_, _) => Task.FromResult(true), CancellationToken.None);
+        Assert.Equal(0, result.ExitCode);
+        using var json = JsonDocument.Parse(result.StandardOutput);
+        Assert.Contains(json.RootElement.GetProperty("warnings").EnumerateArray(),
+            warning => warning.GetString()!.Contains(fixture.Automation.Session.LastBuildImportSourcePath!,
+                StringComparison.Ordinal));
+        Assert.DoesNotContain("save", fixture.Automation.Session.Events);
+    }
+
+    [Fact]
+    public async Task CompletedPreparationSurvivesTrustedLateCancellationAfterRelease()
+    {
+        using var fixture = new PreparationFixture(new WorkbookAutomationCanceledException(
+            new(WorkbookAutomationStageKind.ProcessCleanup), CancellationToken.None));
+        var result = await fixture.Command.RunAsync(fixture.Context, fixture.Request,
+            null, (_, _) => Task.FromResult(true), CancellationToken.None);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("debugWorkbookPrepared", result.StandardOutput);
+        Assert.False(File.Exists(fixture.Automation.Session.LastBuildImportSourcePath));
+        Assert.DoesNotContain("save", fixture.Automation.Session.Events);
+    }
+
+    [Theory]
+    [InlineData("com")]
+    [InlineData("dispatcher")]
+    [InlineData("process")]
+    public async Task CompletedPreparationWithUnprovedReleaseFailsAndRetainsMirror(string kind)
+    {
+        Exception failure;
+        if (kind == "com")
+            failure = new WorkbookAutomationComReferenceReleaseException(null,
+                [new("workbook", new InvalidOperationException("Release failed."))]);
+        else
+        {
+            var cleanup = new WorkbookAutomationCleanupException("Release uncertain.");
+            ((IWorkbookAutomationLifecycleFailure)cleanup).LifecycleEvidence =
+                new(new(WorkbookAutomationStageKind.ProcessCleanup), kind != "process", kind != "dispatcher", false);
+            failure = cleanup;
+        }
+        using var fixture = new PreparationFixture(failure);
+        var result = await fixture.Command.RunAsync(fixture.Context, fixture.Request,
+            null, (_, _) => Task.FromResult(true), CancellationToken.None);
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.True(File.Exists(fixture.Automation.Session.LastBuildImportSourcePath));
+        Assert.Contains("retained", result.StandardError);
+        Assert.Equal(kind == "process" ? OwnedProcessReleaseProof.Unproven
+            : OwnedProcessReleaseProof.ProvenOrNotStarted, result.OwnedProcessReleaseProof);
+        Assert.DoesNotContain("save", fixture.Automation.Session.Events);
+    }
+
     private sealed class PreparationFixture : IDisposable
     {
         private readonly TempDirectory temp = TempDirectory.Create();
 
-        internal PreparationFixture()
+        internal PreparationFixture(Exception? terminalFailure = null)
         {
+            Automation = new() { AfterOperationFailure = terminalFailure };
             Root = temp.CreateDirectory("Project");
             new JsonProjectManifestStore().Save(Root,
                 ProjectManifest.CreateDefault("Project", "Book1", Root, null));
@@ -260,7 +319,7 @@ public sealed class DebugWorkbookPreparationCommandTests
         internal string WorkbookPath { get; }
         internal ResolvedProjectContext Context { get; }
         internal DebugWorkbookPreparationRequest Request { get; }
-        internal RecordingSourceWorkbookAutomation Automation { get; } = new();
+        internal RecordingSourceWorkbookAutomation Automation { get; }
         internal DebugWorkbookPreparationCommand Command { get; }
 
         public void Dispose() => temp.Dispose();

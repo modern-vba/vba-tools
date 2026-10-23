@@ -587,6 +587,11 @@ return, purely late cancellation preserves those results only when process,
 STA and COM-reference release are proved. Failed tests remain failed. Test
 execution is not replayed, and the tool does not initiate Save.
 
+Source Debug preparation uses the same release proofs and preserves completed
+preparation after deletion-only failures with warnings. The debug adapter shows
+validated preparation warnings once. This requires CLI
+`debug.sourceWorkbookPreparation: 3.0` and Adapter `debug.sourceWorkbook: 2.0`.
+
 Build captures the selected source files and form
 sidecars once. A supported UTF-8, UTF-16 LE, or UTF-16 BE BOM identifies the
 source encoding; files without a BOM use only the active Windows ANSI code page
@@ -610,7 +615,7 @@ still be representable in the VBE's active code page.
 Update VBA Tools and its bundled tools together. A separately configured
 `vba-dev` or debug adapter must support the same snapshot v2 requirements.
 Source-workbook debugging additionally requires the CLI feature
-`debug.sourceWorkbookPreparation` 2.0; its older 1.0 behavior is incompatible
+`debug.sourceWorkbookPreparation` 3.0; its older 1.0 behavior is incompatible
 and is not silently admitted by a matching result schema or tool version.
 Ordinary Build and project Export also require a companion that advertises
 their source-workbook behavior; an older bin-workbook provider is not silently

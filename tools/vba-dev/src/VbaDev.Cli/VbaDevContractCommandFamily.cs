@@ -105,7 +105,7 @@ internal sealed class VbaDevContractCommandFamily
                     ["export.sourceWorkbook"] = "1.0",
                     ["test.sourceSnapshot"] = "2.0",
                     ["test.sourceWorkbook"] = "2.0",
-                    ["debug.sourceWorkbookPreparation"] = "2.0",
+                    ["debug.sourceWorkbookPreparation"] = "3.0",
                     ["invocation.stdinCancellation"] = "1.0",
                     ["invocation.stdinWorkbookConfirmation"] = "1.0",
                     ["sourceSnapshot.activeWindowsCodePage"] = "1.0",

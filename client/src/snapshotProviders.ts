@@ -196,7 +196,7 @@ function validateSnapshotVersions(
 ): void {
   const debugDependencies = {
     'build.sourceSnapshot': '2.0',
-    'debug.sourceWorkbookPreparation': '2.0',
+    'debug.sourceWorkbookPreparation': '3.0',
     'invocation.stdinCancellation': '1.0',
     'invocation.stdinWorkbookConfirmation': '1.0',
     'sourceSnapshot.activeWindowsCodePage': '1.0'
@@ -210,7 +210,7 @@ function validateSnapshotVersions(
       || !adapter.commands.includes('cleanup')
       || adapter.sessionIdFormat !== 'lowercase-hex-32'
       || adapter.featureVersions?.['doctor.stdinCancellation'] !== '1.0'
-      || adapter.featureVersions?.['debug.sourceWorkbook'] !== '1.0'
+      || adapter.featureVersions?.['debug.sourceWorkbook'] !== '2.0'
       || Object.keys(adapter.requiredVbaDevFeatureVersions).length !== Object.keys(debugDependencies).length
       || Object.entries(debugDependencies).some(([name, version]) =>
         adapter.requiredVbaDevFeatureVersions[name] !== version)

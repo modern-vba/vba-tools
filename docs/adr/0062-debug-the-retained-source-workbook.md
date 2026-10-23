@@ -23,6 +23,21 @@ capture, readiness, recovery, exact binding and retained/no-Save lifetime remain
 
 ## Context
 
+### Issue #477 follow-up: completed preparation and cleanup
+
+Debug preparation now uses the SourceWorkbookReplacement execution owner shared
+with Build and Test. Strict Debug input remains distinct from analyzed input
+and acquires no semantic-quality evidence. All process/STA/COM release proofs
+gate dependent cleanup. A normally completed callback survives deletion-only
+failures as receipt warnings and purely late trusted cancellation with all
+proofs; other failures remain failures. The Adapter validates the existing
+closed receipt and exact generation/workbook/process identity before displaying
+each distinct preparation warning once through lifecycle output. No raw stderr
+forwarding, dirty-workbook consent or Save is added. CLI preparation feature
+3.0 and Adapter source-workbook feature 2.0 supersede prior feature versions;
+receipt schemas, snapshot transfer and DAP stay unchanged. The legacy direct
+replacement constructor and scratch ownership are private after migration.
+
 The maintainer selected one source workbook as the authoring and Debug state.
 Copying it for each Debug launch, killing Excel on Stop and replacing its process
 on Restart would discard the state that the developer now expects to inspect.

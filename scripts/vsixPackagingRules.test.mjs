@@ -1239,9 +1239,9 @@ test('bundled debug adapter capabilities require the source workbook Debug featu
     sessionIdFormat: 'lowercase-hex-32',
     commands: ['cleanup', 'doctor'],
     commandSchemaVersions: { doctor: '1.0' },
-    featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '1.0' },
+    featureVersions: { 'doctor.stdinCancellation': '1.0', 'debug.sourceWorkbook': '2.0' },
     requiredVbaDevFeatureVersions: {
-      'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '2.0',
+      'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '3.0',
       'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
       'sourceSnapshot.activeWindowsCodePage': '1.0'
     }
@@ -1281,7 +1281,7 @@ test('bundled debug adapter capabilities require the source workbook Debug featu
       toolVersion: '0.1.0',
       ...contractWithExtraFeature
     }), contractWithExtraFeature),
-    /only build\.sourceSnapshot 2\.0.*debug\.sourceWorkbookPreparation 2\.0/i
+    /only build\.sourceSnapshot 2\.0.*debug\.sourceWorkbookPreparation 3\.0/i
   );
 });
 
@@ -1306,7 +1306,7 @@ test('packaging admits the coordinated ACP-authoritative snapshot v2 providers',
   assert.equal(adapterContract.contractVersion, '1.0');
   assert.equal(adapterContract.protocolVersion, '2.0');
   assert.deepEqual(adapterContract.requiredVbaDevFeatureVersions, {
-    'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '2.0',
+    'build.sourceSnapshot': '2.0', 'debug.sourceWorkbookPreparation': '3.0',
     'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
     'sourceSnapshot.activeWindowsCodePage': '1.0'
   });

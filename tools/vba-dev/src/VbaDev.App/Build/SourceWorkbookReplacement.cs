@@ -9,8 +9,8 @@ namespace VbaDev.App.Build;
 
 /// <summary>
 /// Captures and restores source-workbook VBA state without persistence authority.
-/// RunAsync owns execution staging through automation retirement; direct capsule
-/// callers retain their existing ownership during the staged Test/Debug migration.
+/// Execution owns staging through automation retirement; callbacks retain
+/// intent-specific persistence, readiness, and recovery-cutoff decisions.
 /// </summary>
 internal sealed partial class SourceWorkbookReplacement
 {
@@ -26,7 +26,7 @@ internal sealed partial class SourceWorkbookReplacement
     private IReadOnlyList<WorkbookReference> originalReferences = [];
     private IReadOnlyList<WorkbookModule> replaceableModules = [];
 
-    internal SourceWorkbookReplacement(
+    private SourceWorkbookReplacement(
         VbeImportSourceSet sourceSet,
         WorkbookMaterializationNamePreflightReport sourcePreflight,
         WorkbookExportStaging recovery,
@@ -51,9 +51,9 @@ internal sealed partial class SourceWorkbookReplacement
 
     internal bool ReplacementStarted { get; private set; }
 
-    internal bool RetainRecovery { get; private set; }
+    private bool RetainRecovery { get; set; }
 
-    internal WorkbookExportStaging? RecoveryVerification { get; private set; }
+    private WorkbookExportStaging? RecoveryVerification { get; set; }
 
     /// <summary>Completes recoverable exports before the caller permits any replacement.</summary>
     internal async Task CaptureAsync(
