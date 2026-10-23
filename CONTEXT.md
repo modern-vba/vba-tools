@@ -5002,6 +5002,26 @@ omits the unrepresentable value, and accepts the protocol's parameter-zero
 display fallback without changing the semantic mapping to zero.
 _Avoid_: hover, tooltip, parameter hover
 
+Contract-declaration guidance is resolved once per inventory from the existing
+Implements, WithEvents, and intrinsic host event authorities. A declaration
+without applicable help is distinct from a position outside a declaration;
+only the latter uses ordinary call-site resolution. Parameter slots follow
+top-level syntax delimiters: an empty list starts at zero, crossing a comma
+advances even before the next parameter is written, and a slot beyond each
+contract's arity has no active parameter. Arrays, nested parentheses, strings,
+and comments do not add slots. Guidance includes the insertion position before
+the closing parenthesis and ends after it; same-line subsequent calls retain
+ordinary resolution. Incomplete parameters are guided only within a proven
+declaration context, while strings and comments suppress help.
+
+Existing event associations may provide repair guidance for an incorrectly
+written Function or Property without making it valid or suppressing diagnostics.
+ClassLifecycle remains completion-only. Contract variants coalesce by the
+existing presentation identity (including conditional markers), retaining stable
+origin order and the first variant's documentation. Retrigger retains a matching
+identity after coalescing, otherwise selecting the first variant. No semantic
+authority, call-site argument mapping, or capability projection is replaced.
+
 VS Code renders the native Signature Help signature/documentation separator.
 The server adds no Markdown rule or callable-documentation copy to parameter
 documentation, including when an active parameter is absent or undocumented.

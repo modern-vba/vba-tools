@@ -968,6 +968,13 @@ an intrinsic Host Event, a `WithEvents` variable, or an `Implements`
 relationship. It also includes the Property accessors derived from Public
 variables on an implemented interface.
 
+While editing a contract-backed declaration's parameters, Signature Help shows
+the required contract independently of the parameters already written. An empty
+list starts at the first required parameter; a comma advances to the next, and
+extra slots leave the contract visible without highlighting an unrelated
+parameter. Event guidance can help repair a Function or Property written where
+a Sub is required; diagnostics still report the invalid declaration kind.
+
 Start a `Sub`, `Function`, `Property Get`, `Property Let`, or `Property Set`
 declaration and request completion in the name slot. VBA Tools first offers
 only semantic prefixes such as `UserForm_`, `publisher_`, or `IFoo_`. Accepting

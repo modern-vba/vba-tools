@@ -517,8 +517,13 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
         }
     }
 
-    [Fact]
-    public async Task Intrinsic_handler_declaration_uses_one_catalog_signature()
+    [Theory]
+    [InlineData("Sub", "ByVal DifferentName As Long", "DifferentName", 0)]
+    [InlineData("Sub", "", "()", 1)]
+    [InlineData("Function", "", "()", 1)]
+    [InlineData("Property Get", "", "()", 1)]
+    public async Task Intrinsic_handler_declaration_uses_one_catalog_signature(
+        string kind, string parameters, string cursorNeedle, int cursorOffset)
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-intrinsic-host-signature-").FullName;
@@ -536,8 +541,8 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                 "Begin VB.Form Dialog",
                 "End",
                 "Attribute VB_Name = \"Dialog\"",
-                "Private Sub UserForm_Change(ByVal DifferentName As Long)",
-                "End Sub"
+                $"Private {kind} UserForm_Change({parameters})",
+                "End " + (kind.StartsWith("Property") ? "Property" : kind)
             ]);
             File.WriteAllText(sourcePath, text);
 
@@ -578,7 +583,8 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                 "textDocument/signatureHelp",
                 uri,
                 text,
-                "DifferentName");
+                cursorNeedle,
+                cursorOffset);
             var result = response.GetProperty("result");
             var signature = Assert.Single(
                 result.GetProperty("signatures").EnumerateArray());

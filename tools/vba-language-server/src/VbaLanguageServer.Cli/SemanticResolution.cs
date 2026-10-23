@@ -11,6 +11,7 @@ internal sealed class VbaSemanticResolution
 {
     private static readonly VbaCompletionResult EmptyCompletion = new([]);
     private readonly VbaProjectSemanticResolution core;
+    private readonly VbaContractDeclarationSignatureHelp contractDeclarationSignatureHelp;
     internal VbaProjectSemanticResolution Core => core;
     private readonly VbaNameCandidateInventory definitionCandidates;
     private readonly VbaResolutionPolicy resolutionPolicy;
@@ -35,6 +36,7 @@ internal sealed class VbaSemanticResolution
     {
         core = new VbaProjectSemanticResolution(definitionCandidates, resolutionPolicy,
             referenceCatalogIdentities, intrinsicHostEventCatalog);
+        contractDeclarationSignatureHelp = new(core);
         this.definitionCandidates = core.DefinitionCandidates;
         this.resolutionPolicy = core.ResolutionPolicy;
         this.nameResolution = core.NameResolution;
@@ -632,36 +634,17 @@ internal sealed class VbaSemanticResolution
         }
 
         var syntaxTree = GetSyntaxTree(currentDocument);
-        var contractSignatureHelp = TryGetContractDeclarationSignatureHelp(
-            currentDocument,
-            syntaxTree,
-            line,
-            character,
-            retriggerIdentity);
-        if (contractSignatureHelp is not null)
+        switch (contractDeclarationSignatureHelp.Resolve(
+            currentDocument, syntaxTree, line, character, retriggerIdentity))
         {
-            return contractSignatureHelp;
-        }
-
-        var interfaceSignatureHelp = interfaceSemantics.GetAccessorSignatureHelp(
-            currentDocument,
-            line,
-            character,
-            retriggerIdentity);
-        if (interfaceSignatureHelp is not null)
-        {
-            return interfaceSignatureHelp;
-        }
-
-        var handlerSignatureHelp = TryGetWithEventsHandlerSignatureHelp(
-            currentDocument,
-            syntaxTree,
-            line,
-            character,
-            retriggerIdentity);
-        if (handlerSignatureHelp is not null)
-        {
-            return handlerSignatureHelp;
+            case VbaDeclarationSignatureHelp.Help help:
+                return help.Value;
+            case VbaDeclarationSignatureHelp.NoHelp:
+                return null;
+            case VbaDeclarationSignatureHelp.NotDeclaration:
+                break;
+            default:
+                throw new InvalidOperationException("Unknown declaration help result.");
         }
 
         var positionSyntax = syntaxTree.GetPositionSyntax(line, character);
@@ -678,301 +661,6 @@ internal sealed class VbaSemanticResolution
             positionSyntax,
             retriggerIdentity,
             ProjectDefinitionPresentation);
-    }
-
-    private VbaSignatureHelp? TryGetContractDeclarationSignatureHelp(
-        VbaSourceDocument currentDocument,
-        VbaSyntaxTree syntaxTree,
-        int line,
-        int character,
-        VbaSignaturePresentationIdentity? retriggerIdentity)
-    {
-        var position = new VbaSyntaxPosition(line, character, 0);
-        var callable = syntaxTree.Module.CallableDeclarations.FirstOrDefault(
-            candidate => candidate.ParameterListRange is { } parameterListRange
-                && Contains(parameterListRange, position));
-        if (callable is null)
-        {
-            return null;
-        }
-
-        var declaration = currentDocument.Definitions.FirstOrDefault(definition =>
-            definition.Kind is VbaSourceDefinitionKind.Procedure
-                or VbaSourceDefinitionKind.Property
-            && definition.Range.Start.Line == callable.Range.Start.Line
-            && definition.Name.Equals(
-                callable.Name,
-                StringComparison.OrdinalIgnoreCase)
-            && definition.PropertyAccessorKind == callable.PropertyAccessorKind);
-        if (declaration is null
-            || !TryGetCallableDeclarationNameKind(
-                declaration,
-                out var declarationKind))
-        {
-            return null;
-        }
-
-        var activeParameterIndex = VbaInterfaceSemanticModel
-            .GetPhysicalParameterIndex(syntaxTree, callable, position);
-        var variants = new List<VbaSignatureHelpVariant>();
-        if (declarationKind == VbaCallableDeclarationNameKind.Sub)
-        {
-            var intrinsicAnalysis = intrinsicHostEvents.AnalyzeIntrinsicHandler(
-                currentDocument,
-                declaration);
-            if (intrinsicAnalysis?.EventTarget.EventContract.Signature is not null)
-            {
-                var signature = VbaIntrinsicHostEventSemanticModel
-                    .CreateHandlerSignature(
-                        intrinsicAnalysis.Surface,
-                        intrinsicAnalysis.HostEvent);
-                variants.Add(CreateContractSignatureHelpVariant(
-                    signature,
-                    activeParameterIndex,
-                    isConditional: false));
-            }
-
-            var eventSignatures = AnalyzeWithEventsHandler(
-                    currentDocument,
-                    declaration)
-                ?.BindingSet.ResolvedEventSignatures;
-            if (eventSignatures is not null)
-            {
-                variants.AddRange(eventSignatures.Contracts
-                    .Where(contract => contract.Signature is not null)
-                    .Select(contract => CreateContractSignatureHelpVariant(
-                        contract.Signature!,
-                        activeParameterIndex,
-                        contract.IsConditionalContract)));
-            }
-        }
-
-        variants.AddRange(interfaceSemantics
-            .GetDeclarationNameCompletionOrigins(
-                currentDocument,
-                declarationKind)
-            .SelectMany(origin => origin.Members.Select(member => new
-            {
-                FullName = origin.Prefix + member.Name,
-                Member = member
-            }))
-            .Where(candidate => candidate.Member.Signature is not null
-                && candidate.FullName.Equals(
-                    declaration.Name,
-                    StringComparison.OrdinalIgnoreCase))
-            .Select(candidate => CreateContractSignatureHelpVariant(
-                candidate.Member.Signature!,
-                activeParameterIndex,
-                candidate.Member.IsConditionalContract)));
-        variants = CoalesceContractSignatureHelpVariants(variants);
-        if (variants.Count == 0)
-        {
-            return null;
-        }
-
-        var activeSignature = 0;
-        if (retriggerIdentity is not null)
-        {
-            var retainedIndex = variants.FindIndex(
-                variant => variant.PresentationIdentity.Matches(
-                    retriggerIdentity));
-            if (retainedIndex >= 0)
-            {
-                activeSignature = retainedIndex;
-            }
-        }
-
-        var active = variants[activeSignature];
-        return new VbaSignatureHelp(
-            active.Signature,
-            active.ActiveParameter,
-            variants,
-            activeSignature);
-    }
-
-    private static List<VbaSignatureHelpVariant> CoalesceContractSignatureHelpVariants(
-        IEnumerable<VbaSignatureHelpVariant> variants)
-    {
-        var result = new List<VbaSignatureHelpVariant>();
-        foreach (var variant in variants)
-        {
-            var identity = variant.PresentationIdentity;
-            if (result.Any(existing =>
-                    existing.PresentationIdentity.Matches(identity)))
-            {
-                continue;
-            }
-
-            result.Add(variant);
-        }
-
-        return result;
-    }
-
-    private static VbaSignatureHelpVariant CreateContractSignatureHelpVariant(
-        VbaCallableSignature signature,
-        int? physicalParameterIndex,
-        bool isConditional)
-        => new(
-            signature,
-            physicalParameterIndex is int parameterIndex
-                    && parameterIndex < signature.Parameters.Count
-                ? parameterIndex
-                : null,
-            isConditional);
-
-    private static bool TryGetCallableDeclarationNameKind(
-        VbaSourceDefinition declaration,
-        out VbaCallableDeclarationNameKind declarationKind)
-    {
-        if (declaration.Kind == VbaSourceDefinitionKind.Property)
-        {
-            declarationKind = declaration.PropertyAccessorKind switch
-            {
-                VbaPropertyAccessorKind.Get =>
-                    VbaCallableDeclarationNameKind.PropertyGet,
-                VbaPropertyAccessorKind.Let =>
-                    VbaCallableDeclarationNameKind.PropertyLet,
-                VbaPropertyAccessorKind.Set =>
-                    VbaCallableDeclarationNameKind.PropertySet,
-                _ => default
-            };
-            return declaration.PropertyAccessorKind is not null;
-        }
-
-        declarationKind = declaration.CallableKind switch
-        {
-            VbaCallableKind.Sub => VbaCallableDeclarationNameKind.Sub,
-            VbaCallableKind.Function => VbaCallableDeclarationNameKind.Function,
-            _ => default
-        };
-        return declaration.Kind == VbaSourceDefinitionKind.Procedure
-            && declaration.CallableKind is VbaCallableKind.Sub
-                or VbaCallableKind.Function;
-    }
-
-    private VbaSignatureHelp? TryGetWithEventsHandlerSignatureHelp(
-        VbaSourceDocument currentDocument,
-        VbaSyntaxTree syntaxTree,
-        int line,
-        int character,
-        VbaSignaturePresentationIdentity? retriggerIdentity)
-    {
-        var position = new VbaSyntaxPosition(line, character, 0);
-        var callable = syntaxTree.Module.CallableDeclarations.FirstOrDefault(
-            candidate => candidate.ParameterListRange is { } parameterListRange
-                && Contains(parameterListRange, position));
-        if (callable is null)
-        {
-            return null;
-        }
-
-        var handler = currentDocument.Definitions.FirstOrDefault(definition =>
-            definition.Kind is VbaSourceDefinitionKind.Procedure
-                or VbaSourceDefinitionKind.Property
-            && definition.Range.Start.Line == callable.Range.Start.Line
-            && definition.Name.Equals(
-                callable.Name,
-                StringComparison.OrdinalIgnoreCase)
-            && definition.PropertyAccessorKind == callable.PropertyAccessorKind);
-        if (handler is null)
-        {
-            return null;
-        }
-
-        var intrinsicAnalysis = intrinsicHostEvents.AnalyzeIntrinsicHandler(
-            currentDocument,
-            handler);
-        if (intrinsicAnalysis?.EventTarget.EventContract.Signature
-            is not null)
-        {
-            var intrinsicParameterIndex = GetHandlerParameterIndex(
-                callable,
-                position);
-            var signature = VbaIntrinsicHostEventSemanticModel
-                .CreateHandlerSignature(
-                    intrinsicAnalysis.Surface,
-                    intrinsicAnalysis.HostEvent);
-            int? activeParameter = intrinsicParameterIndex is int parameterIndex
-                    && parameterIndex < signature.Parameters.Count
-                ? parameterIndex
-                : null;
-            var variant = new VbaSignatureHelpVariant(
-                signature,
-                activeParameter,
-                IsConditionalVariant: false);
-            return new VbaSignatureHelp(
-                signature,
-                activeParameter,
-                [variant]);
-        }
-
-        var analysis = AnalyzeWithEventsHandler(currentDocument, handler);
-        var signatureSet = analysis?.BindingSet.ResolvedEventSignatures;
-        if (signatureSet is null)
-        {
-            return null;
-        }
-
-        var handlerParameterIndex = GetHandlerParameterIndex(callable, position);
-        var variants = signatureSet.Contracts
-            .Where(contract => contract.Signature is not null)
-            .Select(contract => new VbaSignatureHelpVariant(
-                contract.Signature!,
-                handlerParameterIndex is int parameterIndex
-                        && parameterIndex < contract.Signature!.Parameters.Count
-                    ? parameterIndex
-                    : null,
-                contract.IsConditionalContract))
-            .ToArray();
-        if (variants.Length == 0)
-        {
-            return null;
-        }
-
-        var activeSignature = 0;
-        if (retriggerIdentity is not null)
-        {
-            var retainedIndex = Array.FindIndex(
-                variants,
-                variant => variant.PresentationIdentity.Matches(retriggerIdentity));
-            if (retainedIndex >= 0)
-            {
-                activeSignature = retainedIndex;
-            }
-        }
-
-        var activeVariant = variants[activeSignature];
-        return new VbaSignatureHelp(
-            activeVariant.Signature,
-            activeVariant.ActiveParameter,
-            variants,
-            activeSignature);
-    }
-
-    private static int? GetHandlerParameterIndex(
-        VbaCallableDeclarationSyntax callable,
-        VbaSyntaxPosition position)
-    {
-        if (callable.Parameters.Count == 0)
-        {
-            return null;
-        }
-
-        for (var index = 0; index < callable.Parameters.Count; index++)
-        {
-            if (Contains(callable.Parameters[index].Range, position))
-            {
-                return index;
-            }
-
-            if (Compare(position, callable.Parameters[index].Range.Start) < 0)
-            {
-                return index;
-            }
-        }
-
-        return callable.Parameters.Count - 1;
     }
 
     internal VbaConditionalCallCompatibility? AnalyzeCompleteCall(
