@@ -3,6 +3,34 @@
 All notable user-facing changes to the independently versioned `vba-dev` CLI
 are recorded here. Extension changes remain in the repository root changelog.
 
+## [0.1.2] - 2026-10-24
+
+### Changed
+
+- Finalize source-workbook Build, Test, and Debug preparation through shared
+  ownership with explicit process, STA, and COM-reference release proofs.
+- Preserve completed Build and Debug preparation after deletion-only cleanup
+  failures, report retained paths as warnings, and preserve complete Test rows
+  after purely late trusted cancellation. Failed tests remain failed.
+- Reconcile Reference Add and CommonModules requirements using the latest valid
+  document-scoped evidence before source mutation, preserving explicit intent.
+- Remove obsolete staged Build and Test forwarding paths; ordinary execution
+  continues to use the manifest-selected source workbook.
+
+### Breaking Changes
+
+- Source Build and Test consumers must require `build.sourceWorkbook: 2.0` and
+  `test.sourceWorkbook: 2.0`. Debug preparation consumers must require
+  `debug.sourceWorkbookPreparation: 3.0`. Update custom integrations together
+  with this CLI; the top-level CLI contract remains `1.0`.
+
+### Compatibility
+
+- Build imports and saves the selected source workbook, including other unsaved
+  workbook edits after consent. Test and Debug do not initiate Save.
+- The standalone Windows x64 ZIP contains the same self-contained executable
+  bundled in VBA Tools 0.1.8. No separately installed .NET runtime is required.
+
 ## [0.1.1] - 2026-10-20
 
 ### Fixed

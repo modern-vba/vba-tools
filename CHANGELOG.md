@@ -4,6 +4,73 @@ All notable user-facing changes to the VBA Tools extension are recorded here.
 The extension history is versioned independently from the bundled `vba-dev`
 CLI history.
 
+## [0.1.8] - 2026-10-24
+
+### Changed
+
+- Signature Help for Implements, WithEvents, and intrinsic event declarations
+  follows the required contract while parameters are incomplete or being
+  repaired. Empty lists select the first parameter; extra slots retain the
+  signature without highlighting an unrelated parameter.
+- Build, Test, and Debug preparation share explicit automation release proofs.
+  Completed Build and Debug preparation survive deletion-only cleanup failures
+  with warnings. Complete Test results survive purely late trusted cancellation;
+  failed tests remain failed.
+- Native debugging shares verified breakpoint transfer and current VBE command
+  context checks across source and retained diagnostic sessions. Session ending
+  revokes inspection access before cleanup and preserves the observed outcome.
+- Bundle independently versioned `vba-dev` 0.1.2 and its matching standalone
+  Windows x64 ZIP. See the [CLI changelog](https://github.com/modern-vba/vba-tools/blob/main/tools/vba-dev/CHANGELOG.md#012---2026-10-24).
+
+### Fixed
+
+- Reference Add and CommonModules Add/Update accept harmless concurrent reference
+  additions, reduced or reordered requirements, and newly eligible documents
+  with already-selected references. Unresolved required changes stop before
+  source mutation; explicit reference intent, spelling, and order are preserved.
+- Host compilation classification accepts 32-bit Excel on 64-bit Windows,
+  derives Win64 from the host process, and prioritizes known contradictions over
+  missing information without inventing live custom constants.
+- Rename validates source revisions, authority, templates, paths, and file
+  capabilities consistently. Confirmation is consumed once and cannot be reused;
+  cancellation and stale response failures cannot dispose a newer operation.
+
+### Breaking Changes
+
+- Separately configured companions and custom integrations must support CLI
+  `build.sourceWorkbook: 2.0`, `test.sourceWorkbook: 2.0`, and
+  `debug.sourceWorkbookPreparation: 3.0`; debug adapters must support
+  `debug.sourceWorkbook: 2.0`. Update the extension and its companions together.
+  The top-level CLI contract remains `1.0` and Test NDJSON remains `1.2`.
+
+### Known Limitations
+
+- Native debugging remains limited to its existing supported targets and
+  requires an available, correctly bound VBE command context.
+- User VBA can still save or cause other effects during Test and Debug.
+
+### Source-workbook Compatibility
+
+- Build imports into the manifest-selected source workbook and saves it,
+  including other unsaved workbook edits after consent. An open workbook keeps
+  its existing Excel process and window.
+- Test uses that same source workbook without initiating Save. A borrowed
+  workbook stays open; an owned hidden workbook closes without saving.
+- Debug F5 and Restart reuse it without dirty-workbook confirmation or Save.
+  Source editors are not automatically saved. Stop resets native execution
+  while leaving the workbook open.
+- Legacy `binPath` remains optional and deprecated; it does not select the
+  ordinary Build, Test, or Debug execution workbook.
+
+Publish and standalone Import remain unchanged. Existing source-snapshot v2
+and active-Windows-code-page admission requirements remain in effect alongside
+this release's updated source-workbook capability versions.
+
+### Requirements
+
+- Windows x64, VS Code 1.137.0 or later, and desktop Excel with trusted VBIDE
+  access for workbook operations. Bundled executables are self-contained.
+
 ## [0.1.7] - 2026-10-21
 
 ### Changed
