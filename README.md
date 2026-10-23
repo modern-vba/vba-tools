@@ -403,6 +403,16 @@ the result from package or filesystem state. An exit-zero untrusted result warns
 that the manifest may already have committed and offers Output for inspection
 without retry, rollback, or fallback execution.
 
+CommonModules Add and Update adopt the latest selected references and package
+requirements before changing source files. Concurrent reference additions,
+reduced requirements, and changed requirement order can proceed using valid
+resolution evidence. Existing reference spelling, order, and direct intent are
+preserved. Update also adopts the latest installed-document set; a newly
+eligible document can proceed when its required references are already selected.
+An unresolved new requirement, a still-required reference removed concurrently,
+or a source-template change relevant to an actual addition stops the entire
+operation before source mutation with `commonModulesRequiredReferencePlanChanged`.
+Resolve the reported document/reference/template issue and rerun the command.
 Reference Add and Remove open a disabled, busy multi-select Quick Pick while
 their inventory is loaded for the exact selected project and document. Add
 offers only resolved `reference list --available` entries; Remove uses the

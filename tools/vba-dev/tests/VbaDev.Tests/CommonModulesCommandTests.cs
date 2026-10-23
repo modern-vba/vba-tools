@@ -25,6 +25,136 @@ public sealed class CommonModulesCommandTests
         Assert.Null(authorityType.GetProperty(nameof(CommonModulesPackage.Entries))!.GetSetMethod());
     }
 
+    [Theory]
+    [InlineData(false, "shrink")]
+    [InlineData(true, "shrink")]
+    [InlineData(false, "empty")]
+    [InlineData(true, "empty")]
+    [InlineData(false, "reorder")]
+    [InlineData(true, "reorder")]
+    [InlineData(false, "selected-template")]
+    [InlineData(true, "selected-template")]
+    [InlineData(false, "removed")]
+    [InlineData(true, "removed")]
+    [InlineData(false, "unsupported")]
+    [InlineData(true, "unsupported")]
+    public void LatestRequirementsUseOnlyStillNecessaryEvidence(bool update, string change)
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProjectWithCommonModules(temp, "Project");
+        var repo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifestWithReferences(repo, ("Feature.bas", "optional", "", "[\"First\",\"Second\"]"));
+        WriteModule(repo, "Feature.bas", "new source");
+        var path = Path.Combine(root, "src", "Book1", "Feature.bas");
+        var store = new JsonProjectManifestStore();
+        var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
+        var manifest = store.Load(manifestPath);
+        if (update)
+        {
+            manifest.Documents["Book1"].CommonModules.Add(Installed("Feature", requested: true));
+            WriteModule(Path.GetDirectoryName(path)!, "Feature.bas", "old source");
+        }
+        if (change == "removed") manifest.Documents["Book1"].References.Add(new("Second", false));
+        store.Save(root, manifest);
+        var resolver = new MutatingReferenceResolver(() =>
+        {
+            var latest = store.Load(manifestPath);
+            if (change == "selected-template")
+            {
+                latest.Documents["Book1"] = latest.Documents["Book1"] with { TemplatePath = "src/Book1/Other.xlsm" };
+                latest.Documents["Book1"].References.AddRange([new("second", true), new("FIRST", false)]);
+            }
+            if (change == "removed") latest.Documents["Book1"].References.Clear();
+            store.Save(root, latest);
+            var names = change switch
+            {
+                "shrink" => "[\"Second\"]",
+                "empty" => "[]",
+                "reorder" => "[\"Second\",\"First\"]",
+                "unsupported" => "[\"First\",\"New\"]",
+                _ => "[\"First\",\"Second\"]"
+            };
+            WriteManifestWithReferences(repo, ("Feature.bas", "optional", "", names));
+        }, new ResolvedVbaProjectReference("First", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", 1, 0),
+           new ResolvedVbaProjectReference("Second", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", 1, 0));
+        var application = CommandLineTestFactory.Create(root, vbaProjectReferenceResolver: resolver);
+        var result = application.Run(update ? ["common-module", "update", "--format", "json"]
+            : ["common-module", "add", "Feature", "--format", "json"]);
+        var final = store.Load(manifestPath).Documents["Book1"];
+        if (change is "removed" or "unsupported")
+        {
+            Assert.Equal(1, result.ExitCode);
+            Assert.Empty(result.StandardOutput);
+            Assert.Contains("[commonModulesRequiredReferencePlanChanged]", result.StandardError);
+            Assert.Contains("Book1", result.StandardError);
+            Assert.Contains(change == "removed" ? "Second" : "New", result.StandardError);
+            if (update) Assert.Equal("old source", ReadModuleBody(path));
+            else Assert.False(File.Exists(Path.Combine(root, "src", "Book1", "common-modules", "Feature.bas")));
+            Assert.Empty(final.References);
+            return;
+        }
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("new source", ReadModuleBody(update ? path : Path.Combine(root, "src", "Book1", "common-modules", "Feature.bas")));
+        string[] expected = change switch
+        {
+            "shrink" => ["Second"], "empty" => [], "reorder" => ["Second", "First"],
+            _ => ["second", "FIRST"]
+        };
+        Assert.Equal(expected, final.References.Select(reference => reference.Name));
+        Assert.Equal(change == "selected-template" ? [true, false] : expected.Select(_ => false),
+            final.References.Select(reference => reference.Requested));
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    public void UpdateReplansNewTargetsAndValidatesAllBeforeFirstSourceMutation(bool initialTarget, bool selected)
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProjectWithCommonModules(temp, "Project");
+        var repo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifestWithReferences(repo, ("Feature.bas", "optional", "", "[\"Library\"]"));
+        WriteModule(repo, "Feature.bas", "new source");
+        var store = new JsonProjectManifestStore();
+        var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
+        var manifest = store.Load(manifestPath);
+        if (initialTarget) manifest.Documents["Book1"].CommonModules.Add(Installed("Feature", requested: true));
+        store.Save(root, manifest);
+        var first = Path.Combine(root, "src", "Book1", "Feature.bas");
+        WriteModule(Path.GetDirectoryName(first)!, "Feature.bas", "old source");
+        Directory.CreateDirectory(Path.Combine(root, "src", "SecondBook"));
+        var mutatingStore = new MutateAfterFirstLoadManifestStore(root, latest =>
+        {
+            var second = ProjectDocument.CreateExcel("SecondBook", commonModules: [Installed("Feature", requested: true)],
+                references: selected ? [new("Library", true)] : []);
+            latest.Documents.Add("SecondBook", second);
+        });
+        var resolver = new FakeVbaProjectReferenceResolver(new ResolvedVbaProjectReference(
+            "Library", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", 1, 0));
+        var application = CommandLineTestFactory.Create(root, projectManifestStore: mutatingStore,
+            vbaProjectReferenceResolver: resolver);
+        var result = application.Run(["common-module", "update", "--format", "json"]);
+        var secondPath = Path.Combine(root, "src", "SecondBook", "common-modules", "Feature.bas");
+        if (!selected)
+        {
+            Assert.Equal(1, result.ExitCode);
+            Assert.Empty(result.StandardOutput);
+            Assert.Contains("SecondBook", result.StandardError);
+            Assert.Contains("Library", result.StandardError);
+            Assert.Equal("old source", ReadModuleBody(first));
+            Assert.False(File.Exists(secondPath));
+            Assert.Empty(store.Load(manifestPath).Documents["Book1"].References);
+        }
+        else
+        {
+            Assert.Equal(0, result.ExitCode);
+            Assert.Equal("new source", ReadModuleBody(secondPath));
+            Assert.True(Assert.Single(store.Load(manifestPath).Documents["SecondBook"].References).Requested);
+            Assert.Equal(initialTarget ? "new source" : "old source", ReadModuleBody(first));
+        }
+    }
     [Fact]
     public void AdmittedPackageDependenciesCannotBeChangedThroughPublishedEntries()
     {
@@ -952,12 +1082,10 @@ public sealed class CommonModulesCommandTests
         var result = application.Run(["common-module", "add", "Feature"]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Equal(
-            "[commonModulesRequiredReferencePlanChanged] "
-            + "CommonModules required-reference planning changed while references were being resolved. "
-            + "No source or manifest changes were made. Rerun the command."
-            + Environment.NewLine,
-            result.StandardError);
+        Assert.Contains("[commonModulesRequiredReferencePlanChanged]", result.StandardError);
+        Assert.Contains("Book1", result.StandardError);
+        Assert.Contains("Library", result.StandardError);
+        Assert.Contains("src/Book1/Other.xlsm", result.StandardError);
         Assert.Equal(["Library"], resolver.RequestedNames);
         Assert.False(File.Exists(Path.Combine(
             projectRoot,
@@ -1137,7 +1265,7 @@ public sealed class CommonModulesCommandTests
     }
 
     [Fact]
-    public void AddRejectsRebasedMissingReferenceSubsetBeforeSourceMutation()
+    public void AddAcceptsRebasedMissingReferenceSubset()
     {
         using var temp = TempDirectory.Create();
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
@@ -1172,9 +1300,8 @@ public sealed class CommonModulesCommandTests
 
         var result = application.Run(["common-module", "add", "Feature"]);
 
-        Assert.Equal(1, result.ExitCode);
-        Assert.Contains("[commonModulesRequiredReferencePlanChanged]", result.StandardError, StringComparison.Ordinal);
-        Assert.False(File.Exists(Path.Combine(
+        Assert.Equal(0, result.ExitCode);
+        Assert.True(File.Exists(Path.Combine(
             projectRoot,
             "src",
             "Book1",
@@ -1182,13 +1309,14 @@ public sealed class CommonModulesCommandTests
             "Feature.bas")));
         var latest = store.Load(manifestPath);
         Assert.Equal(
-            [new VbaProjectReference("Second Library", requested: true)],
+            [new VbaProjectReference("Second Library", requested: true),
+                new VbaProjectReference("First Library", requested: false)],
             latest.Documents["Book1"].References);
-        Assert.Empty(latest.Documents["Book1"].CommonModules);
+        Assert.Single(latest.Documents["Book1"].CommonModules);
     }
 
     [Fact]
-    public void AddRejectsReorderedRebasedMissingReferencePlanBeforeSourceMutation()
+    public void AddAcceptsReorderedRebasedMissingReferencePlan()
     {
         using var temp = TempDirectory.Create();
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
@@ -1217,9 +1345,8 @@ public sealed class CommonModulesCommandTests
 
         var result = application.Run(["common-module", "add", "Feature"]);
 
-        Assert.Equal(1, result.ExitCode);
-        Assert.Contains("[commonModulesRequiredReferencePlanChanged]", result.StandardError, StringComparison.Ordinal);
-        Assert.False(File.Exists(Path.Combine(
+        Assert.Equal(0, result.ExitCode);
+        Assert.True(File.Exists(Path.Combine(
             projectRoot,
             "src",
             "Book1",
@@ -1227,12 +1354,13 @@ public sealed class CommonModulesCommandTests
             "Feature.bas")));
         var latest = new JsonProjectManifestStore().Load(
             Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
-        Assert.Empty(latest.Documents["Book1"].References);
-        Assert.Empty(latest.Documents["Book1"].CommonModules);
+        Assert.Equal(["Second Library", "First Library"], latest.Documents["Book1"].References.Select(reference => reference.Name));
+        Assert.All(latest.Documents["Book1"].References, reference => Assert.False(reference.Requested));
+        Assert.Single(latest.Documents["Book1"].CommonModules);
     }
 
     [Fact]
-    public void AddRejectsEmptyRebasedMissingReferencePlanBeforeSourceMutation()
+    public void AddAcceptsEmptyRebasedMissingReferencePlan()
     {
         using var temp = TempDirectory.Create();
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
@@ -1262,9 +1390,8 @@ public sealed class CommonModulesCommandTests
 
         var result = application.Run(["common-module", "add", "Feature"]);
 
-        Assert.Equal(1, result.ExitCode);
-        Assert.Contains("[commonModulesRequiredReferencePlanChanged]", result.StandardError, StringComparison.Ordinal);
-        Assert.False(File.Exists(Path.Combine(
+        Assert.Equal(0, result.ExitCode);
+        Assert.True(File.Exists(Path.Combine(
             projectRoot,
             "src",
             "Book1",
@@ -1274,7 +1401,7 @@ public sealed class CommonModulesCommandTests
         Assert.Equal(
             [new VbaProjectReference("Library", requested: true)],
             latest.Documents["Book1"].References);
-        Assert.Empty(latest.Documents["Book1"].CommonModules);
+        Assert.Single(latest.Documents["Book1"].CommonModules);
     }
 
     [Fact]
@@ -2082,7 +2209,7 @@ public sealed class CommonModulesCommandTests
     }
 
     [Fact]
-    public void UpdateRejectsRebasedTargetDisappearanceBeforeSourceMutation()
+    public void UpdateAcceptsRebasedTargetDisappearance()
     {
         using var temp = TempDirectory.Create();
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
@@ -2104,6 +2231,7 @@ public sealed class CommonModulesCommandTests
                 var latest = store.Load(manifestPath);
                 latest.Documents["Book1"].CommonModules.Clear();
                 store.Save(projectRoot, latest);
+                Directory.Delete(commonRepo, recursive: true);
             },
             new ResolvedVbaProjectReference(
                 "Library",
@@ -2116,8 +2244,7 @@ public sealed class CommonModulesCommandTests
 
         var result = application.Run(["common-module", "update"]);
 
-        Assert.Equal(1, result.ExitCode);
-        Assert.Contains("[commonModulesRequiredReferencePlanChanged]", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal(0, result.ExitCode);
         Assert.Equal("feature v1", ReadModuleBody(sourcePath));
         var latest = store.Load(manifestPath);
         Assert.Empty(latest.Documents["Book1"].CommonModules);

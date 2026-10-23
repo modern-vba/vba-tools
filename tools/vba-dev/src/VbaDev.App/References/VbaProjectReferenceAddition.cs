@@ -94,11 +94,20 @@ internal sealed class VbaProjectReferenceAddition
         string projectRoot,
         IReadOnlyList<string> requirements,
         Intent intent)
+        => PlanAddition(this, latestDocumentName, document, projectRoot, requirements, intent);
+
+    internal static Plan PlanAddition(
+        VbaProjectReferenceAddition? evidence,
+        string latestDocumentName,
+        ProjectDocument document,
+        string projectRoot,
+        IReadOnlyList<string> requirements,
+        Intent intent)
     {
-        if (!documentName.Equals(latestDocumentName, StringComparison.OrdinalIgnoreCase))
+        if (evidence is not null && !evidence.documentName.Equals(latestDocumentName, StringComparison.OrdinalIgnoreCase))
         {
             throw new PlanException(Reason.DocumentChanged,
-                $"Reference evidence for document '{documentName}' cannot be used for '{latestDocumentName}'.");
+                $"Reference evidence for document '{evidence.documentName}' cannot be used for '{latestDocumentName}'.");
         }
 
         var selection = document.References.ToList();
@@ -119,13 +128,13 @@ internal sealed class VbaProjectReferenceAddition
                 continue;
             }
 
-            if (selectedNames.Contains(name))
+            if (evidence?.selectedNames.Contains(name) == true)
             {
                 throw new PlanException(Reason.SelectionChanged,
                     $"Reference '{name}' was removed after reference add began.");
             }
 
-            if (!resolutions.TryGetValue(name, out var resolved))
+            if (evidence is null || !evidence.resolutions.TryGetValue(name, out var resolved))
             {
                 throw new PlanException(Reason.MissingEvidence,
                     $"Document '{latestDocumentName}' requires reference '{name}' without prepared resolution evidence.");
@@ -138,12 +147,13 @@ internal sealed class VbaProjectReferenceAddition
         if (changes.Any(change => change.Status == "added"))
         {
             var latestTemplate = Path.GetFullPath(document.TemplatePath, projectRoot);
-            if (templateIdentity is null
-                || !FileSystemPathIdentityRelations.Same(templateIdentity, pathIdentityResolver.Resolve(latestTemplate)))
+            if (evidence?.templateIdentity is null
+                || !FileSystemPathIdentityRelations.Same(evidence.templateIdentity, evidence.pathIdentityResolver.Resolve(latestTemplate)))
             {
                 throw new PlanException(Reason.TemplateChanged,
                     $"Document '{latestDocumentName}' selected a different source template after reference add began. " +
-                    $"Prepared: '{templateIdentity?.OperationPath}'; latest: '{latestTemplate}'.");
+                    $"References: {string.Join(", ", changes.Where(change => change.Status == "added").Select(change => change.RequestedName))}. " +
+                    $"Prepared: '{evidence?.templateIdentity?.OperationPath}'; latest: '{latestTemplate}'.");
             }
         }
 

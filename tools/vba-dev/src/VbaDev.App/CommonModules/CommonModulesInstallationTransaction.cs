@@ -242,56 +242,18 @@ public sealed class CommonModulesInstallationTransaction
             .ToArray();
     }
 
-    private async Task<CommonModulesReferenceResolutionEvidence> ResolveRequiredReferenceEvidenceAsync(
+    private async Task<VbaProjectReferenceAddition> ResolveRequiredReferenceEvidenceAsync(
         string documentName,
         ProjectDocument invocationDocument,
         IReadOnlyList<string> requiredReferences,
         string templateDocumentPath,
         CancellationToken cancellationToken)
     {
-        var selectedNames = invocationDocument.References
-            .Select(reference => reference.Name)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var missingNames = requiredReferences
-            .Where(reference => !selectedNames.Contains(reference))
-            .ToArray();
-        if (missingNames.Length == 0)
-        {
-            return new CommonModulesReferenceResolutionEvidence(
-                documentName,
-                TemplateIdentity: null,
-                missingNames,
-                new Dictionary<string, ResolvedVbaProjectReference>(StringComparer.OrdinalIgnoreCase));
-        }
-
-        if (referencePlanner is null)
-        {
-            throw new CommonModulesManifestException(
-                "CommonModules required-reference resolution is not configured.");
-        }
-
-        var templateIdentity = pathIdentityResolver.Resolve(templateDocumentPath);
         try
         {
-            var resolutionBatch = await referencePlanner.ResolveReferencesAsync(
-                    templateDocumentPath,
-                    missingNames,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            cancellationToken.ThrowIfCancellationRequested();
-            var resolvedReferences = referencePlanner.SelectManifestInputReferences(
-                resolutionBatch,
-                missingNames);
-            return new CommonModulesReferenceResolutionEvidence(
-                documentName,
-                templateIdentity,
-                missingNames,
-                missingNames
-                    .Zip(resolvedReferences)
-                    .ToDictionary(
-                        pair => pair.First,
-                        pair => pair.Second,
-                        StringComparer.OrdinalIgnoreCase));
+            return await VbaProjectReferenceAddition.PrepareEvidenceAsync(
+                documentName, invocationDocument, templateDocumentPath, requiredReferences,
+                referencePlanner, pathIdentityResolver, cancellationToken).ConfigureAwait(false);
         }
         catch (InvalidOperationException ex)
         {
@@ -304,13 +266,13 @@ public sealed class CommonModulesInstallationTransaction
         string documentName,
         IReadOnlyList<string> normalizedRequestedModules,
         bool force,
-        CommonModulesReferenceResolutionEvidence referenceEvidence,
+        VbaProjectReferenceAddition referenceEvidence,
         CancellationToken cancellationToken)
     {
         if (!snapshot.Manifest.Documents.Keys.Any(name =>
                 name.Equals(documentName, StringComparison.OrdinalIgnoreCase)))
         {
-            throw RequiredReferencePlanChanged();
+            throw RequiredReferencePlanChanged($"Document '{documentName}' no longer exists.");
         }
 
         var plannedManifest = ProjectManifestEditor.Clone(snapshot.Manifest);
@@ -431,71 +393,32 @@ public sealed class CommonModulesInstallationTransaction
         string documentName,
         ProjectDocument document,
         IReadOnlyList<string> requiredReferences,
-        CommonModulesReferenceResolutionEvidence? evidence)
+        VbaProjectReferenceAddition? evidence)
     {
-        var missingNames = requiredReferences
-            .Where(requiredReference => !document.References.Any(reference =>
-                reference.Name.Equals(requiredReference, StringComparison.OrdinalIgnoreCase)))
-            .ToArray();
-        if (evidence is null
-            || !evidence.DocumentName.Equals(documentName, StringComparison.OrdinalIgnoreCase)
-            || !missingNames.SequenceEqual(
-                evidence.MissingNames,
-                StringComparer.OrdinalIgnoreCase))
-        {
-            throw RequiredReferencePlanChanged();
-        }
-
-        if (missingNames.Length == 0)
-        {
-            return [];
-        }
-
-        if (evidence.TemplateIdentity is null
-            || missingNames.Any(name => !evidence.ResolvedByRequiredName.ContainsKey(name)))
-        {
-            throw RequiredReferencePlanChanged();
-        }
-
-        FileSystemPathIdentity latestTemplateIdentity;
+        VbaProjectReferenceAddition.Plan plan;
         try
         {
-            var latestTemplatePath = ResolveManifestPath(projectRoot, document.TemplatePath);
-            latestTemplateIdentity = pathIdentityResolver.Resolve(latestTemplatePath);
+            plan = VbaProjectReferenceAddition.PlanAddition(evidence, documentName, document,
+                projectRoot, requiredReferences, VbaProjectReferenceAddition.Intent.CommonModules);
         }
-        catch (Exception ex) when (ex is ArgumentException
-                                   or InvalidOperationException
-                                   or NotSupportedException
-                                   or PathTooLongException)
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException
+                                   or NotSupportedException or PathTooLongException)
         {
-            throw RequiredReferencePlanChanged();
+            throw RequiredReferencePlanChanged(
+                $"Document '{documentName}', requirements [{string.Join(", ", requiredReferences)}], " +
+                $"template '{document.TemplatePath}': {ex.Message}");
         }
 
-        if (!FileSystemPathIdentityRelations.Same(
-                evidence.TemplateIdentity,
-                latestTemplateIdentity))
-        {
-            throw RequiredReferencePlanChanged();
-        }
-
-        var changes = new List<CommonModulesReferenceChangeResult>();
-        foreach (var missingName in missingNames)
-        {
-            var resolvedReference = evidence.ResolvedByRequiredName[missingName];
-            document.References.Add(new VbaProjectReference(
-                resolvedReference.Name,
-                requested: false));
-            changes.Add(new CommonModulesReferenceChangeResult(
-                "added",
-                resolvedReference.Name,
-                Requested: false));
-        }
-
-        return changes;
+        document.References.Clear();
+        document.References.AddRange(plan.Selection);
+        return plan.Changes.Where(change => change.Status == "added")
+            .Select(change => new CommonModulesReferenceChangeResult("added", change.StoredName, Requested: false))
+            .ToArray();
     }
 
-    private static ProjectManifestMutationException RequiredReferencePlanChanged()
-        => new(RequiredReferencePlanChangedCode, RequiredReferencePlanChangedMessage);
+    private static ProjectManifestMutationException RequiredReferencePlanChanged(string? detail = null)
+        => new(RequiredReferencePlanChangedCode,
+            detail is null ? RequiredReferencePlanChangedMessage : $"{detail} {RequiredReferencePlanChangedMessage}");
 
     /// <summary>
     /// Refreshes all installed CommonModules source files in a project from the configured repository.
@@ -515,7 +438,7 @@ public sealed class CommonModulesInstallationTransaction
         ResolvedProject project,
         CancellationToken cancellationToken)
     {
-        var referenceEvidenceByDocument = new Dictionary<string, CommonModulesReferenceResolutionEvidence>(
+        var referenceEvidenceByDocument = new Dictionary<string, VbaProjectReferenceAddition>(
             StringComparer.OrdinalIgnoreCase);
         if (project.Manifest.Documents.Values.Any(document => document.CommonModules.Count > 0))
         {
@@ -752,7 +675,7 @@ public sealed class CommonModulesInstallationTransaction
 
     private ProjectManifestMutationPlan<CommonModulesRebaseResult> RebaseUpdate(
         ProjectManifestMutationSnapshot snapshot,
-        IReadOnlyDictionary<string, CommonModulesReferenceResolutionEvidence> referenceEvidenceByDocument,
+        IReadOnlyDictionary<string, VbaProjectReferenceAddition> referenceEvidenceByDocument,
         CancellationToken cancellationToken)
     {
         var plannedManifest = ProjectManifestEditor.Clone(snapshot.Manifest);
@@ -761,12 +684,6 @@ public sealed class CommonModulesInstallationTransaction
             .OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.Key, StringComparer.Ordinal)
             .ToArray();
-        if (targetDocuments.Length != referenceEvidenceByDocument.Count
-            || targetDocuments.Any(item => !referenceEvidenceByDocument.ContainsKey(item.Key)))
-        {
-            throw RequiredReferencePlanChanged();
-        }
-
         CommonModulesPackageSnapshot? packageSnapshot = null;
         CommonModulesPackageSnapshotCleanupResult? cleanup = null;
         try
@@ -798,7 +715,7 @@ public sealed class CommonModulesInstallationTransaction
                     documentName,
                     document,
                     capturedSelection.RequiredReferences,
-                    referenceEvidenceByDocument[documentName]);
+                    referenceEvidenceByDocument.GetValueOrDefault(documentName));
                 referenceChangesByDocument.Add(documentName, referenceChanges);
                 manifestChanged |= referenceChanges.Count > 0;
                 var installedByName = document.CommonModules.ToDictionary(
@@ -1371,12 +1288,6 @@ public sealed class CommonModulesInstallationTransaction
             ? normalizedPath
             : Path.Combine(projectRoot, normalizedPath));
     }
-
-    private sealed record CommonModulesReferenceResolutionEvidence(
-        string DocumentName,
-        FileSystemPathIdentity? TemplateIdentity,
-        IReadOnlyList<string> MissingNames,
-        IReadOnlyDictionary<string, ResolvedVbaProjectReference> ResolvedByRequiredName);
 
     private sealed record CommonModulesRebaseResult(
         string Operation,
