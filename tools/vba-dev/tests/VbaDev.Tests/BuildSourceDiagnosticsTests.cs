@@ -258,9 +258,9 @@ public sealed class BuildSourceDiagnosticsTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task OrdinaryBuildGeneratesFromTheTemplateCapturedBeforeMetadataAcquisition(bool removeTemplate)
+    public async Task PublishGeneratesFromTheTemplateCapturedBeforeMetadataAcquisition(bool removeTemplate)
     {
-        using var fixture = new BuildFixture();
+        using var fixture = new BuildFixture(publish: true);
         File.WriteAllText(fixture.SourcePath("Caller.bas"),
             "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\nEnd Sub\n", new UTF8Encoding(false));
         var templatePath = fixture.SourcePath("Book1.xlsm");
@@ -809,7 +809,7 @@ public sealed class BuildSourceDiagnosticsTests
 
         fixture.AssertSuccessfulBuild(result, importedSourceCount: 2, sourcesUnchanged: false);
         Assert.Equal(new[] { formPath, sidecarPath, laterPath }, reads);
-        Assert.Equal(new[] { "ADialog.frm", "ZLater.bas" }, importedBytes.Select(item => item.Source.FileName));
+        Assert.Equal(new[] { "ADialog.frm", "ZLater.bas" }, importedBytes.Select(item => Path.GetFileName(item.Source.DiagnosticSourcePath)));
         var form = importedBytes[0];
         Assert.Equal(new UTF8Encoding(false).GetBytes(formText), form.Text);
         Assert.Equal(sidecarBytes, form.Binary);
@@ -1012,7 +1012,7 @@ public sealed class BuildSourceDiagnosticsTests
         private Dictionary<string, byte[]> originalFiles = [];
         private int mirrorCreations;
         private readonly bool publish;
-        private string OutputPath => publish ? context.PublishDocumentPath : context.BinDocumentPath!;
+        private string OutputPath => publish ? context.PublishDocumentPath : context.TemplateDocumentPath;
 
         public BuildFixture(IReadOnlyList<VbaProjectReference>? references = null, bool publish = false)
         {
@@ -1020,7 +1020,7 @@ public sealed class BuildSourceDiagnosticsTests
             var root = temp.CreateDirectory("Project");
             var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null,
                 references: references);
-            // This fixture verifies the isolated legacy generation seam, not composed source-workbook Build.
+            // Keep a legacy bin declaration to prove ordinary Build never selects it.
             manifest.Documents["Book1"] = manifest.Documents["Book1"] with { BinPath = "bin/Book1.xlsm" };
             new JsonProjectManifestStore().Save(root, manifest);
             SourceDirectory = Path.Combine(root, "src", "Book1");
@@ -1046,7 +1046,7 @@ public sealed class BuildSourceDiagnosticsTests
             Func<ResolvedProjectContext, string, VbaSourceAnalysisReport, string>? saveFailureEvidence = null)
         {
             originalFiles = Directory.GetFiles(SourceDirectory, "*", SearchOption.AllDirectories)
-                .Append(OutputPath)
+                .Append(OutputPath).Distinct(StringComparer.Ordinal)
                 .ToDictionary(path => path, File.ReadAllBytes, StringComparer.Ordinal);
             var ownership = new WindowsExactFileSystemObjectOwnershipFactory();
             var materializer = new WorkbookMaterializer(
@@ -1062,7 +1062,9 @@ public sealed class BuildSourceDiagnosticsTests
                 }), semanticInputProvider: semanticInputProvider ?? (provideEmptyInputs ? FakeProjectSemanticInputProvider.Empty : null));
             if (publish) return new PublishCommand(new WorkbookOutputCommand(materializer, saveFailureEvidence)).RunAsync(context, cancellationToken);
             var command = new BuildCommand(
-                new WorkbookOutputCommand(materializer, saveFailureEvidence), new FileSystemPathIdentityResolver(), ownership);
+                new WorkbookOutputCommand(materializer, saveFailureEvidence), new FileSystemPathIdentityResolver(), ownership,
+                new SourceWorkbookBuildCommand(materializer, new SourceWorkbookTestAutomation(Automation),
+                    new WorkbookReferenceNormalizer(new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())), ownership));
             return command.RunAsync(context, cancellationToken);
         }
 
@@ -1077,7 +1079,7 @@ public sealed class BuildSourceDiagnosticsTests
             {
                 Assert.Equal(bytes, File.ReadAllBytes(path));
             }
-            Assert.Equal(new[] { OutputPath }, Directory.GetFiles(Path.GetDirectoryName(OutputPath)!));
+            Assert.Equal(new[] { OutputPath }, Directory.GetFiles(Path.GetDirectoryName(OutputPath)!, "*.xlsm"));
         }
 
         public void AssertSuccessfulBuild(CommandResult result, int importedSourceCount, bool sourcesUnchanged = true,
@@ -1088,13 +1090,15 @@ public sealed class BuildSourceDiagnosticsTests
                 result.StandardOutput);
             Assert.Empty(result.StandardError);
             var stagingWorkbook = Assert.Single(Automation.OpenedWorkbooks);
-            Assert.False(File.Exists(stagingWorkbook));
+            if (publish) Assert.False(File.Exists(stagingWorkbook));
+            else Assert.Equal(context.TemplateDocumentPath, stagingWorkbook);
             Assert.Equal(importedSourceCount, Automation.ImportedSources.Count);
             Assert.Equal(1, Automation.VerifyCalls);
             Assert.Equal(1, Automation.SaveCalls);
             Assert.Equal(1, mirrorCreations);
-            Assert.False(Directory.Exists(Assert.Single(mirrorPaths)));
-            Assert.Equal(1, transactions.Creations);
+            if (publish) Assert.False(Directory.Exists(Assert.Single(mirrorPaths)));
+            // Flat source mirrors share an unowned parent; imported-file assertions prove exact cleanup.
+            Assert.Equal(publish ? 1 : 0, transactions.Creations);
             Assert.All(Automation.ImportedSources, source =>
             {
                 Assert.False(File.Exists(source.SourcePath));
@@ -1103,7 +1107,7 @@ public sealed class BuildSourceDiagnosticsTests
             Assert.Equal(originalFiles[context.TemplateDocumentPath], File.ReadAllBytes(OutputPath));
             if (templateUnchanged)
                 Assert.Equal(originalFiles[context.TemplateDocumentPath], File.ReadAllBytes(context.TemplateDocumentPath));
-            Assert.Equal(new[] { OutputPath }, Directory.GetFiles(Path.GetDirectoryName(OutputPath)!));
+            Assert.Equal(new[] { OutputPath }, Directory.GetFiles(Path.GetDirectoryName(OutputPath)!, "*.xlsm"));
             if (sourcesUnchanged)
             {
                 foreach (var (path, bytes) in originalFiles.Where(file => file.Key != OutputPath

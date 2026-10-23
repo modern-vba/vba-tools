@@ -9,12 +9,6 @@ internal abstract class WorkbookMaterializationIntent
     {
     }
 
-    internal sealed class ProjectBuild(ResolvedProjectContext context)
-        : WorkbookMaterializationIntent
-    {
-        internal ResolvedProjectContext Context { get; } = context;
-    }
-
     internal sealed class Publish(ResolvedProjectContext context)
         : WorkbookMaterializationIntent
     {

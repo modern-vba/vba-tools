@@ -28,7 +28,8 @@ public sealed class BuildSourceAdmissionTests
             CreateOutputCommand(automation, 1252),
             new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 temp.CreateDirectory("scratch"), new VbaSourceAdmission(() => 1252)),
-            new BuildSourceSnapshotOutputSafetyValidator(new FileSystemPathIdentityResolver()));
+            new BuildSourceSnapshotOutputSafetyValidator(new FileSystemPathIdentityResolver()),
+            CreateSourceBuildCommand(automation, 1252));
         var outputPath = Path.Combine(temp.Path, "output", "Book1.xlsm");
 
         var result = await command.RunSnapshotAsync(
@@ -69,7 +70,8 @@ public sealed class BuildSourceAdmissionTests
         Assert.Contains("' caf\u00c3\u00a9", imported.ImportVerification.CodeModuleLines);
         Assert.Equal("windows-1252", imported.ImportVerification.OriginalEncoding);
         Assert.Equal(originalBytes, File.ReadAllBytes(sourcePath));
-        Assert.Equal("template-workbook", File.ReadAllText(legacyBinPath));
+        Assert.Equal("template-workbook", File.ReadAllText(context.TemplateDocumentPath));
+        Assert.False(File.Exists(legacyBinPath));
     }
 
     [Fact]
@@ -85,7 +87,8 @@ public sealed class BuildSourceAdmissionTests
         Assert.Equal(0, result.ExitCode);
         Assert.Empty(automation.ImportedSources);
         Assert.Equal(1, automation.SaveCalls);
-        Assert.Equal("template-workbook", File.ReadAllText(legacyBinPath));
+        Assert.Equal("template-workbook", File.ReadAllText(context.TemplateDocumentPath));
+        Assert.False(File.Exists(legacyBinPath));
     }
 
     [Fact]
@@ -152,10 +155,10 @@ public sealed class BuildSourceAdmissionTests
         Assert.Equal(3, reads.Count);
         Assert.NotNull(captured);
         Assert.Equal(1252, captured.ActiveCodePage);
-        Assert.Equal(["Greeting.bas", "Dialog.frm"], automation.ImportedSources.Select(source => source.FileName));
+        Assert.Equal(["Greeting.bas", "Dialog.frm"], automation.ImportedSources.Select(source => Path.GetFileName(source.DiagnosticSourcePath)));
         foreach (var source in captured.Sources)
         {
-            var imported = Assert.Single(automation.ImportedSources, item => item.FileName == source.FileName);
+            var imported = Assert.Single(automation.ImportedSources, item => item.DiagnosticSourcePath == source.SourcePath);
             Assert.Equal(source.Text, source.Syntax.Text);
             Assert.Equal(Encoding.ASCII.GetBytes(source.Text), source.OriginalBytes.ToArray());
             Assert.Equal(source.Projection.CodeModuleLines, imported.ImportVerification.CodeModuleLines);
@@ -163,7 +166,8 @@ public sealed class BuildSourceAdmissionTests
             Assert.Equal(source.SourcePath, imported.DiagnosticSourcePath);
             Assert.Equal(source.OriginalEncoding, imported.ImportVerification.OriginalEncoding);
         }
-        Assert.Equal("template-workbook", File.ReadAllText(legacyBinPath));
+        Assert.Equal("template-workbook", File.ReadAllText(context.TemplateDocumentPath));
+        Assert.False(File.Exists(legacyBinPath));
     }
 
     [Fact]
@@ -259,7 +263,7 @@ public sealed class BuildSourceAdmissionTests
         {
             Assert.Equal(item.GetProperty("expectedEncoding").GetString(), Assert.Single(automation.ImportedSources).ImportVerification.OriginalEncoding);
         }
-        Assert.Equal(shouldFail ? "previous-output" : "template-workbook", File.ReadAllText(legacyBinPath));
+        Assert.Equal("previous-output", File.ReadAllText(legacyBinPath));
         Assert.Equal([legacyBinPath], Directory.GetFiles(Path.GetDirectoryName(legacyBinPath)!));
         Assert.Equal(bytes, File.ReadAllBytes(sourcePath));
     }
@@ -276,7 +280,7 @@ public sealed class BuildSourceAdmissionTests
         var automation = new FakeWorkbookGenerationAutomation();
         var mirrorFactory = new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory());
         var outputCommand = CreateOutputCommand(automation, 1252, mirrorFactory: mirrorFactory);
-        var build = new BuildCommand(outputCommand, new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory());
+        var build = CreateCommand(automation, 1252, mirrorFactory: mirrorFactory);
         var runner = new FakeWorkbookTestRunner();
         var test = new TestCommand(build, runner, new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), temp.CreateDirectory("scratch"),
@@ -350,7 +354,8 @@ public sealed class BuildSourceAdmissionTests
         var scratchRoot = temp.CreateDirectory("scratch");
         var build = new BuildCommand(CreateOutputCommand(automation, activeCodePage, mirrorFactory: mirrorFactory),
             new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), scratchRoot, admission),
-            new BuildSourceSnapshotOutputSafetyValidator(new FileSystemPathIdentityResolver()));
+            new BuildSourceSnapshotOutputSafetyValidator(new FileSystemPathIdentityResolver()),
+            CreateSourceBuildCommand(automation, 1252));
         var runner = new FakeWorkbookTestRunner();
         var test = new TestCommand(build, runner, new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot,
@@ -639,8 +644,21 @@ public sealed class BuildSourceAdmissionTests
         int activeCodePage,
         VbaSourceAdmission? admission = null,
         VbeImportSourceSetFactory? mirrorFactory = null)
-        => new(CreateOutputCommand(automation, activeCodePage, admission, mirrorFactory), new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory());
+        => new(CreateOutputCommand(automation, activeCodePage, admission, mirrorFactory), new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory(),
+            CreateSourceBuildCommand(automation, activeCodePage, admission, mirrorFactory));
 
+    private static SourceWorkbookBuildCommand CreateSourceBuildCommand(
+        FakeWorkbookGenerationAutomation automation, int activeCodePage,
+        VbaSourceAdmission? admission = null, VbeImportSourceSetFactory? mirrorFactory = null)
+    {
+        var ownership = new WindowsExactFileSystemObjectOwnershipFactory();
+        var normalizer = new WorkbookReferenceNormalizer(new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver()));
+        var materializer = new WorkbookMaterializer(ownership,
+            admission ?? new VbaSourceAdmission(() => activeCodePage), automation, normalizer,
+            new WorkbookOutputTransactionFactory(ownership), mirrorFactory ?? new VbeImportSourceSetFactory(ownership),
+            semanticInputProvider: FakeProjectSemanticInputProvider.Empty);
+        return new(materializer, new SourceWorkbookTestAutomation(automation), normalizer, ownership);
+    }
     private static SourceWorkbookTestCommand CreateSourceTestCommand(
         FakeWorkbookGenerationAutomation automation,
         FakeWorkbookTestRunner runner,

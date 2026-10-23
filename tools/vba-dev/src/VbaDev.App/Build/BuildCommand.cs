@@ -13,27 +13,11 @@ namespace VbaDev.App.Build;
 public sealed class BuildCommand
 {
     private readonly WorkbookOutputCommand outputCommand;
-    private readonly SourceWorkbookBuildCommand? sourceWorkbookBuildCommand;
+    private readonly SourceWorkbookBuildCommand sourceWorkbookBuildCommand;
     private readonly BuildSourceSnapshotCaptureFactory snapshotCaptureFactory;
     private readonly BuildSourceSnapshotOutputSafetyValidator snapshotOutputSafetyValidator;
 
     internal SourceWorkbookTestCommand? SourceWorkbookTestCommand { get; private set; }
-
-    /// <summary>
-    /// Creates the build command.
-    /// </summary>
-    /// <param name="outputCommand">The shared workbook output command implementation.</param>
-    internal BuildCommand(
-        WorkbookOutputCommand outputCommand,
-        IFileSystemPathIdentityResolver pathIdentityResolver,
-        IExactFileSystemObjectOwnershipFactory ownershipFactory)
-        : this(
-            outputCommand,
-            new BuildSourceSnapshotCaptureFactory(ownershipFactory),
-            new BuildSourceSnapshotOutputSafetyValidator(pathIdentityResolver),
-            null)
-    {
-    }
 
     internal BuildCommand(
         WorkbookOutputCommand outputCommand,
@@ -53,19 +37,12 @@ public sealed class BuildCommand
     internal BuildCommand(
         WorkbookOutputCommand outputCommand,
         BuildSourceSnapshotCaptureFactory snapshotCaptureFactory,
-        BuildSourceSnapshotOutputSafetyValidator snapshotOutputSafetyValidator)
-        : this(outputCommand, snapshotCaptureFactory, snapshotOutputSafetyValidator, null)
-    {
-    }
-
-    private BuildCommand(
-        WorkbookOutputCommand outputCommand,
-        BuildSourceSnapshotCaptureFactory snapshotCaptureFactory,
         BuildSourceSnapshotOutputSafetyValidator snapshotOutputSafetyValidator,
-        SourceWorkbookBuildCommand? sourceWorkbookBuildCommand)
+        SourceWorkbookBuildCommand sourceWorkbookBuildCommand)
     {
         this.outputCommand = outputCommand;
-        this.sourceWorkbookBuildCommand = sourceWorkbookBuildCommand;
+        this.sourceWorkbookBuildCommand = sourceWorkbookBuildCommand
+            ?? throw new ArgumentNullException(nameof(sourceWorkbookBuildCommand));
         this.snapshotCaptureFactory = snapshotCaptureFactory;
         this.snapshotOutputSafetyValidator = snapshotOutputSafetyValidator;
     }
@@ -91,9 +68,7 @@ public sealed class BuildCommand
         ResolvedProjectContext context,
         Func<string, CancellationToken, Task<bool>>? confirmUnsavedChanges,
         CancellationToken cancellationToken)
-        => sourceWorkbookBuildCommand is null
-            ? outputCommand.RunBuildAsync(context, cancellationToken)
-            : outputCommand.RunSourceBuildAsync(context, sourceWorkbookBuildCommand,
+        => outputCommand.RunSourceBuildAsync(context, sourceWorkbookBuildCommand,
                 confirmUnsavedChanges, cancellationToken);
 
     /// <summary>
@@ -115,24 +90,6 @@ public sealed class BuildCommand
                 request.WorkingDirectory),
             snapshotCaptureFactory,
             snapshotOutputSafetyValidator,
-            cancellationToken);
-    }
-
-    internal Task<TestWorkbookBuildCommandResult> RunTestBuildIntentAsync(
-        ResolvedProjectContext context,
-        CancellationToken cancellationToken)
-        => outputCommand.RunTestBuildIntentAsync(context, cancellationToken);
-
-    internal Task<TestWorkbookBuildCommandResult> RunSnapshotIntentAsync(
-        ResolvedProjectContext context,
-        BuildSourceSnapshotCapture sourceCapture,
-        string outputPath,
-        CancellationToken cancellationToken)
-    {
-        return outputCommand.RunSnapshotIntentAsync(
-            context,
-            sourceCapture,
-            outputPath,
             cancellationToken);
     }
 }

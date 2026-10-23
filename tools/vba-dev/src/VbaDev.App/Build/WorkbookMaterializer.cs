@@ -110,8 +110,8 @@ internal sealed class WorkbookMaterializer
         ArgumentNullException.ThrowIfNull(intent);
         var plan = intent switch
         {
-            WorkbookMaterializationIntent.ProjectBuild or WorkbookMaterializationIntent.Publish =>
-                await CreateAnalyzedProjectPlanAsync(intent, cancellationToken).ConfigureAwait(false),
+            WorkbookMaterializationIntent.Publish publish =>
+                await CreateAnalyzedProjectPlanAsync(publish.Context, cancellationToken).ConfigureAwait(false),
             WorkbookMaterializationIntent.SourceSnapshotBuild snapshot =>
                 await CreateAnalyzedSnapshotPlanAsync(snapshot, cancellationToken).ConfigureAwait(false),
             _ => CreatePlan(intent, cancellationToken)
@@ -135,7 +135,7 @@ internal sealed class WorkbookMaterializer
         CancellationToken cancellationToken)
     {
         var plan = await CreateAnalyzedProjectPlanAsync(
-            new WorkbookMaterializationIntent.ProjectBuild(context), cancellationToken,
+            context, cancellationToken,
             sourceWorkbookInPlace: true).ConfigureAwait(false);
         var prepared = CreateImportSourceSetAndReleaseInput(
             null, plan.SourceInput, cancellationToken,
@@ -201,19 +201,11 @@ internal sealed class WorkbookMaterializer
     }
 
     private async Task<WorkbookMaterializationPlan> CreateAnalyzedProjectPlanAsync(
-        WorkbookMaterializationIntent intent, CancellationToken cancellationToken,
+        ResolvedProjectContext context, CancellationToken cancellationToken,
         bool sourceWorkbookInPlace = false)
     {
-        var (context, targetPath, operationName) = intent switch
-        {
-            WorkbookMaterializationIntent.ProjectBuild build => (build.Context,
-                sourceWorkbookInPlace ? build.Context.TemplateDocumentPath
-                    : build.Context.BinDocumentPath ?? throw new InvalidOperationException(
-                        "Legacy generation has no output target. Use bound source-workbook Build or explicit snapshot output."),
-                "ordinary Build"),
-            WorkbookMaterializationIntent.Publish publish => (publish.Context, publish.Context.PublishDocumentPath, "Publish"),
-            _ => throw new ArgumentOutOfRangeException(nameof(intent), intent, null)
-        };
+        var targetPath = sourceWorkbookInPlace ? context.TemplateDocumentPath : context.PublishDocumentPath;
+        var operationName = sourceWorkbookInPlace ? "ordinary Build" : "Publish";
         CapturedWorkbookTemplate? template = null;
         VbaProjectSemanticInputs? inputs = null;
         async Task<VbaProjectSemanticInputs> AcquireInputs(IReadOnlyList<VbaSyntaxTree> sources, CancellationToken token)
@@ -226,14 +218,11 @@ internal sealed class WorkbookMaterializer
             inputs = await provider.AcquireAsync(context, template, sources, token).ConfigureAwait(false);
             return inputs;
         }
-        var admission = intent switch
-        {
-            WorkbookMaterializationIntent.ProjectBuild => await sourceAdmission.AdmitAnalyzedProjectBuildAsync(
-                context.DocumentSourceSetPath, context.Document.CommonModules, AcquireInputs, cancellationToken).ConfigureAwait(false),
-            WorkbookMaterializationIntent.Publish => await sourceAdmission.AdmitAnalyzedProjectPublishAsync(
-                context.DocumentSourceSetPath, context.Document.CommonModules, AcquireInputs, cancellationToken).ConfigureAwait(false),
-            _ => throw new ArgumentOutOfRangeException(nameof(intent), intent, null)
-        };
+        var admission = sourceWorkbookInPlace
+            ? await sourceAdmission.AdmitAnalyzedProjectBuildAsync(
+                context.DocumentSourceSetPath, context.Document.CommonModules, AcquireInputs, cancellationToken).ConfigureAwait(false)
+            : await sourceAdmission.AdmitAnalyzedProjectPublishAsync(
+                context.DocumentSourceSetPath, context.Document.CommonModules, AcquireInputs, cancellationToken).ConfigureAwait(false);
         return CreateProjectPlan(context, targetPath, ResolveTimeouts(context),
             new AdmittedWorkbookGenerationSourceInput(admission)) with
         {

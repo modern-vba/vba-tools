@@ -39,7 +39,7 @@ public sealed class WorkbookMaterializerContractTests
     }
 
     [Fact]
-    public void WorkbookOutputsUseExactlyFourDataOnlyClosedIntentsAndOneProductionEntrypoint()
+    public void WorkbookOutputsUseExactlyThreeDataOnlyClosedIntentsAndOneProductionEntrypoint()
     {
         var applicationAssembly = typeof(BuildCommand).Assembly;
         var materializer = applicationAssembly.GetType(
@@ -72,7 +72,7 @@ public sealed class WorkbookMaterializerContractTests
             .OrderBy(type => type.Name, StringComparer.Ordinal)
             .ToArray();
         Assert.Equal(
-            ["ExplicitImport", "ProjectBuild", "Publish", "SourceSnapshotBuild"],
+            ["ExplicitImport", "Publish", "SourceSnapshotBuild"],
             closedIntents.Select(type => type.Name).ToArray());
         Assert.All(closedIntents, type =>
         {

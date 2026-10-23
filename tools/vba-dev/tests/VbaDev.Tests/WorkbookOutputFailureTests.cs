@@ -15,7 +15,6 @@ namespace VbaDev.Tests;
 public sealed class WorkbookOutputFailureTests
 {
     [Theory]
-    [InlineData("build")]
     [InlineData("publish")]
     [InlineData("snapshot")]
     public async Task NestedPrimaryComFailureUsesOperationGuidanceWithoutCommitting(string commandName)
@@ -49,7 +48,7 @@ public sealed class WorkbookOutputFailureTests
         Assert.Equal(previousPublish, File.ReadAllBytes(project.Context.PublishDocumentPath));
         Assert.Equal(previousCaller, File.ReadAllBytes(snapshot.OutputPath));
         Assert.Empty(EnumerateOwnedStaging(Path.GetDirectoryName(snapshot.OutputPath)!));
-        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory("build")));
+        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory("publish")));
         Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory("publish")));
     }
 
@@ -58,7 +57,7 @@ public sealed class WorkbookOutputFailureTests
     [InlineData("wrapped-cancellation")]
     [InlineData("unknown-defect")]
     [InlineData("wrapped-unknown-mixture")]
-    public async Task BuildKeepsItsUnexpectedFailureAndInputFallbackPolicy(string scenario)
+    public async Task PublishKeepsItsUnexpectedFailureAndInputFallbackPolicy(string scenario)
     {
         using var temp = TempDirectory.Create();
         var project = CreateProject(temp);
@@ -74,7 +73,7 @@ public sealed class WorkbookOutputFailureTests
 
         if (scenario == "wrapped-unknown-mixture")
         {
-            var result = await RunAsync("build", command, project.Context, CancellationToken.None);
+            var result = await RunAsync("publish", command, project.Context, CancellationToken.None);
             Assert.Equal(1, result.ExitCode);
             Assert.Empty(result.StandardOutput);
             Assert.Equal("Outer" + Environment.NewLine, result.StandardError);
@@ -83,17 +82,17 @@ public sealed class WorkbookOutputFailureTests
         else
         {
             var actual = await Record.ExceptionAsync(
-                () => RunAsync("build", command, project.Context, CancellationToken.None));
+                () => RunAsync("publish", command, project.Context, CancellationToken.None));
             Assert.Same(error, actual);
         }
 
         Assert.Equal("previous-bin", File.ReadAllText(project.LegacyBinPath, Encoding.UTF8));
-        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory("build")));
+        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory("publish")));
     }
 
     public static IEnumerable<object[]> OutputFailureCases()
     {
-        foreach (var command in new[] { "build", "publish", "snapshot" })
+        foreach (var command in new[] { "publish", "snapshot" })
         {
             yield return [command, "cancel", false, false];
             yield return [command, "com", false, false];
@@ -154,8 +153,8 @@ public sealed class WorkbookOutputFailureTests
         Assert.Equal("previous-caller", File.ReadAllText(snapshot.OutputPath, Encoding.UTF8));
         Assert.Equal("Attribute VB_Name = \"Local\"", File.ReadAllText(Path.Combine(snapshot.SourcePath, "Local.bas")));
         var staging = EnumerateOwnedStaging(Path.GetDirectoryName(snapshot.OutputPath)!)
-            .Concat(EnumerateOwnedStaging(project.SelectedOutputDirectory("build")))
-            .Concat(EnumerateOwnedStaging(project.SelectedOutputDirectory("publish"))).ToArray();
+            .Concat(EnumerateOwnedStaging(project.SelectedOutputDirectory("publish")))
+            .Concat(EnumerateOwnedStaging(project.SelectedOutputDirectory("publish"))).Distinct(StringComparer.Ordinal).ToArray();
         if (category == "process-release")
             Assert.Contains(Assert.Single(staging), result.StandardError, StringComparison.Ordinal);
         else
@@ -211,7 +210,6 @@ public sealed class WorkbookOutputFailureTests
     }
 
     [Theory]
-    [InlineData("build")]
     [InlineData("publish")]
     public async Task CancellationWithUnprovedProcessReleaseReturnsFailure(string commandName)
     {
@@ -249,7 +247,7 @@ public sealed class WorkbookOutputFailureTests
         var command = CreateCommand(project.Context, automation);
 
         var result = await RunAsync(
-            "build",
+            "publish",
             command,
             project.Context,
             CancellationToken.None);
@@ -269,7 +267,7 @@ public sealed class WorkbookOutputFailureTests
         var command = CreateCommand(project.Context, automation);
 
         var result = await RunAsync(
-            "build",
+            "publish",
             command,
             project.Context,
             CancellationToken.None);
@@ -281,7 +279,6 @@ public sealed class WorkbookOutputFailureTests
     }
 
     [Theory]
-    [InlineData("build")]
     [InlineData("publish")]
     public async Task StageTimeoutPreservesCompletedOutputsAndRemovesOwnedStaging(string commandName)
     {
@@ -306,7 +303,6 @@ public sealed class WorkbookOutputFailureTests
     }
 
     [Theory]
-    [InlineData("build")]
     [InlineData("publish")]
     public async Task OwnedProcessLossReportsItsStageAndPreservesCompletedOutputs(string commandName)
     {
@@ -328,7 +324,6 @@ public sealed class WorkbookOutputFailureTests
     }
 
     [Theory]
-    [InlineData("build")]
     [InlineData("publish")]
     public async Task CooperativeCancellationReturns130WithItsStageAndPreservesCompletedOutputs(string commandName)
     {
@@ -358,7 +353,6 @@ public sealed class WorkbookOutputFailureTests
     }
 
     [Theory]
-    [InlineData("build")]
     [InlineData("publish")]
     public async Task CancellationAfterAtomicCommitDoesNotOverrideCommandSuccess(string commandName)
     {
@@ -389,9 +383,6 @@ public sealed class WorkbookOutputFailureTests
     }
 
     [Theory]
-    [InlineData("build", "project", "containing project 'Local'")]
-    [InlineData("build", "module", "actual retained component identity at index 0 is incomplete")]
-    [InlineData("build", "reference", "active reference 'Local'")]
     [InlineData("publish", "project", "containing project 'Local'")]
     [InlineData("publish", "module", "actual retained component identity at index 0 is incomplete")]
     [InlineData("publish", "reference", "active reference 'Local'")]
@@ -428,7 +419,6 @@ public sealed class WorkbookOutputFailureTests
     }
 
     [Theory]
-    [InlineData("build", "Built")]
     [InlineData("publish", "Published")]
     public async Task VerifiedImportedComponentIsExcludedFromRetainedAuthorityAndResultStaysStable(
         string commandName,
@@ -460,8 +450,6 @@ public sealed class WorkbookOutputFailureTests
     }
 
     [Theory]
-    [InlineData("build", "empty", "saved staging workbook is empty")]
-    [InlineData("build", "missing", "saved staging workbook could not be read")]
     [InlineData("publish", "empty", "saved staging workbook is empty")]
     [InlineData("publish", "missing", "saved staging workbook could not be read")]
     public async Task InvalidSavedStagingPreventsCommitAndPreservesPreviousOutput(
@@ -545,7 +533,6 @@ public sealed class WorkbookOutputFailureTests
     }
 
     [Theory]
-    [InlineData("build")]
     [InlineData("publish")]
     public void OutputGenerationDoesNotRunDoctorOrValidateTheCommonModulesRepository(string commandName)
     {
@@ -596,9 +583,8 @@ public sealed class WorkbookOutputFailureTests
     }
 
     [Theory]
-    [InlineData("build")]
     [InlineData("publish")]
-    public async Task CliForwardsInvocationCancellationToBuildAndPublish(string commandName)
+    public async Task CliForwardsInvocationCancellationToPublish(string commandName)
     {
         using var temp = TempDirectory.Create();
         var project = CreateProject(temp);
@@ -634,14 +620,14 @@ public sealed class WorkbookOutputFailureTests
         string? mirror = null;
         var automation = new FailingWorkbookGenerationAutomation(_ =>
         {
-            workbook = Assert.Single(EnumerateOwnedStaging(project.SelectedOutputDirectory("build")));
+            workbook = Assert.Single(EnumerateOwnedStaging(project.SelectedOutputDirectory("publish")));
             return new WorkbookAutomationCleanupException("Owned release was not proved");
         });
         var command = CreateCommand(project.Context, automation,
             importSourceSetFactory: new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(), sourceSet => mirror = sourceSet.StagingPath));
         try
         {
-            var result = await RunAsync("build", command, project.Context, CancellationToken.None);
+            var result = await RunAsync("publish", command, project.Context, CancellationToken.None);
 
             Assert.Equal(1, result.ExitCode);
             if (inspectMirror) Assert.True(Directory.Exists(mirror));
@@ -680,7 +666,6 @@ public sealed class WorkbookOutputFailureTests
         CancellationToken cancellationToken)
         => commandName switch
         {
-            "build" => new BuildCommand(outputCommand, new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory()).RunAsync(context, cancellationToken),
             "publish" => new PublishCommand(outputCommand).RunAsync(context, cancellationToken),
             _ => throw new ArgumentOutOfRangeException(nameof(commandName), commandName, null)
         };

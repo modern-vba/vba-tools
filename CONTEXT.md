@@ -1627,17 +1627,15 @@ save and output commitment. This is not compile verification.
 _Avoid_: reference resolution, compile check, CommonModules consistency check
 
 **WorkbookMaterializer**:
-The internal sealed VbaDev operation owner for the four closed write intents
-`WorkbookMaterializationIntent.ProjectBuild`,
-`WorkbookMaterializationIntent.Publish`,
-`WorkbookMaterializationIntent.SourceSnapshotBuild`, or
-`WorkbookMaterializationIntent.ExplicitImport`, and for the separate
-observational `ProjectInspectionIntent` used by project Doctor. The legacy
-`ProjectBuild` intent is no longer the production ordinary Test route or the
-ordinary public Build route described by `SourceWorkbookBuildCommand`. `ProjectBuild`
-and `Publish` obtain their purpose-specific, final-order admissions from
-`VbaSourceAdmission`; ordinary saved-source `ProjectBuild` additionally requires
-complete, error-free analyzed admission before generation. `SourceSnapshotBuild` consumes a command-owned
+The internal sealed VbaDev operation owner for three closed generated/import
+write intents: `WorkbookMaterializationIntent.Publish`,
+`WorkbookMaterializationIntent.SourceSnapshotBuild`, and
+`WorkbookMaterializationIntent.ExplicitImport`, plus the separate observational
+`ProjectInspectionIntent`. Ordinary Build requires `SourceWorkbookBuildCommand`
+under every construction path. The materializer prepares its analyzed saved
+source admission and semantic inputs without creating a generated-output intent
+or selecting legacy bin configuration. Prepared source Test shares that
+Build admission, while Publish retains its distinct exclusion rules. `SourceSnapshotBuild` consumes a command-owned
 `BuildSourceSnapshotCapture` and its exact admitted set without reclassifying
 snapshot files from installed CommonModules, reordering sources, rereading the
 persistent `DocumentSourceSet`, redetecting encoding, or accepting consumer proof.
@@ -1651,7 +1649,7 @@ retains its existing release, failure, and cleanup sequencing across both
 owners. It validates template existence without taking over source-directory
 admission or bypassing disposal of an owned input.
 
-Across all four intents, the materializer keeps the applicable admitted-source
+Across these three intents, the materializer keeps the applicable admitted-source
 preparation, static preflight, sibling workbook staging, repeated live-authority
 inspection, source import and verification, save, owned Excel-process release,
 saved-staging validation, cancellation fence, and durable output commitment in
