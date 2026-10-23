@@ -24,57 +24,11 @@ internal interface IExcelComWorkbookTestBoundary : IDisposable
 /// <summary>
 /// Runs VBA unit tests inside Excel through COM automation.
 /// </summary>
-public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
+internal static class ExcelComWorkbookTestRunner
 {
     private const int XlUp = -4162;
     private const string UnitTestEntryPoint = "UnitTestMain";
     private const string UnitTestSheetName = "UNIT_TEST_SHEET";
-    private readonly ExcelComWorkbookGenerationAutomation automation;
-
-    public ExcelComWorkbookTestRunner()
-        : this(new ExcelComWorkbookGenerationAutomation())
-    {
-    }
-
-    internal ExcelComWorkbookTestRunner(ExcelComWorkbookGenerationAutomation automation)
-    {
-        this.automation = automation;
-    }
-
-    /// <summary>
-    /// Runs the UnitTestMain macro and reads result rows from the unit-test worksheet.
-    /// </summary>
-    public IReadOnlyList<WorkbookTestResultRow> RunTests(
-        string workbookPath,
-        WorkbookTestSelector selector)
-        => RunTestsAsync(
-                workbookPath,
-                selector,
-                TimeSpan.FromSeconds(600),
-                WorkbookAutomationTimeouts.Default,
-                CancellationToken.None)
-            .GetAwaiter()
-            .GetResult();
-
-    /// <summary>
-    /// Runs the UnitTestMain macro and reads result rows from the unit-test worksheet.
-    /// </summary>
-    /// <param name="workbookPath">The workbook path containing tests.</param>
-    /// <param name="selector">The optional module or procedure selector passed to UnitTestMain.</param>
-    /// <returns>The raw workbook test result rows.</returns>
-    public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
-        string workbookPath,
-        WorkbookTestSelector selector,
-        TimeSpan executionTimeout,
-        WorkbookAutomationTimeouts automationTimeouts,
-        CancellationToken cancellationToken)
-        => automation.RunWorkbookTestsAsync(
-            workbookPath,
-            automationTimeouts,
-            executionTimeout,
-            selector,
-            cancellationToken);
-
     internal static IReadOnlyList<WorkbookTestResultRow> RunTests(
         ExcelComWorkbookSession session,
         WorkbookTestSelector selector,

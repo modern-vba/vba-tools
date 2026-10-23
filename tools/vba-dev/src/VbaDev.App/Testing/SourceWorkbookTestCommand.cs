@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using VbaDev.App.Build;
 using VbaDev.App.Cli;
 using VbaDev.App.FileSystem;
@@ -8,25 +9,45 @@ using VbaDev.Domain;
 namespace VbaDev.App.Testing;
 
 /// <summary>Prepares and tests the exact source workbook without tool-initiated Save.</summary>
-internal sealed class SourceWorkbookTestCommand(
-    WorkbookMaterializer materializer,
-    ISourceWorkbookAutomation automation,
-    WorkbookReferenceNormalizer referenceNormalizer,
-    IExactFileSystemObjectOwnershipFactory ownershipFactory,
-    TimeSpan? recoveryBudgetOverride = null,
-    SnapshotTestExecutionWorkspaceFactory? snapshotWorkspaceFactory = null,
-    Func<ResolvedProjectContext, string, VbaSourceAnalysisReport, string>? saveFailureEvidence = null)
+public sealed class SourceWorkbookTestCommand
 {
-    private readonly TimeSpan recoveryBudget = recoveryBudgetOverride ?? TimeSpan.FromMinutes(10);
+    private readonly WorkbookMaterializer materializer;
+    private readonly ISourceWorkbookAutomation automation;
+    private readonly WorkbookReferenceNormalizer referenceNormalizer;
+    private readonly IExactFileSystemObjectOwnershipFactory ownershipFactory;
+    private readonly SnapshotTestExecutionWorkspaceFactory snapshotWorkspaceFactory;
+    private readonly Func<ResolvedProjectContext, string, VbaSourceAnalysisReport, string>? saveFailureEvidence;
+
+    private readonly TimeSpan recoveryBudget;
     private readonly WorkbookMaterializationNamePreflight namePreflight = new();
     private readonly TestProcedureSourceLocator sourceLocator = new();
     private readonly TestResultOutputFormatter outputFormatter = new();
 
-    internal SourceWorkbookTestCommand WithSnapshotWorkspaceFactory(SnapshotTestExecutionWorkspaceFactory factory)
-        => new(materializer, automation, referenceNormalizer, ownershipFactory, recoveryBudgetOverride, factory,
-            saveFailureEvidence);
+    internal SourceWorkbookTestCommand(WorkbookMaterializer materializer, ISourceWorkbookAutomation automation,
+        WorkbookReferenceNormalizer referenceNormalizer, IExactFileSystemObjectOwnershipFactory ownershipFactory,
+        SnapshotTestExecutionWorkspaceFactory snapshotWorkspaceFactory,
+        TimeSpan? recoveryBudgetOverride = null,
+        Func<ResolvedProjectContext, string, VbaSourceAnalysisReport, string>? saveFailureEvidence = null)
+    {
+        this.materializer = materializer;
+        this.automation = automation;
+        this.referenceNormalizer = referenceNormalizer;
+        this.ownershipFactory = ownershipFactory;
+        this.snapshotWorkspaceFactory = snapshotWorkspaceFactory ?? throw new ArgumentNullException(nameof(snapshotWorkspaceFactory));
+        this.saveFailureEvidence = saveFailureEvidence;
+        recoveryBudget = recoveryBudgetOverride ?? TimeSpan.FromMinutes(10);
+    }
 
-    internal async Task<CommandResult> RunAsync(
+    /// <summary>Runs tests on the exact selected source session without a tool-controlled Save.</summary>
+    public CommandResult Run(ResolvedProjectContext context, TestCommandRequest request)
+        => RunAsync(context, request, CancellationToken.None).GetAwaiter().GetResult();
+
+    public Task<CommandResult> RunAsync(ResolvedProjectContext context, TestCommandRequest request,
+        CancellationToken cancellationToken)
+        => RunAsync(context, request, null, cancellationToken);
+
+    /// <summary>Runs source tests with mode-specific unsaved-workbook confirmation.</summary>
+    public async Task<CommandResult> RunAsync(
         ResolvedProjectContext context,
         TestCommandRequest request,
         Func<string, CancellationToken, Task<bool>>? confirmUnsavedChanges,
@@ -53,11 +74,10 @@ internal sealed class SourceWorkbookTestCommand(
                 {
                     if (request.SourceSnapshotPath is { } snapshot)
                     {
-                        inputWorkspace = snapshotWorkspaceFactory?.Create(context, snapshot,
+                        inputWorkspace = snapshotWorkspaceFactory.Create(context, snapshot,
                             Path.GetFileName(context.TemplateDocumentPath), token);
-                        privateWorkspacePath = inputWorkspace?.WorkspacePath;
-                        var capture = inputWorkspace?.TakeSourceCapture()
-                            ?? new BuildSourceSnapshotCaptureFactory(ownershipFactory).Create(snapshot, token);
+                        privateWorkspacePath = inputWorkspace.WorkspacePath;
+                        var capture = inputWorkspace.TakeSourceCapture();
                         return await materializer.PrepareSourceWorkbookTestSnapshotAsync(context, capture, token)
                             .ConfigureAwait(false);
                     }
@@ -194,8 +214,8 @@ internal sealed class SourceWorkbookTestCommand(
             if (privateWorkspacePath is not null)
                 result = result with
                 {
-                    StandardOutput = TestCommand.SanitizeSnapshotOperationText(result.StandardOutput, privateWorkspacePath, true),
-                    StandardError = TestCommand.SanitizeSnapshotOperationText(result.StandardError, privateWorkspacePath, true)
+                    StandardOutput = SanitizeSnapshotOperationText(result.StandardOutput, privateWorkspacePath, true),
+                    StandardError = SanitizeSnapshotOperationText(result.StandardError, privateWorkspacePath, true)
                 };
             result = result with { StandardError = result.StandardError + cleanupWarnings };
             if (retainScratch)
@@ -221,9 +241,9 @@ internal sealed class SourceWorkbookTestCommand(
         var results = rows.Select(row => TestResultRecord.FromWorkbookRow(context.DocumentName, row))
             .Select(result => privateWorkspacePath is null ? result : result with
             {
-                Category = TestCommand.SanitizeSnapshotOperationText(result.Category, privateWorkspacePath, false),
-                TestName = TestCommand.SanitizeSnapshotOperationText(result.TestName, privateWorkspacePath, false),
-                Message = TestCommand.SanitizeSnapshotOperationText(result.Message, privateWorkspacePath, false)
+                Category = SanitizeSnapshotOperationText(result.Category, privateWorkspacePath, false),
+                TestName = SanitizeSnapshotOperationText(result.TestName, privateWorkspacePath, false),
+                Message = SanitizeSnapshotOperationText(result.Message, privateWorkspacePath, false)
             }).ToArray();
         var located = executedSourceIndex is null ? results : sourceLocator.Locate(executedSourceIndex, results);
         var run = TestRun.FromResults(context.Manifest.ProjectName, context.DocumentName, located);
@@ -288,4 +308,88 @@ internal sealed class SourceWorkbookTestCommand(
         return null;
     }
 
+
+    internal static string SanitizeSnapshotOperationText(
+        string text,
+        string workspacePath,
+        bool redactKnownTemporaryRoots)
+    {
+        var normalizedWorkspacePath = Path.GetFullPath(workspacePath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var sanitized = ReplacePrivatePathForms(
+            text,
+            normalizedWorkspacePath,
+            "<snapshot-test-workspace>");
+        if (!redactKnownTemporaryRoots)
+        {
+            return sanitized;
+        }
+
+        sanitized = ReplacePrivateGuidRoot(
+            sanitized,
+            Path.Combine(Path.GetTempPath(), "vba-dev-build-source-snapshot"),
+            "<build-source-snapshot>");
+        sanitized = ReplacePrivateGuidRoot(
+            sanitized,
+            Path.Combine(Path.GetTempPath(), "vba-dev-vbe-import"),
+            "<vbe-import-staging>");
+        return ReplacePrivateGuidRoot(
+            sanitized,
+            Path.Combine(Path.GetTempPath(), "vba-dev-vbe-import", "source-workbook-build"),
+            "<vbe-import-staging>");
+    }
+
+    private static string ReplacePrivatePathForms(
+        string text,
+        string normalizedPath,
+        string replacement)
+    {
+        var sanitized = text.Replace(
+            normalizedPath,
+            replacement,
+            OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal);
+        return sanitized.Replace(
+            new Uri(normalizedPath).AbsoluteUri.TrimEnd('/'),
+            replacement,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ReplacePrivateGuidRoot(
+        string text,
+        string privateRoot,
+        string replacement)
+    {
+        var normalizedRoot = Path.GetFullPath(privateRoot)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var sanitized = ReplacePrivateGuidRootForm(
+            text,
+            normalizedRoot,
+            $"[{Regex.Escape(string.Concat(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar))}]",
+            replacement);
+        return ReplacePrivateGuidRootForm(
+            sanitized,
+            new Uri(normalizedRoot).AbsoluteUri.TrimEnd('/'),
+            "/",
+            replacement);
+    }
+
+    private static string ReplacePrivateGuidRootForm(
+        string text,
+        string privateRoot,
+        string separatorPattern,
+        string replacement)
+    {
+        var pattern = Regex.Escape(privateRoot)
+            + separatorPattern
+            + "[0-9a-f]{32}";
+        return Regex.Replace(
+            text,
+            pattern,
+            replacement,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    }
 }

@@ -249,11 +249,11 @@ public sealed class VbaDevTestCommandFamilyTests
         using var temp = TempDirectory.Create();
         var initialEntries = Directory.GetFileSystemEntries(temp.Path);
         var workbookAutomation = new FakeWorkbookGenerationAutomation();
-        var workbookTestRunner = new FakeWorkbookTestRunner();
+        var workbookTestSession = new FakeWorkbookTestSession();
         var commandLine = CommandLineTestFactory.Create(
             temp.Path,
             workbookGenerationAutomation: workbookAutomation,
-            workbookTestRunner: workbookTestRunner,
+            workbookTestSession: workbookTestSession,
             projectManifestStore: new RejectingProjectManifestStore());
 
         var result = commandLine.Run(arguments);
@@ -266,7 +266,7 @@ public sealed class VbaDevTestCommandFamilyTests
             result.StandardError);
         Assert.Equal(initialEntries, Directory.GetFileSystemEntries(temp.Path));
         Assert.Empty(workbookAutomation.OpenedWorkbooks);
-        Assert.Empty(workbookTestRunner.Workbooks);
+        Assert.Empty(workbookTestSession.Workbooks);
     }
 
     private static ParseResult ParseSuccessfully(

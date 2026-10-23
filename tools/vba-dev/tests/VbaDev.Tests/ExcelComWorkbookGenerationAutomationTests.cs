@@ -129,89 +129,20 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
     }
 
     [Fact]
-    public async Task WorkbookTestsRunInsideTheOwnedSessionBeforeCleanupReturns()
+    public async Task BoundSourceTestExecutionTimeoutIdentifiesTheMacroStageAndReleasesTheOwner()
     {
         var events = new List<string>();
-        var dispatcher = new RecordingGenerationDispatcher(events);
-        var lifecycle = new FakeWorkbookGenerationLifecycle(events);
-        var automation = new ExcelComWorkbookGenerationAutomation(
-            new RecordingGenerationDispatcherFactory(dispatcher),
-            lifecycle);
-        var runner = new ExcelComWorkbookTestRunner(automation);
-
-        var rows = await runner.RunTestsAsync(
-            "staged.xlsm",
-            new WorkbookTestSelector("Test_Module", "Test_Passes"),
-            TimeSpan.FromSeconds(42),
-            WorkbookAutomationTimeouts.Default,
-            CancellationToken.None);
-
-        Assert.Equal(
-            [new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", "")],
-            rows);
-        Assert.Equal(
-            [
-                "start",
-                "open:staged.xlsm",
-                "test:Test_Module.Test_Passes",
-                "cleanup-session:00:00:05",
-                "dispatcher-dispose"
-            ],
-            events);
-        Assert.True(lifecycle.EnableAutomationSecurityLow);
-        Assert.True(lifecycle.Owner.HasExited);
-    }
-
-    [Fact]
-    public void ConcreteLegacyWorkbookTestRunnerMethodUsesStrongOwnedAutomation()
-    {
-        var events = new List<string>();
-        var lifecycle = new FakeWorkbookGenerationLifecycle(events);
-        var runner = new ExcelComWorkbookTestRunner(
-            new ExcelComWorkbookGenerationAutomation(
-                new RecordingGenerationDispatcherFactory(
-                    new RecordingGenerationDispatcher(events)),
-                lifecycle));
-
-        var rows = runner.RunTests(
-            "staged.xlsm",
-            new WorkbookTestSelector("Test_Module", "Test_Passes"));
-
-        Assert.Single(rows);
-        Assert.Contains("test:Test_Module.Test_Passes", events);
-        Assert.True(lifecycle.Owner.HasExited);
-    }
-
-    [Fact]
-    public async Task WorkbookTestExecutionTimeoutIdentifiesTheMacroStageAndReleasesTheOwner()
-    {
-        var events = new List<string>();
-        var lifecycle = new FakeWorkbookGenerationLifecycle(events)
-        {
-            BlockTestUntilTermination = true
-        };
-        var runner = new ExcelComWorkbookTestRunner(
-            new ExcelComWorkbookGenerationAutomation(
-                new RecordingGenerationDispatcherFactory(
-                    new AsynchronousCleanupGenerationDispatcher()),
-                lifecycle));
-
+        var lifecycle = new FakeWorkbookGenerationLifecycle(events) { BlockTestUntilTermination = true };
+        var automation = new ExcelComClosedSourceWorkbookAutomation(true,
+            new RecordingGenerationDispatcherFactory(new AsynchronousCleanupGenerationDispatcher()), lifecycle);
         var error = await Assert.ThrowsAsync<WorkbookAutomationTimeoutException>(() =>
-            runner.RunTestsAsync(
-                "staged.xlsm",
-                new WorkbookTestSelector(),
-                TimeSpan.FromMilliseconds(20),
-                WorkbookAutomationTimeouts.Default with
-                {
-                    ProcessCleanup = TimeSpan.Zero
-                },
-                CancellationToken.None));
-
+            automation.RunAsync("source.xlsm", WorkbookAutomationTimeouts.Default with { ProcessCleanup = TimeSpan.Zero },
+                (session, token) => ((IWorkbookTestExecutionSession)session).RunTestsAsync(
+                    new WorkbookTestSelector(), TimeSpan.FromMilliseconds(20), token), CancellationToken.None));
         Assert.Equal(WorkbookAutomationStageKind.TestExecution, error.Stage.Kind);
         Assert.True(lifecycle.Owner.HasExited);
         Assert.Equal(1, lifecycle.Owner.TerminationCalls);
     }
-
     [Fact]
     public void ApplicationCompositionRoutesSourceBuildThroughInjectedAutomation()
     {

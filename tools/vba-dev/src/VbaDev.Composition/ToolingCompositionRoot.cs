@@ -41,7 +41,6 @@ public static class ToolingCompositionRoot
     /// <param name="initialWorkbookCreator">The optional initial workbook creator adapter.</param>
     /// <param name="workbookGenerationAutomation">The optional workbook generation automation adapter.</param>
     /// <param name="sourceWorkbookAutomation">The optional source-workbook automation adapter.</param>
-    /// <param name="workbookTestRunner">The optional workbook test runner adapter.</param>
     /// <param name="workbookModuleExporter">The optional workbook module exporter adapter.</param>
     /// <param name="projectWorkbookModuleExporter">The optional project-source workbook exporter adapter.</param>
     /// <param name="vbaProjectReferenceResolver">The optional VBA project reference resolver adapter.</param>
@@ -59,7 +58,6 @@ public static class ToolingCompositionRoot
         IEnvironmentDiagnosticPort? environmentDiagnosticPort = null,
         IInitialWorkbookCreator? initialWorkbookCreator = null,
         IWorkbookGenerationAutomation? workbookGenerationAutomation = null,
-        IWorkbookTestRunner? workbookTestRunner = null,
         IWorkbookModuleExporter? workbookModuleExporter = null,
         IVbaProjectReferenceResolver? vbaProjectReferenceResolver = null,
         IProjectManifestStore? projectManifestStore = null,
@@ -171,12 +169,13 @@ public static class ToolingCompositionRoot
             testSourceWorkbookAutomation ?? sourceWorkbookAutomation
                 ?? ExcelComSourceWorkbookAutomation.CreateForTestExecution(),
             referenceNormalizer, sourceWorkbookRecoveryOwnershipFactory ?? ownershipFactory,
+            new SnapshotTestExecutionWorkspaceFactory(ownershipFactory, pathIdentityResolver),
             sourceWorkbookRecoveryBudget,
             saveFailureEvidence: persistSourceAnalysisFailureEvidence ? new SourceAnalysisEvidenceStore().Save : null);
         var buildCommand = new BuildCommand(workbookOutputCommand, pathIdentityResolver,
             ownershipFactory, new SourceWorkbookBuildCommand(materializer, sourceAutomation,
                 referenceNormalizer, sourceWorkbookRecoveryOwnershipFactory ?? ownershipFactory,
-                sourceWorkbookRecoveryBudget), sourceTestCommand);
+                sourceWorkbookRecoveryBudget));
         var debugPreparationCommand = new DebugWorkbookPreparationCommand(
             materializer,
             debugSourceWorkbookAutomationFactory
@@ -185,13 +184,7 @@ public static class ToolingCompositionRoot
             sourceWorkbookRecoveryOwnershipFactory ?? ownershipFactory,
             sourceWorkbookRecoveryBudget);
         var publishCommand = new PublishCommand(workbookOutputCommand);
-        var testCommand = new TestCommand(
-            buildCommand,
-            workbookTestRunner ?? new ExcelComWorkbookTestRunner(),
-            new TestResultOutputFormatter(),
-            new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(ownershipFactory, pathIdentityResolver),
-            sourceTestCommand);
+        var testCommand = sourceTestCommand;
         var exportCommand = new ExportCommand(ownershipFactory,
             workbookModuleExporter ?? new ExcelComWorkbookModuleExporter(),
             projectWorkbookModuleExporter ?? workbookModuleExporter
@@ -248,7 +241,7 @@ public sealed record ToolingApplicationComposition(
     VbaProjectReferenceCompletionService ReferenceCompletionService,
     BuildCommand BuildCommand,
     PublishCommand PublishCommand,
-    TestCommand TestCommand,
+    SourceWorkbookTestCommand TestCommand,
     ExportCommand ExportCommand,
     ImportCommand ImportCommand,
     HostEventListCommand HostEventListCommand,

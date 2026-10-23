@@ -26,11 +26,11 @@ public sealed class TestCommandTests
         var root = temp.CreateDirectory("Project");
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
         CreateWorkbookSource(root, "Book1");
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", "", TimeSpan.FromMilliseconds(12.5)),
             new WorkbookTestResultRow("Test_Module", "Test_Fails", "NG", "Expected 1 but was 2"),
             new WorkbookTestResultRow("Test_Module", "Test_Errors", "ERR", "Runtime error"));
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
 
         var result = await application.RunAsync(["test", "--no-build", "--format", "ndjson"]);
 
@@ -46,28 +46,6 @@ public sealed class TestCommandTests
             "{\"type\":\"runFinished\",\"project\":\"Project\",\"document\":\"Book1\",\"outcome\":\"failed\",\"total\":3,\"passed\":1,\"failed\":1,\"errors\":1}\n",
             result.StandardOutput);
         Assert.Equal(ExpectedNoBuildSourceLocationWarning, result.StandardError);
-    }
-
-    [Fact]
-    public void LegacySynchronousWorkbookTestRunnerStillRunsThroughTestCommand()
-    {
-        using var temp = TempDirectory.Create();
-        var root = temp.CreateDirectory("Project");
-        new JsonProjectManifestStore().Save(
-            root,
-            ProjectManifest.CreateDefault("Project", "Book1", root, null));
-        CreateWorkbookSource(root, "Book1");
-        var sourceWorkbookPath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
-        var runner = new LegacySynchronousWorkbookTestRunner();
-        var application = CommandLineTestFactory.Create(
-            root,
-            workbookTestRunner: runner);
-
-        var result = application.Run(["test", "--no-build"]);
-
-        Assert.Equal(0, result.ExitCode);
-        Assert.Equal([sourceWorkbookPath], runner.Workbooks);
-        Assert.Contains("1 passed", result.StandardOutput, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -98,9 +76,9 @@ public sealed class TestCommandTests
         var binPath = Path.Combine(root, "bin", "Book1.xlsm");
         Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
 
         var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
 
@@ -124,7 +102,7 @@ public sealed class TestCommandTests
         CreateWorkbookSource(root, "Book1");
         var application = CommandLineTestFactory.Create(
             root,
-            workbookTestRunner: new FakeWorkbookTestRunner());
+            workbookTestSession: new FakeWorkbookTestSession());
 
         var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
 
@@ -265,9 +243,9 @@ public sealed class TestCommandTests
         var binPath = Path.Combine(root, "bin", "Book1.xlsm");
         Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
         using var sourceLock = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.None);
 
         var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
@@ -298,9 +276,9 @@ public sealed class TestCommandTests
         var binPath = Path.Combine(root, "bin", "Book1.xlsm");
         Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
         using var sourceLock = new FileStream(lockedSourcePath, FileMode.Open, FileAccess.Read, FileShare.None);
 
         var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
@@ -332,9 +310,9 @@ public sealed class TestCommandTests
         var binPath = Path.Combine(root, "bin", "Book1.xlsm");
         Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
 
         var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
 
@@ -432,14 +410,14 @@ public sealed class TestCommandTests
             root,
             "Book1",
             ("Other_Module.bas", "Attribute VB_Name = \"Other_Module\"\nPublic Sub Test_Other()\nEnd Sub\n"));
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow("Missing_Module", "Test_Passes", "OK", ""),
             new WorkbookTestResultRow("Missing_Module", "Test_Fails", "NG", "failure"),
             new WorkbookTestResultRow("Missing_Module", "Test_Errors", "ERR", "error"));
         var application = CommandLineTestFactory.Create(
             root,
             workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
-            workbookTestRunner: runner);
+            workbookTestSession: runner);
 
         var result = application.Run(["test", "--format", "ndjson"]);
 
@@ -540,12 +518,12 @@ public sealed class TestCommandTests
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
         var sourceWorkbookPath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
-        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var runner = new FakeWorkbookTestSession(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var buildAutomation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
             workbookGenerationAutomation: buildAutomation,
-            workbookTestRunner: runner);
+            workbookTestSession: runner);
 
         var result = application.Run(["test", "--no-build", "--format", "text"]);
 
@@ -566,10 +544,10 @@ public sealed class TestCommandTests
         new JsonProjectManifestStore().Save(
             root,
             ProjectManifest.CreateDefault("Project", "Book1", root, null));
-        var runner = new FakeWorkbookTestRunner();
+        var runner = new FakeWorkbookTestSession();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookTestRunner: runner);
+            workbookTestSession: runner);
 
         var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
 
@@ -590,8 +568,8 @@ public sealed class TestCommandTests
         var root = temp.CreateDirectory("Project");
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
         CreateWorkbookSource(root, "Book1");
-        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Foo", "Test_Bar", "OK", ""));
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var runner = new FakeWorkbookTestSession(new WorkbookTestResultRow("Test_Foo", "Test_Bar", "OK", ""));
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
 
         var result = application.Run(["test", "--no-build", "--module", "Test_Foo", "--procedure", "Test_Bar", "--format", "ndjson"]);
 
@@ -610,12 +588,12 @@ public sealed class TestCommandTests
         var root = temp.CreateDirectory("Project");
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
-        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Foo", "Test_Bar", "OK", ""));
+        var runner = new FakeWorkbookTestSession(new WorkbookTestResultRow("Test_Foo", "Test_Bar", "OK", ""));
         var buildAutomation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
             workbookGenerationAutomation: buildAutomation,
-            workbookTestRunner: runner);
+            workbookTestSession: runner);
 
         var result = application.Run(["test", "--module", "Test_Foo", "--format", "text"]);
 
@@ -634,9 +612,9 @@ public sealed class TestCommandTests
             root,
             ProjectManifest.CreateDefault("Project", "Book1", root, null));
         CreateWorkbookSource(root, "Book1");
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow("\u00A0", "Test_Passes", "OK", ""));
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
 
         var result = application.Run(["test", "--no-build", "--module", "\u00A0"]);
 
@@ -657,8 +635,8 @@ public sealed class TestCommandTests
             root,
             ProjectManifest.CreateDefault("Project", "Book1", root, null));
         CreateWorkbookSource(root, "Book1");
-        var runner = new FakeWorkbookTestRunner();
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var runner = new FakeWorkbookTestSession();
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
         var arguments = option == "--module"
             ? new[] { "test", "--no-build", option, value }
             : new[] { "test", "--no-build", "--module", "Test_Module", option, value };
@@ -679,8 +657,8 @@ public sealed class TestCommandTests
             root,
             ProjectManifest.CreateDefault("Project", "Book1", root, null));
         CreateWorkbookSource(root, "Book1");
-        var runner = new FakeWorkbookTestRunner();
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var runner = new FakeWorkbookTestSession();
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
 
         var result = application.Run(
             ["test", "--no-build", "--module", new string('\u00A0', 32)]);
@@ -699,8 +677,8 @@ public sealed class TestCommandTests
             root,
             ProjectManifest.CreateDefault("Project", "Book1", root, null));
         CreateWorkbookSource(root, "Book1");
-        var runner = new FakeWorkbookTestRunner();
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var runner = new FakeWorkbookTestSession();
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
 
         var result = application.Run(
             [
@@ -725,7 +703,7 @@ public sealed class TestCommandTests
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
 
         var result = CommandLineTestFactory
-            .Create(root, workbookTestRunner: new FakeWorkbookTestRunner())
+            .Create(root, workbookTestSession: new FakeWorkbookTestSession())
             .Run(["test", "--procedure", "Test_Bar"]);
 
         Assert.Equal(1, result.ExitCode);
@@ -742,11 +720,11 @@ public sealed class TestCommandTests
         var root = temp.CreateDirectory("Project");
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
         CreateWorkbookSource(root, "Book1");
-        var runner = new FakeWorkbookTestRunner
+        var runner = new FakeWorkbookTestSession
         {
             Error = new InvalidOperationException("Test module was not found: MissingModule")
         };
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
 
         var result = application.Run(["test", "--no-build", "--module", "MissingModule"]);
 
@@ -765,11 +743,11 @@ public sealed class TestCommandTests
         var root = temp.CreateDirectory("Project");
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
         CreateWorkbookSource(root, "Book1");
-        var runner = new FakeWorkbookTestRunner
+        var runner = new FakeWorkbookTestSession
         {
             Error = new COMException("0x800A801C", unchecked((int)0x800A801C))
         };
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
 
         var result = application.Run(["test", "--no-build"]);
 
@@ -786,7 +764,7 @@ public sealed class TestCommandTests
         var root = temp.CreateDirectory("Project");
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
-        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var runner = new FakeWorkbookTestSession(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var buildAutomation = new FakeWorkbookGenerationAutomation();
         var standardLibrary = new WorkbookReference("Visual Basic For Applications", true, "VBA",
             Guid: "11111111-1111-1111-1111-111111111111", Major: 1, Minor: 0);
@@ -794,7 +772,7 @@ public sealed class TestCommandTests
         var application = CommandLineTestFactory.Create(
             root,
             workbookGenerationAutomation: buildAutomation,
-            workbookTestRunner: runner);
+            workbookTestSession: runner);
 
         var result = application.Run(["test", "--format", "text"]);
 
@@ -825,13 +803,13 @@ public sealed class TestCommandTests
             "Book1",
             ("Local.bas", "Attribute VB_Name = \"Local\""),
             ("Test_Module.bas", "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\n"));
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var buildAutomation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
             workbookGenerationAutomation: buildAutomation,
-            workbookTestRunner: runner);
+            workbookTestSession: runner);
 
         var exactResult = application.Run(["test", "--format", format]);
         buildAutomation.VerificationReport = new VbeImportVerificationReport(
@@ -865,7 +843,7 @@ public sealed class TestCommandTests
             "Book1",
             ("Local.bas", "Attribute VB_Name = \"Local\""),
             ("Test_Module.bas", "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Fails()\nEnd Sub\n"));
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow(
                 "Test_Module",
                 "Test_Fails",
@@ -875,7 +853,7 @@ public sealed class TestCommandTests
         var application = CommandLineTestFactory.Create(
             root,
             workbookGenerationAutomation: buildAutomation,
-            workbookTestRunner: runner);
+            workbookTestSession: runner);
 
         var exactResult = application.Run(["test", "--format", "ndjson"]);
         buildAutomation.VerificationReport = new VbeImportVerificationReport(
@@ -912,12 +890,12 @@ public sealed class TestCommandTests
         var binPath = Path.Combine(root, "bin", "Book1.xlsm");
         Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
         File.WriteAllText(binPath, "previous-bin", Encoding.UTF8);
-        var runner = new FakeWorkbookTestRunner();
+        var runner = new FakeWorkbookTestSession();
         var buildAutomation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
             workbookGenerationAutomation: buildAutomation,
-            workbookTestRunner: runner);
+            workbookTestSession: runner);
 
         var result = application.Run(["test", "--format", "text"]);
 
@@ -963,12 +941,12 @@ public sealed class TestCommandTests
             "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\n");
         File.WriteAllBytes(snapshotSourcePath, snapshotBytes);
         var buildAutomation = new FakeWorkbookGenerationAutomation();
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var application = CommandLineTestFactory.Create(
             root,
             workbookGenerationAutomation: buildAutomation,
-            workbookTestRunner: runner);
+            workbookTestSession: runner);
 
         var result = application.Run(
         [
@@ -1034,11 +1012,11 @@ public sealed class TestCommandTests
         File.WriteAllBytes(firstSourcePath, firstSourceBytes);
         File.WriteAllBytes(secondSourcePath, secondSourceBytes);
         var buildAutomation = new FakeWorkbookGenerationAutomation();
-        var runner = new FakeWorkbookTestRunner();
+        var runner = new FakeWorkbookTestSession();
         var application = CommandLineTestFactory.Create(
             root,
             workbookGenerationAutomation: buildAutomation,
-            workbookTestRunner: runner);
+            workbookTestSession: runner);
 
         var result = application.Run(
         [
@@ -1072,11 +1050,11 @@ public sealed class TestCommandTests
             ProjectManifest.CreateDefault("Project", "Book1", root, null));
         var snapshotPath = temp.CreateDirectory("caller-snapshot");
         var buildAutomation = new FakeWorkbookGenerationAutomation();
-        var runner = new FakeWorkbookTestRunner();
+        var runner = new FakeWorkbookTestSession();
         var application = CommandLineTestFactory.Create(
             root,
             workbookGenerationAutomation: buildAutomation,
-            workbookTestRunner: runner);
+            workbookTestSession: runner);
 
         var result = application.Run(
         [
@@ -1107,11 +1085,11 @@ public sealed class TestCommandTests
         Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
         File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
         var buildAutomation = new FakeWorkbookGenerationAutomation();
-        var runner = new FakeWorkbookTestRunner();
+        var runner = new FakeWorkbookTestSession();
         var application = CommandLineTestFactory.Create(
             root,
             workbookGenerationAutomation: buildAutomation,
-            workbookTestRunner: runner);
+            workbookTestSession: runner);
 
         var result = application.Run(
         [
@@ -1137,8 +1115,8 @@ public sealed class TestCommandTests
             root,
             ProjectManifest.CreateDefault("Project", "Book1", root, null));
         var snapshotPath = temp.CreateDirectory("caller-snapshot");
-        var runner = new FakeWorkbookTestRunner();
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var runner = new FakeWorkbookTestSession();
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
 
         var result = application.Run(
         [
@@ -1172,14 +1150,9 @@ public sealed class TestCommandTests
             "Attribute VB_Name = \"Test_Module\"",
             Encoding.UTF8);
         var scratchRoot = Path.Combine(snapshotPath, "vba-dev-snapshot-test");
-        var runner = new FakeWorkbookTestRunner();
+        var runner = new FakeWorkbookTestSession();
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = new TestCommand(
-            composition.BuildCommand,
-            runner,
-            new TestResultOutputFormatter(),
-            new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot));
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1225,7 +1198,7 @@ public sealed class TestCommandTests
             snapshotSourcePath,
             "Attribute VB_Name = \"Test_Module\"\n' frozen line one\n' frozen line two\nPublic Sub Test_Passes()\nEnd Sub\n",
             Encoding.UTF8);
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var buildAutomation = new FakeWorkbookGenerationAutomation
         {
@@ -1237,7 +1210,7 @@ public sealed class TestCommandTests
         var application = CommandLineTestFactory.Create(
             root,
             workbookGenerationAutomation: buildAutomation,
-            workbookTestRunner: runner);
+            workbookTestSession: runner);
 
         var result = application.Run(
         [
@@ -1292,12 +1265,12 @@ public sealed class TestCommandTests
             Path.Combine(snapshotPath, "Test_Module.bas"),
             "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\n",
             Encoding.UTF8);
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var application = CommandLineTestFactory.Create(
             root,
             workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
-            workbookTestRunner: runner);
+            workbookTestSession: runner);
 
         var result = application.Run(
         [
@@ -1334,12 +1307,12 @@ public sealed class TestCommandTests
             Path.Combine(snapshotPath, "Test_Module.bas"),
             "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\nPublic Sub Test_Passes()\nEnd Sub\n",
             Encoding.UTF8);
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var application = CommandLineTestFactory.Create(
             root,
             workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
-            workbookTestRunner: runner);
+            workbookTestSession: runner);
 
         var result = application.Run(
         [
@@ -1375,7 +1348,7 @@ public sealed class TestCommandTests
             Path.Combine(snapshotPath, "Test_Module.bas"),
             "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\n",
             Encoding.UTF8);
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow(
                 "Test_Module",
                 "Test_Passes",
@@ -1383,15 +1356,10 @@ public sealed class TestCommandTests
                 workbookOutcome == "OK" ? "" : "synthetic assertion failure"));
         var composition = CreateSourceTestComposition(root, runner);
         var fileSystem = new RetainingSnapshotWorkspaceObserver();
-        var testCommand = new TestCommand(
-            composition.BuildCommand,
-            runner,
-            new TestResultOutputFormatter(),
-            new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 temp.CreateDirectory("snapshot-test-scratch"),
-                afterWorkspaceCreated: fileSystem.AddForeignContent));
+                afterWorkspaceCreated: fileSystem.AddForeignContent)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1429,18 +1397,13 @@ public sealed class TestCommandTests
             "Attribute VB_Name = \"Test_Module\"",
             Encoding.UTF8);
         var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
-        var runner = new FakeWorkbookTestRunner();
+        var runner = new FakeWorkbookTestSession();
         var composition = CreateSourceTestComposition(root, runner);
         var fileSystem = new RetainingSnapshotWorkspaceObserver();
-        var testCommand = new TestCommand(
-            composition.BuildCommand,
-            runner,
-            new TestResultOutputFormatter(),
-            new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 scratchRoot,
-                afterWorkspaceCreated: fileSystem.AddForeignContent));
+                afterWorkspaceCreated: fileSystem.AddForeignContent)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
@@ -1485,19 +1448,14 @@ public sealed class TestCommandTests
             "Attribute VB_Name = \"Test_Module\"",
             Encoding.UTF8);
         var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
-        var runner = new FakeWorkbookTestRunner();
+        var runner = new FakeWorkbookTestSession();
         var composition = CreateSourceTestComposition(root, runner);
         using var cancellation = new CancellationTokenSource();
         using var captureFactory = new CancelingLockedSnapshotSourceCaptureFactory(cancellation);
-        var testCommand = new TestCommand(
-            composition.BuildCommand,
-            runner,
-            new TestResultOutputFormatter(),
-            new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 scratchRoot,
-                sourceCaptureFactory: captureFactory));
+                sourceCaptureFactory: captureFactory)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = await application.RunAsync(
@@ -1534,17 +1492,12 @@ public sealed class TestCommandTests
             "Attribute VB_Name = \"Test_Module\"",
             Encoding.UTF8);
         var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
-        var runner = new FakeWorkbookTestRunner();
+        var runner = new FakeWorkbookTestSession();
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = new TestCommand(
-            composition.BuildCommand,
-            runner,
-            new TestResultOutputFormatter(),
-            new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 scratchRoot,
-                sourceCaptureFactory: new NestedCancellationSnapshotSourceCaptureFactory()));
+                sourceCaptureFactory: new NestedCancellationSnapshotSourceCaptureFactory())).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
@@ -1582,18 +1535,13 @@ public sealed class TestCommandTests
             "Attribute VB_Name = \"Test_Module\"",
             Encoding.UTF8);
         var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
-        var runner = new FakeWorkbookTestRunner();
+        var runner = new FakeWorkbookTestSession();
         var captureFactory = new PathReportingFailingSnapshotSourceCaptureFactory();
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = new TestCommand(
-            composition.BuildCommand,
-            runner,
-            new TestResultOutputFormatter(),
-            new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 scratchRoot,
-                sourceCaptureFactory: captureFactory));
+                sourceCaptureFactory: captureFactory)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1639,16 +1587,11 @@ public sealed class TestCommandTests
             "Attribute VB_Name = \"Test_Module\"",
             Encoding.UTF8);
         var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var composition = CreateSourceTestComposition(root, runner,
             new CleanupFailingWorkbookGenerationAutomation());
-        var testCommand = new TestCommand(
-            composition.BuildCommand,
-            runner,
-            new TestResultOutputFormatter(),
-            new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot));
+        var testCommand = CreateSourceTestComposition(root, runner, new CleanupFailingWorkbookGenerationAutomation(), snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1685,14 +1628,9 @@ public sealed class TestCommandTests
         Directory.CreateDirectory(Path.GetDirectoryName(brokenSourcePath)!);
         File.WriteAllBytes(brokenSourcePath, [0xff, 0xfe, 0x00, 0x00]);
         var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
-        var runner = new FakeWorkbookTestRunner();
+        var runner = new FakeWorkbookTestSession();
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = new TestCommand(
-            composition.BuildCommand,
-            runner,
-            new TestResultOutputFormatter(),
-            new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot));
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1734,19 +1672,14 @@ public sealed class TestCommandTests
             "Attribute VB_Name = \"Test_Module\"",
             Encoding.UTF8);
         var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
-        var runner = new FakeWorkbookTestRunner();
+        var runner = new FakeWorkbookTestSession();
         var privateVbePath = Path.Combine(
             Path.GetTempPath(),
             "vba-dev-vbe-import",
             Guid.NewGuid().ToString("N"));
         var composition = CreateSourceTestComposition(root, runner,
             new PathReportingFailingWorkbookGenerationAutomation(privateVbePath));
-        var testCommand = new TestCommand(
-            composition.BuildCommand,
-            runner,
-            new TestResultOutputFormatter(),
-            new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot));
+        var testCommand = CreateSourceTestComposition(root, runner, new PathReportingFailingWorkbookGenerationAutomation(privateVbePath), snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1788,7 +1721,7 @@ public sealed class TestCommandTests
             "Attribute VB_Name = \"Test_Module\"",
             Encoding.UTF8);
         var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
-        var runner = new FakeWorkbookTestRunner
+        var runner = new FakeWorkbookTestSession
         {
             Error = new InvalidOperationException(
                 "The test runner failed after cleanup.",
@@ -1796,12 +1729,7 @@ public sealed class TestCommandTests
                     "The owned Excel process could not be verified as released."))
         };
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = new TestCommand(
-            composition.BuildCommand,
-            runner,
-            new TestResultOutputFormatter(),
-            new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot));
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1838,18 +1766,13 @@ public sealed class TestCommandTests
             "Attribute VB_Name = \"Test_Module\"",
             Encoding.UTF8);
         var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
-        var runner = new FakeWorkbookTestRunner
+        var runner = new FakeWorkbookTestSession
         {
             Error = new WorkbookAutomationCleanupException(
                 "The owned Excel process could not be verified as released.")
         };
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = new TestCommand(
-            composition.BuildCommand,
-            runner,
-            new TestResultOutputFormatter(),
-            new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot));
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1885,17 +1808,12 @@ public sealed class TestCommandTests
             "Attribute VB_Name = \"Test_Module\"",
             Encoding.UTF8);
         var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
-        var runner = new FakeWorkbookTestRunner
+        var runner = new FakeWorkbookTestSession
         {
             Error = new Exception("synthetic unexpected runner failure")
         };
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = new TestCommand(
-            composition.BuildCommand,
-            runner,
-            new TestResultOutputFormatter(),
-            new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot));
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1929,16 +1847,11 @@ public sealed class TestCommandTests
             "Attribute VB_Name = \"Test_Module\"",
             Encoding.UTF8);
         var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
-        var runner = new PathReportingFailingWorkbookTestRunner();
+        var runner = new PathReportingFailingWorkbookTestSession();
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = new TestCommand(
-            composition.BuildCommand,
-            runner,
-            new TestResultOutputFormatter(),
-            new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(), scratchRoot,
-                afterWorkspaceCreated: path => runner.ReportedPrivatePath = path));
+                afterWorkspaceCreated: path => runner.ReportedPrivatePath = path)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1980,16 +1893,11 @@ public sealed class TestCommandTests
             "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Fails()\nEnd Sub\n",
             Encoding.UTF8);
         var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
-        var runner = new PathMessageWorkbookTestRunner();
+        var runner = new PathMessageWorkbookTestSession();
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = new TestCommand(
-            composition.BuildCommand,
-            runner,
-            new TestResultOutputFormatter(),
-            new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(), scratchRoot,
-                afterWorkspaceCreated: path => runner.ReportedPrivatePath = path));
+                afterWorkspaceCreated: path => runner.ReportedPrivatePath = path)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -2043,9 +1951,9 @@ public sealed class TestCommandTests
         };
         new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(root, "Book1");
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
 
         var result = application.Run(
         [
@@ -2073,9 +1981,9 @@ public sealed class TestCommandTests
         };
         new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(root, "Book1");
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
 
         var result = application.Run(["test", "--no-build"]);
 
@@ -2098,8 +2006,8 @@ public sealed class TestCommandTests
         new JsonProjectManifestStore().Save(
             root,
             ProjectManifest.CreateDefault("Project", "Book1", root, null));
-        var runner = new FakeWorkbookTestRunner();
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var runner = new FakeWorkbookTestSession();
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
 
         var result = application.Run(["test", "--timeout-seconds", value]);
 
@@ -2115,11 +2023,11 @@ public sealed class TestCommandTests
         var root = temp.CreateDirectory("Project");
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
         CreateWorkbookSource(root, "Book1");
-        var runner = new FakeWorkbookTestRunner(
+        var runner = new FakeWorkbookTestSession(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""),
             new WorkbookTestResultRow("Test_Module", "Test_Fails", "NG", "failed"),
             new WorkbookTestResultRow("Test_Module", "Test_Errors", "ERR", "errored"));
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
 
         var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
 
@@ -2141,8 +2049,8 @@ public sealed class TestCommandTests
         };
         new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(root, "Book1");
-        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var runner = new FakeWorkbookTestSession(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
 
         var result = application.Run(["test", "--no-build"]);
 
@@ -2161,8 +2069,8 @@ public sealed class TestCommandTests
         };
         new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(root, "Book1");
-        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var runner = new FakeWorkbookTestSession(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var application = CommandLineTestFactory.Create(root, workbookTestSession: runner);
 
         var result = application.Run(["test", "--no-build"]);
 
@@ -2226,23 +2134,39 @@ public sealed class TestCommandTests
 
     private static ToolingApplicationComposition CreateSourceTestComposition(
         string root,
-        IWorkbookTestRunner runner,
-        IWorkbookGenerationAutomation? automation = null)
+        WorkbookTestSessionDouble runner,
+        IWorkbookGenerationAutomation? automation = null,
+        SnapshotTestExecutionWorkspaceFactory? snapshotWorkspaceFactory = null)
     {
         automation ??= new FakeWorkbookGenerationAutomation();
-        return ToolingCompositionRoot.CreateApplicationComposition(root,
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(root,
             projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             workbookGenerationAutomation: automation,
-            workbookTestRunner: runner,
             sourceWorkbookAutomation: new SourceWorkbookTestAutomation(automation, runner));
+        return snapshotWorkspaceFactory is null ? composition : composition with
+        {
+            TestCommand = CommandLineTestFactory.CreateSourceTestCommand(new SourceWorkbookTestAutomation(automation, runner), snapshotWorkspaceFactory, automation)
+        };
     }
 }
 
-internal sealed class FakeWorkbookTestRunner : IWorkbookTestRunner
+internal abstract class WorkbookTestSessionDouble : IWorkbookTestExecutionSession
+{
+    protected string BoundWorkbookPath { get; private set; } = string.Empty;
+    protected WorkbookAutomationTimeouts BoundAutomationTimeouts { get; private set; } = WorkbookAutomationTimeouts.Default;
+    internal void BindTo(string path, WorkbookAutomationTimeouts timeouts)
+    {
+        BoundWorkbookPath = path;
+        BoundAutomationTimeouts = timeouts;
+    }
+    public abstract Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
+        WorkbookTestSelector selector, TimeSpan executionTimeout, CancellationToken cancellationToken);
+}
+internal sealed class FakeWorkbookTestSession : WorkbookTestSessionDouble
 {
     private readonly IReadOnlyList<WorkbookTestResultRow> results;
 
-    public FakeWorkbookTestRunner(params WorkbookTestResultRow[] results)
+    public FakeWorkbookTestSession(params WorkbookTestResultRow[] results)
     {
         this.results = results;
     }
@@ -2254,54 +2178,37 @@ internal sealed class FakeWorkbookTestRunner : IWorkbookTestRunner
     public Exception? Error { get; init; }
     public Action? OnRun { get; init; }
 
-    public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
-        string workbookPath,
+    public override Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
         WorkbookTestSelector selector,
         TimeSpan executionTimeout,
-        WorkbookAutomationTimeouts automationTimeouts,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         OnRun?.Invoke();
         ExecutionTimeouts.Add(executionTimeout);
-        AutomationTimeouts.Add(automationTimeouts);
+        AutomationTimeouts.Add(BoundAutomationTimeouts);
         if (Error is not null)
         {
             throw Error;
         }
 
-        Workbooks.Add(workbookPath);
+        Workbooks.Add(BoundWorkbookPath);
         Selectors.Add(selector);
         return Task.FromResult(results);
     }
 }
 
-internal sealed class LegacySynchronousWorkbookTestRunner : IWorkbookTestRunner
-{
-    public List<string> Workbooks { get; } = [];
-
-    public IReadOnlyList<WorkbookTestResultRow> RunTests(
-        string workbookPath,
-        WorkbookTestSelector selector)
-    {
-        Workbooks.Add(workbookPath);
-        return [new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", "")];
-    }
-}
-
-internal sealed class PathReportingFailingWorkbookTestRunner : IWorkbookTestRunner
+internal sealed class PathReportingFailingWorkbookTestSession : WorkbookTestSessionDouble
 {
     public string? WorkbookPath { get; private set; }
     public string? ReportedPrivatePath { get; set; }
 
-    public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
-        string workbookPath,
+    public override Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
         WorkbookTestSelector selector,
         TimeSpan executionTimeout,
-        WorkbookAutomationTimeouts automationTimeouts,
         CancellationToken cancellationToken)
     {
-        WorkbookPath = workbookPath;
+        WorkbookPath = BoundWorkbookPath;
         var privatePath = ReportedPrivatePath
             ?? throw new InvalidOperationException("The private input workspace was not captured by the fixture.");
         var privateUri = new Uri(privatePath).AbsoluteUri;
@@ -2311,19 +2218,17 @@ internal sealed class PathReportingFailingWorkbookTestRunner : IWorkbookTestRunn
     }
 }
 
-internal sealed class PathMessageWorkbookTestRunner : IWorkbookTestRunner
+internal sealed class PathMessageWorkbookTestSession : WorkbookTestSessionDouble
 {
     public string? WorkbookPath { get; private set; }
     public string? ReportedPrivatePath { get; set; }
 
-    public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
-        string workbookPath,
+    public override Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
         WorkbookTestSelector selector,
         TimeSpan executionTimeout,
-        WorkbookAutomationTimeouts automationTimeouts,
         CancellationToken cancellationToken)
     {
-        WorkbookPath = workbookPath;
+        WorkbookPath = BoundWorkbookPath;
         var privatePath = ReportedPrivatePath
             ?? throw new InvalidOperationException("The private input workspace was not captured by the fixture.");
         var privateUri = new Uri(privatePath).AbsoluteUri;

@@ -33,8 +33,7 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
         var originalWorkbook = File.ReadAllBytes(context.TemplateDocumentPath);
         var originalSource = File.ReadAllBytes(sourcePath);
         var initialProcesses = CaptureExcelProcessIds();
-        var pathRunner = new ForbiddenPathRunner();
-        var commandLine = CreatePublicCommandLine(context.ProjectRoot, pathRunner);
+        var commandLine = CreatePublicCommandLine(context.ProjectRoot);
 
         await ExcelIntegrationScenario.RunAsync(async () =>
         {
@@ -42,7 +41,6 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
                 ["test", "--interactive", "false", "--format", "ndjson"], cancellation.Token);
 
             AssertPassedIdentity(result, "imported", context.TemplateDocumentPath, visible: null);
-            Assert.Equal(0, pathRunner.Calls);
             Assert.Equal(originalWorkbook, File.ReadAllBytes(context.TemplateDocumentPath));
             Assert.Equal(originalSource, File.ReadAllBytes(sourcePath));
             Assert.Null(context.BinDocumentPath);
@@ -67,8 +65,7 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
         var originalWorkbook = File.ReadAllBytes(context.TemplateDocumentPath);
         var originalSource = File.ReadAllBytes(sourcePath);
         var initialProcesses = CaptureExcelProcessIds();
-        var pathRunner = new ForbiddenPathRunner();
-        var commandLine = CreatePublicCommandLine(context.ProjectRoot, pathRunner);
+        var commandLine = CreatePublicCommandLine(context.ProjectRoot);
 
         await ExcelIntegrationScenario.RunAsync(async () =>
         {
@@ -76,7 +73,6 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
                 ["test", "--interactive", "false", "--format", "ndjson"], cancellation.Token);
 
             AssertPassedIdentity(result, "explicit-save", context.TemplateDocumentPath, visible: null);
-            Assert.Equal(0, pathRunner.Calls);
             Assert.False(originalWorkbook.AsSpan().SequenceEqual(File.ReadAllBytes(context.TemplateDocumentPath)));
             Assert.Equal(originalSource, File.ReadAllBytes(sourcePath));
             Assert.Null(context.BinDocumentPath);
@@ -139,8 +135,7 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
             var commandProcesses = CaptureExcelProcessIds();
             var sourcePath = WriteExternalProbe(context, "imported");
             var externalBytes = File.ReadAllBytes(sourcePath);
-            var pathRunner = new ForbiddenPathRunner();
-            var commandLine = CreatePublicCommandLine(context.ProjectRoot, pathRunner);
+            var commandLine = CreatePublicCommandLine(context.ProjectRoot);
 
             var declined = await InvokeAsync(commandLine,
                 ["test", "--format", "ndjson"], "n\n", cancellation.Token);
@@ -166,7 +161,6 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
             other.AssertRetained(otherSettings, "unrelated-dirty");
             Assert.Equal(0, other.RunCount);
             Assert.True(commandProcesses.SetEquals(CaptureExcelProcessIds()));
-            Assert.Equal(0, pathRunner.Calls);
             Assert.Equal(originalWorkbook, ReadOpenWorkbookBytes(context.TemplateDocumentPath));
             Assert.Equal(originalOther, ReadOpenWorkbookBytes(otherPath));
             Assert.Equal(externalBytes, File.ReadAllBytes(sourcePath));
@@ -205,8 +199,7 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
             var sourcePath = Path.Combine(context.DocumentSourceSetPath, "NativeUnit.bas");
             File.WriteAllText(sourcePath, "this is invalid external VBA", new UTF8Encoding(false));
             var externalBytes = File.ReadAllBytes(sourcePath);
-            var pathRunner = new ForbiddenPathRunner();
-            var commandLine = CreatePublicCommandLine(context.ProjectRoot, pathRunner);
+            var commandLine = CreatePublicCommandLine(context.ProjectRoot);
 
             var result = await InvokeAsync(commandLine,
                 ["test", "--no-build", "--format", "ndjson"], "y\n", cancellation.Token);
@@ -219,7 +212,6 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
             Assert.Equal(originalCode, source.ReadModuleCode());
             Assert.Equal(1, source.RunCount);
             source.AssertRetained(settings, "live-user-cell", "UNIT_TEST_SHEET");
-            Assert.Equal(0, pathRunner.Calls);
             Assert.Equal(originalWorkbook, ReadOpenWorkbookBytes(context.TemplateDocumentPath));
             Assert.Equal(externalBytes, File.ReadAllBytes(sourcePath));
             Assert.Null(context.BinDocumentPath);
@@ -255,8 +247,7 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
         var sourcePath = Path.Combine(context.DocumentSourceSetPath, "NativeUnit.bas");
         File.WriteAllText(sourcePath, "this is invalid external VBA", new UTF8Encoding(false));
         var externalBytes = File.ReadAllBytes(sourcePath);
-        var pathRunner = new ForbiddenPathRunner();
-        var commandLine = CreatePublicCommandLine(context.ProjectRoot, pathRunner);
+        var commandLine = CreatePublicCommandLine(context.ProjectRoot);
 
         await ExcelIntegrationScenario.RunAsync(async () =>
         {
@@ -267,7 +258,6 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
             Assert.DoesNotContain("[y/N]", result.StandardError, StringComparison.Ordinal);
             using var finished = ReadFinished(result);
             Assert.False(finished.RootElement.TryGetProperty("location", out _));
-            Assert.Equal(0, pathRunner.Calls);
             Assert.Equal(originalWorkbook, File.ReadAllBytes(context.TemplateDocumentPath));
             Assert.Equal(externalBytes, File.ReadAllBytes(sourcePath));
             Assert.Null(context.BinDocumentPath);
@@ -297,8 +287,7 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
             source.SetHeldMarker("original-user-cell");
             var settings = source.CaptureSettings();
             WriteExternalProbe(context, "failed-import", outcome: "NG");
-            var pathRunner = new ForbiddenPathRunner();
-            var commandLine = CreatePublicCommandLine(context.ProjectRoot, pathRunner);
+            var commandLine = CreatePublicCommandLine(context.ProjectRoot);
 
             var result = await InvokeAsync(commandLine,
                 ["test", "--format", "ndjson"], "y\n", cancellation.Token);
@@ -315,7 +304,6 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
             Assert.Contains("\"failed-import|\"", source.ReadModuleCode(), StringComparison.Ordinal);
             Assert.DoesNotContain("\"saved|\"", source.ReadModuleCode(), StringComparison.Ordinal);
             source.AssertRetained(settings, "original-user-cell", "UNIT_TEST_SHEET");
-            Assert.Equal(0, pathRunner.Calls);
             Assert.Equal(originalWorkbook, ReadOpenWorkbookBytes(context.TemplateDocumentPath));
             Assert.Null(context.BinDocumentPath);
             Assert.False(Directory.Exists(Path.Combine(context.ProjectRoot, "bin")));
@@ -337,10 +325,9 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
         return context;
     }
 
-    private static VbaDevCommandLine CreatePublicCommandLine(string root, ForbiddenPathRunner runner)
+    private static VbaDevCommandLine CreatePublicCommandLine(string root)
         => VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
             environmentDiagnosticPort: new FakeEnvironmentDiagnosticPort(),
-            workbookTestRunner: runner,
             persistSourceAnalysisFailureEvidence: false));
 
     private static async Task<CommandResult> InvokeAsync(VbaDevCommandLine commandLine,
@@ -496,19 +483,6 @@ public sealed class SourceWorkbookTestNativeIntegrationTests(ITestOutputHelper o
             {{(saveWorkbook ? "    ThisWorkbook.Save" : string.Empty)}}
             End Sub
             """.ReplaceLineEndings("\r\n") + "\r\n";
-
-    private sealed class ForbiddenPathRunner : IWorkbookTestRunner
-    {
-        internal int Calls { get; private set; }
-
-        public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(string workbookPath,
-            WorkbookTestSelector selector, TimeSpan executionTimeout, WorkbookAutomationTimeouts automationTimeouts,
-            CancellationToken cancellationToken)
-        {
-            Calls++;
-            throw new InvalidOperationException("The legacy path runner must never reopen a source Test workbook.");
-        }
-    }
 
     private sealed record ExcelSettings(bool Visible, bool DisplayAlerts, bool EnableEvents,
         int AutomationSecurity, int Calculation, int WindowState, long WindowHandle, string ActiveWorkbookPath,

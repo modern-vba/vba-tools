@@ -53,10 +53,10 @@ public sealed class SnapshotAndTestSemanticConformanceTests
             .ToDictionary(path => path, File.ReadAllBytes, StringComparer.Ordinal);
         var automation = new FakeWorkbookGenerationAutomation();
         var testInvocations = 0;
-        var runner = new FakeWorkbookTestRunner { OnRun = () => testInvocations++ };
+        var runner = new FakeWorkbookTestSession { OnRun = () => testInvocations++ };
         var application = CommandLineTestFactory.Create(project,
             workbookGenerationAutomation: automation,
-            workbookTestRunner: runner,
+            workbookTestSession: runner,
             projectSemanticInputProvider: new LiteralSemanticInputProvider(ReadInputs(corpus)),
             sourceWorkbookAutomation: new SourceWorkbookTestAutomation(automation, runner));
         string[] arguments = route switch

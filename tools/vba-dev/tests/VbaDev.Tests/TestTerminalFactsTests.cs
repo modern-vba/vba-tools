@@ -24,7 +24,7 @@ public sealed class TestTerminalFactsTests
             new(WorkbookAutomationStageKind.TestExecution, "Test_Module"),
             new System.Runtime.InteropServices.COMException("Test invocation failed."));
         var runnerReached = false;
-        var runner = new FakeWorkbookTestRunner
+        var runner = new FakeWorkbookTestSession
         {
             OnRun = () => runnerReached = true,
             Error = failure
@@ -71,7 +71,7 @@ public sealed class TestTerminalFactsTests
             ? WorkbookAutomationStageKind.TestExecution : WorkbookAutomationStageKind.ModuleImport, "Test_Module");
         var error = CreateFailure(category, stage, cancellation.Token, cancelled);
         var runnerReached = false;
-        var runner = new FakeWorkbookTestRunner
+        var runner = new FakeWorkbookTestSession
         {
             OnRun = () => { runnerReached = true; if (cancelled) cancellation.Cancel(); },
             Error = error
@@ -132,7 +132,7 @@ public sealed class TestTerminalFactsTests
             "wrapped-defect" => new InvalidOperationException("Outer", new NullReferenceException("Inner")),
             _ => new OperationCanceledException("Unrelated cancellation")
         };
-        var fixture = CreateFixture(temp, new FakeWorkbookTestRunner
+        var fixture = CreateFixture(temp, new FakeWorkbookTestSession
         {
             OnRun = () => { if (scenario == "caller-cancellation") cancellation.Cancel(); },
             Error = error
@@ -168,7 +168,7 @@ public sealed class TestTerminalFactsTests
     {
         using var temp = TempDirectory.Create();
         using var cancellation = new CancellationTokenSource();
-        var runner = new FakeWorkbookTestRunner(status == "empty" ? []
+        var runner = new FakeWorkbookTestSession(status == "empty" ? []
             : [new WorkbookTestResultRow("Test_Module", "Test_Passes", status, "result message")])
         {
             OnRun = () => { if (cancelled) cancellation.Cancel(); }
@@ -204,7 +204,7 @@ public sealed class TestTerminalFactsTests
         using var temp = TempDirectory.Create();
         using var cancellation = new CancellationTokenSource();
         var cleanup = new RetainingSnapshotWorkspaceObserver();
-        var runner = new FakeWorkbookTestRunner();
+        var runner = new FakeWorkbookTestSession();
         var fixture = CreateFixture(temp, runner, sourceCapture: new FailingTestSourceCapture(token =>
         {
             if (failure == "cancel")
@@ -238,7 +238,7 @@ public sealed class TestTerminalFactsTests
         using var cancellation = new CancellationTokenSource();
         var failures = new List<Exception> { new OperationCanceledException(), new NullReferenceException("Defect") };
         if (unproved) failures.Add(new WorkbookAutomationCleanupException("Unproved release"));
-        var fixture = CreateFixture(temp, new FakeWorkbookTestRunner
+        var fixture = CreateFixture(temp, new FakeWorkbookTestSession
         {
             OnRun = cancellation.Cancel,
             Error = new AggregateException(failures)
@@ -295,7 +295,7 @@ public sealed class TestTerminalFactsTests
     {
         using var temp = TempDirectory.Create();
         using var cancellation = new CancellationTokenSource();
-        var runner = new FakeWorkbookTestRunner
+        var runner = new FakeWorkbookTestSession
         {
             OnRun = cancellation.Cancel,
             Error = new WorkbookAutomationCanceledException(
@@ -320,7 +320,7 @@ public sealed class TestTerminalFactsTests
         Assert.Equal("previous-bin", File.ReadAllText(fixture.LegacyBinPath, Encoding.UTF8));
     }
 
-    private sealed record Fixture(VbaDevCommandLine Application, TestCommand Command,
+    private sealed record Fixture(VbaDevCommandLine Application, SourceWorkbookTestCommand Command,
         ResolvedProjectContext Context, string SnapshotPath, string ScratchRoot, string LegacyBinPath);
 
     private static Task<CommandResult> RunCommandAsync(Fixture fixture, string mode, CancellationToken token)
@@ -336,7 +336,7 @@ public sealed class TestTerminalFactsTests
             _ => ["test", "--format", "ndjson"]
         };
 
-    private static Fixture CreateFixture(TempDirectory temp, FakeWorkbookTestRunner runner,
+    private static Fixture CreateFixture(TempDirectory temp, FakeWorkbookTestSession runner,
         IWorkbookGenerationAutomation? generation = null,
         ISnapshotSourceCaptureFactory? sourceCapture = null,
         RetainingSnapshotWorkspaceObserver? cleanupFileSystem = null)
@@ -358,13 +358,10 @@ public sealed class TestTerminalFactsTests
         var selectedGeneration = generation ?? new FakeWorkbookGenerationAutomation();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(root,
             workbookGenerationAutomation: selectedGeneration,
-            workbookTestRunner: runner,
             projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             sourceWorkbookAutomation: new SourceWorkbookTestAutomation(selectedGeneration, runner));
-        var command = new TestCommand(composition.BuildCommand, runner,
-            new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratch,
-                sourceCaptureFactory: sourceCapture, afterWorkspaceCreated: cleanupFileSystem is null ? null : cleanupFileSystem.AddForeignContent));
+        var command = CommandLineTestFactory.CreateSourceTestCommand(new SourceWorkbookTestAutomation(selectedGeneration, runner), new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratch,
+                sourceCaptureFactory: sourceCapture, afterWorkspaceCreated: cleanupFileSystem is null ? null : cleanupFileSystem.AddForeignContent), selectedGeneration);
         var context = composition.ProjectContextResolver.Resolve(new ProjectResolutionRequest(root, null, root));
         return new(VbaDevCommandLine.Create(composition with { TestCommand = command }), command, context, snapshot, scratch, legacyBinPath);
     }

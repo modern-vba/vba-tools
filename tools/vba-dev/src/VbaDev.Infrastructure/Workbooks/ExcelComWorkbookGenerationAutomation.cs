@@ -1,4 +1,3 @@
-using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
 
@@ -41,22 +40,6 @@ public sealed class ExcelComWorkbookGenerationAutomation : IWorkbookGenerationAu
             workbookPath,
             timeouts,
             operation,
-            cancellationToken).ConfigureAwait(false);
-        return CompleteGeneration(outcome, cancellationToken);
-    }
-
-    internal async Task<IReadOnlyList<WorkbookTestResultRow>> RunWorkbookTestsAsync(
-        string workbookPath,
-        WorkbookAutomationTimeouts timeouts,
-        TimeSpan executionTimeout,
-        WorkbookTestSelector selector,
-        CancellationToken cancellationToken)
-    {
-        var outcome = await generationRuntime.RunWorkbookTestsAsync(
-            workbookPath,
-            timeouts,
-            executionTimeout,
-            selector,
             cancellationToken).ConfigureAwait(false);
         return CompleteGeneration(outcome, cancellationToken);
     }

@@ -30,6 +30,20 @@ Ordinary Build fixtures exercise the required source implementation, including
 exact cleanup of flat import files while leaving their shared parent unowned.
 Export behavior and production helpers are outside this decision.
 
+## Direct Test composition
+
+Issue #481 supplies SourceWorkbookTestCommand directly to the CLI composition.
+Remove the forwarding TestCommand, Build-owned Test lookup, unused runner and
+formatter/locator injections, snapshot-factory cloning, and the path-based test
+runner plus its generation-only private plumbing. Construct the snapshot-input
+factory once with the real Test Module. Synchronous entry and private-path
+sanitization live inside that Module.
+
+Saved-input, snapshot-input and no-build Test retain the exact selected source
+session. Prepared navigation comes only from the executed admission; no-build
+invents no captured source or locations. Preserve bound macro execution, result
+reading, COM release, completed rows, cancellation and cleanup semantics through
+the real source-session Interface. This changes no CLI schema or feature version.
 ## Consequences
 
 Dependency construction cannot revive obsolete ordinary bin generation.

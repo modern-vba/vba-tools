@@ -52,9 +52,7 @@ public sealed class SourceWorkbookTestCommandTests
         var composition = ToolingCompositionRoot.CreateApplicationComposition(fixture.Root,
             sourceWorkbookAutomation: fixture.Automation,
             projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty);
-        var command = new TestCommand(composition.BuildCommand, new FakeWorkbookTestRunner(),
-            new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+        var command = CommandLineTestFactory.CreateSourceTestCommand(fixture.Automation, new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(), scratch));
         var context = new ProjectContextResolver(new JsonProjectManifestStore())
             .Resolve(new ProjectResolutionRequest(fixture.Root, null, fixture.Root));
@@ -170,11 +168,7 @@ public sealed class SourceWorkbookTestCommandTests
             sourceWorkbookAutomation: fixture.Automation,
             workbookGenerationAutomation: fixture.Generation,
             projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty);
-        var legacyRunner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Local", "Test_Passes", "OK", ""));
-        var command = new TestCommand(composition.BuildCommand, legacyRunner,
-            new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
-            new VbaDev.Infrastructure.FileSystem.FileSystemPathIdentityResolver(),
-            new VbaDev.Infrastructure.FileSystem.WindowsExactFileSystemObjectOwnershipFactory());
+        var command = composition.TestCommand;
 
         var result = await command.RunAsync(context,
             new TestCommandRequest("text", true, new()), CancellationToken.None);
@@ -182,7 +176,6 @@ public sealed class SourceWorkbookTestCommandTests
         Assert.Equal(0, result.ExitCode);
         Assert.Equal([fixture.WorkbookPath], fixture.Automation.OpenedPaths);
         Assert.Equal(["import:Local.bas", "test"], fixture.Automation.Session.Events);
-        Assert.Empty(legacyRunner.Workbooks);
         Assert.Empty(fixture.Generation.OpenedWorkbooks);
         Assert.False(Directory.Exists(Path.Combine(fixture.Root, "bin")));
     }
@@ -330,13 +323,10 @@ public sealed class SourceWorkbookTestCommandTests
         File.WriteAllBytes(binWorkbook, binBytes);
         var sourceAutomation = new RecordingSourceWorkbookAutomation();
         var generation = new FakeWorkbookGenerationAutomation();
-        var legacyPathRunner = new FakeWorkbookTestRunner(
-            new WorkbookTestResultRow("Local", "Test_Passes", "OK", ""));
         var application = VbaDevCommandLine.Create(
             ToolingCompositionRoot.CreateApplicationComposition(root,
                 sourceWorkbookAutomation: sourceAutomation,
                 workbookGenerationAutomation: generation,
-                workbookTestRunner: legacyPathRunner,
                 projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty));
 
         var result = await application.RunAsync(["test"]);
@@ -344,7 +334,6 @@ public sealed class SourceWorkbookTestCommandTests
         Assert.Equal(0, result.ExitCode);
         Assert.Equal([sourceWorkbook], sourceAutomation.OpenedPaths);
         Assert.Empty(generation.OpenedWorkbooks);
-        Assert.Empty(legacyPathRunner.Workbooks);
         Assert.Equal(["import:Local.bas", "test"], sourceAutomation.Session.Events);
         Assert.Equal(sourceBytes, File.ReadAllBytes(sourceWorkbook));
         Assert.Equal(binBytes, File.ReadAllBytes(binWorkbook));

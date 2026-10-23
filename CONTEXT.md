@@ -872,6 +872,13 @@ Caller-owned snapshot cleanup remains a separate post-command-close obligation.
 _Avoid_: BuildSourceSnapshot, caller-selected build output, persistent bin directory
 
 **SourceWorkbookTestCommand**:
+The CLI composition supplies this Module directly, with its snapshot-input
+factory fixed once at construction. Build exposes no Test lookup, forwarding
+Test Module, path runner, unused runner/formatter/locator injection, or factory
+clone. Synchronous entry and temporary-path sanitization belong to this Module.
+Bound source sessions own macro execution and result reading; no Test mode
+reopens the workbook through a path runner or replays VBA. Static COM result
+reading and release helpers remain shared with the production sessions.
 The VbaDev-owned operation that prepares and runs tests in the exact manifest
 `templatePath`, conventionally `src/<document>/<document>.xlsm`, without
 tool-initiated Save or bin/output generation. CLI and Command Palette import
@@ -893,7 +900,7 @@ are captured for attempted pre-Run recovery on preparation failure/cancellation,
 without Save; incomplete recovery is reported and retained. Once VBA may have
 started, no rollback/replay claim is made. No-build runs live VBE code when open
 or saved workbook code when closed and has no external-source navigation.
-`test.sourceWorkbook: 1.0` distinguishes these semantics while Test NDJSON `1.2`
+`test.sourceWorkbook: 2.0` distinguishes these semantics while Test NDJSON `1.2`
 and snapshot features `2.0` remain unchanged. Test snapshot CLI projection has
 seven features; Debug retains its separate exact five-entry dependency map.
 _Avoid_: bin test workbook, disposable execution copy, implicit Build Save, no-save-means-no-mutation

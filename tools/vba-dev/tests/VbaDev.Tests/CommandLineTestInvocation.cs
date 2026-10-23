@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using VbaDev.App.Cli;
 using VbaDev.App.Build;
 using VbaDev.App.Diagnostics;
@@ -42,6 +43,20 @@ internal static class CommandLineTestInvocation
 
 internal static class CommandLineTestFactory
 {
+    internal static SourceWorkbookTestCommand CreateSourceTestCommand(
+        ISourceWorkbookAutomation automation, SnapshotTestExecutionWorkspaceFactory factory,
+        IWorkbookGenerationAutomation? generation = null)
+    {
+        var ownership = new WindowsExactFileSystemObjectOwnershipFactory();
+        var normalizer = new WorkbookReferenceNormalizer(
+            new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver()));
+        var materializer = new WorkbookMaterializer(ownership,
+            new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get), generation ?? new FakeWorkbookGenerationAutomation(), normalizer,
+            new WorkbookOutputTransactionFactory(ownership), new VbeImportSourceSetFactory(ownership),
+            semanticInputProvider: FakeProjectSemanticInputProvider.Empty);
+        return new(materializer, automation, normalizer, ownership, factory);
+    }
+
     public static VbaDevCommandLine Create()
         => Create(Directory.GetCurrentDirectory());
 
@@ -50,7 +65,7 @@ internal static class CommandLineTestFactory
         IEnvironmentDiagnosticPort? environmentDiagnosticPort = null,
         IInitialWorkbookCreator? initialWorkbookCreator = null,
         IWorkbookGenerationAutomation? workbookGenerationAutomation = null,
-        IWorkbookTestRunner? workbookTestRunner = null,
+        WorkbookTestSessionDouble? workbookTestSession = null,
         IWorkbookModuleExporter? workbookModuleExporter = null,
         IVbaProjectReferenceResolver? vbaProjectReferenceResolver = null,
         IProjectManifestStore? projectManifestStore = null,
@@ -69,7 +84,6 @@ internal static class CommandLineTestFactory
             environmentDiagnosticPort,
             initialWorkbookCreator,
             workbookGenerationAutomation,
-            workbookTestRunner,
             workbookModuleExporter,
             vbaProjectReferenceResolver,
             projectManifestStore,
@@ -83,9 +97,9 @@ internal static class CommandLineTestFactory
             projectSemanticInputProvider: projectSemanticInputProvider ?? new FakeProjectSemanticInputProvider(vbaProjectReferenceResolver),
             persistSourceAnalysisFailureEvidence: false,
             sourceWorkbookAutomation: sourceWorkbookAutomation ??
-                (workbookGenerationAutomation is null && workbookTestRunner is null ? null :
+                (workbookGenerationAutomation is null && workbookTestSession is null ? null :
                     new SourceWorkbookTestAutomation(workbookGenerationAutomation
-                        ?? new FakeWorkbookGenerationAutomation(), workbookTestRunner)));
+                        ?? new FakeWorkbookGenerationAutomation(), workbookTestSession)));
         return generatingExecutablePath is null
             ? VbaDevCommandLine.Create(composition)
             : VbaDevCommandLine.Create(composition, generatingExecutablePath);
@@ -95,7 +109,7 @@ internal static class CommandLineTestFactory
 /// <summary>Adapts the external Excel test double without restoring legacy Build routing.</summary>
 internal sealed class SourceWorkbookTestAutomation(
     IWorkbookGenerationAutomation automation,
-    IWorkbookTestRunner? testRunner = null) : ISourceWorkbookAutomation
+    WorkbookTestSessionDouble? testRunner = null) : ISourceWorkbookAutomation
 {
     public Task<TResult> RunAsync<TResult>(
         string workbookPath,
@@ -115,7 +129,7 @@ internal sealed class SourceWorkbookTestAutomation(
         IWorkbookGenerationSession session,
         string workbookPath,
         WorkbookAutomationTimeouts timeouts,
-        IWorkbookTestRunner? testRunner) : ISourceWorkbookSession, IWorkbookTestExecutionSession
+        WorkbookTestSessionDouble? testRunner) : ISourceWorkbookSession, IWorkbookTestExecutionSession
     {
         private readonly HashSet<string> removed = new(StringComparer.OrdinalIgnoreCase);
         private readonly List<WorkbookModule> imported = [];
@@ -126,11 +140,16 @@ internal sealed class SourceWorkbookTestAutomation(
 
         public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
             WorkbookTestSelector selector, TimeSpan executionTimeout, CancellationToken cancellationToken)
-            => testRunner is not null
-                ? testRunner.RunTestsAsync(workbookPath, selector, executionTimeout, timeouts, cancellationToken)
-                : session is IWorkbookTestExecutionSession tests
-                    ? tests.RunTestsAsync(selector, executionTimeout, cancellationToken)
-                    : throw new NotSupportedException("The test double lacks a bound test execution session.");
+        {
+            if (testRunner is not null)
+            {
+                testRunner.BindTo(workbookPath, timeouts);
+                return testRunner.RunTestsAsync(selector, executionTimeout, cancellationToken);
+            }
+            return session is IWorkbookTestExecutionSession tests
+                ? tests.RunTestsAsync(selector, executionTimeout, cancellationToken)
+                : throw new NotSupportedException("The test double lacks a bound test execution session.");
+        }
 
         public Task<bool> IsSavedAsync(CancellationToken cancellationToken)
         {

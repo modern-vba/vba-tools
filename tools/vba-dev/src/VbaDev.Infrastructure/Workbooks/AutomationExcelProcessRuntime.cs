@@ -393,23 +393,6 @@ internal sealed class AutomationExcelProcessRuntime
                 terminationController.DescribeIsolationEvidence()));
     }
 
-    internal Task<AutomationExcelProcessOutcome<IReadOnlyList<WorkbookTestResultRow>>> RunWorkbookTestsAsync(
-        string workbookPath,
-        WorkbookAutomationTimeouts timeouts,
-        TimeSpan executionTimeout,
-        WorkbookTestSelector selector,
-        CancellationToken cancellationToken)
-        => RunCoreAsync(
-            workbookPath,
-            timeouts,
-            (session, operationCancellationToken) =>
-                ((BoundedWorkbookGenerationSession)session).RunTestsAsync(
-                    selector,
-                    executionTimeout,
-                    operationCancellationToken),
-            enableAutomationSecurityLow: true,
-            cancellationToken);
-
     private static async Task<Exception?> CleanupAsync(
         IStaComDispatcher dispatcher,
         OwnedExcelTerminationController terminationController,

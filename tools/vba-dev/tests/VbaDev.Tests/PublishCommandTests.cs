@@ -25,12 +25,11 @@ public sealed class PublishCommandTests
         var automation = new FakeWorkbookGenerationAutomation(new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule));
         var standardLibrary = new WorkbookReference("Visual Basic For Applications", false, "VBA");
         automation.References.Add(standardLibrary);
-        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Fails", "NG", "should not run"));
+        var runner = new FakeWorkbookTestSession(new WorkbookTestResultRow("Test_Module", "Test_Fails", "NG", "should not run"));
         var application = VbaDevCommandLine.Create(
             ToolingCompositionRoot.CreateApplicationComposition(
                 root,
                 workbookGenerationAutomation: automation,
-                workbookTestRunner: runner,
                 projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty));
 
         var result = await application.RunAsync(

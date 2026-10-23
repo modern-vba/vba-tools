@@ -38,10 +38,10 @@ public sealed class TestBuildSourceDiagnosticsTests
         if (snapshot) File.WriteAllText(Path.Combine(saved, "Caller.bas"), validCaller, Encoding.UTF8);
         var bytes = Directory.GetFiles(temp.Path, "*", SearchOption.AllDirectories).ToDictionary(path => path, File.ReadAllBytes);
         var macros = 0;
-        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""))
+        var runner = new FakeWorkbookTestSession(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""))
         { OnRun = () => macros++ };
         var automation = new FakeWorkbookGenerationAutomation();
-        var app = CommandLineTestFactory.Create(project, workbookTestRunner: runner, workbookGenerationAutomation: automation,
+        var app = CommandLineTestFactory.Create(project, workbookTestSession: runner, workbookGenerationAutomation: automation,
             projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty);
         string[] args = snapshot
             ? ["test", "--source-snapshot", source, "--module", "Test_Module", "--procedure", "Test_Passes", "--format", "ndjson"]
@@ -105,9 +105,9 @@ public sealed class TestBuildSourceDiagnosticsTests
         foreach (var name in new[] { "One", "Two" })
             File.WriteAllText(Path.Combine(source, name + ".bas"),
                 $"Attribute VB_Name = \"{name}\"\nPublic Sub {name}(ByVal name As String, ByVal name As String)\nEnd Sub\n", Encoding.UTF8);
-        var runner = new FakeWorkbookTestRunner();
+        var runner = new FakeWorkbookTestSession();
         var automation = new FakeWorkbookGenerationAutomation();
-        var app = CommandLineTestFactory.Create(project, workbookTestRunner: runner, workbookGenerationAutomation: automation,
+        var app = CommandLineTestFactory.Create(project, workbookTestSession: runner, workbookGenerationAutomation: automation,
             projectSemanticInputProvider: new MissingRequiredMetadata());
         var bytes = Directory.GetFiles(temp.Path, "*", SearchOption.AllDirectories).ToDictionary(path => path, File.ReadAllBytes);
 

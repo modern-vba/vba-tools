@@ -134,17 +134,12 @@ public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
         await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
 
         await using var callerDesktop = CallerDesktopSampler.Start();
-        var automation = new ExcelComWorkbookGenerationAutomation();
+        var automation = new ExcelComClosedSourceWorkbookAutomation(enableAutomationSecurityLow: true);
         var clock = Stopwatch.StartNew();
-        var execution = automation.RunWorkbookTestsAsync(
-            workbookPath,
-            WorkbookAutomationTimeouts.Default with
-            {
-                ProcessCleanup = TimeSpan.Zero
-            },
-            TimeSpan.FromSeconds(2),
-            new WorkbookTestSelector(),
-            CancellationToken.None);
+        var execution = automation.RunAsync(workbookPath,
+            WorkbookAutomationTimeouts.Default with { ProcessCleanup = TimeSpan.Zero },
+            (session, token) => ((IWorkbookTestExecutionSession)session).RunTestsAsync(
+                new WorkbookTestSelector(), TimeSpan.FromSeconds(2), token), CancellationToken.None);
         var ownedProcessId = await WaitForOwnedExcelProcessAsync(
             initialProcesses,
             execution,

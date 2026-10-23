@@ -900,7 +900,7 @@ public sealed class CliSurfaceTests
         using var temp = TempDirectory.Create();
         var initialWorkbookCreator = new FakeInitialWorkbookCreator();
         var workbookAutomation = new FakeWorkbookGenerationAutomation();
-        var workbookTestRunner = new FakeWorkbookTestRunner();
+        var workbookTestSession = new FakeWorkbookTestSession();
         var workbookExporter = new FakeWorkbookModuleExporter();
         var referenceResolver = new CountingReferenceResolver();
         var hostEventAutomation = new CountingHostEventCatalogAutomation();
@@ -909,7 +909,7 @@ public sealed class CliSurfaceTests
             environmentDiagnosticPort: new ThrowingEnvironmentDiagnosticPort(),
             initialWorkbookCreator: initialWorkbookCreator,
             workbookGenerationAutomation: workbookAutomation,
-            workbookTestRunner: workbookTestRunner,
+            workbookTestSession: workbookTestSession,
             workbookModuleExporter: workbookExporter,
             vbaProjectReferenceResolver: referenceResolver,
             projectManifestStore: new ThrowingProjectManifestStore(),
@@ -953,7 +953,7 @@ public sealed class CliSurfaceTests
         Assert.Equal(initialEntries, Directory.GetFileSystemEntries(temp.Path));
         Assert.Empty(initialWorkbookCreator.CreatedPaths);
         Assert.Empty(workbookAutomation.OpenedWorkbooks);
-        Assert.Empty(workbookTestRunner.Workbooks);
+        Assert.Empty(workbookTestSession.Workbooks);
         Assert.Empty(workbookExporter.Calls);
         Assert.Equal(0, referenceResolver.ResolveAvailableCount);
         Assert.Equal(0, referenceResolver.ResolveCount);
@@ -969,7 +969,7 @@ public sealed class CliSurfaceTests
         using var standardError = new StringWriter();
         var initialWorkbookCreator = new FakeInitialWorkbookCreator();
         var workbookAutomation = new FakeWorkbookGenerationAutomation();
-        var workbookTestRunner = new FakeWorkbookTestRunner();
+        var workbookTestSession = new FakeWorkbookTestSession();
         var workbookExporter = new FakeWorkbookModuleExporter();
         var referenceResolver = new CountingReferenceResolver();
         var hostEventAutomation = new CountingHostEventCatalogAutomation();
@@ -978,7 +978,7 @@ public sealed class CliSurfaceTests
             environmentDiagnosticPort: new ThrowingEnvironmentDiagnosticPort(),
             initialWorkbookCreator: initialWorkbookCreator,
             workbookGenerationAutomation: workbookAutomation,
-            workbookTestRunner: workbookTestRunner,
+            workbookTestSession: workbookTestSession,
             workbookModuleExporter: workbookExporter,
             vbaProjectReferenceResolver: referenceResolver,
             projectManifestStore: new ThrowingProjectManifestStore(),
@@ -1008,7 +1008,7 @@ public sealed class CliSurfaceTests
         Assert.Equal(initialEntries, Directory.GetFileSystemEntries(temp.Path));
         Assert.Empty(initialWorkbookCreator.CreatedPaths);
         Assert.Empty(workbookAutomation.OpenedWorkbooks);
-        Assert.Empty(workbookTestRunner.Workbooks);
+        Assert.Empty(workbookTestSession.Workbooks);
         Assert.Empty(workbookExporter.Calls);
         Assert.Equal(0, referenceResolver.ResolveAvailableCount);
         Assert.Equal(0, referenceResolver.ResolveCount);
