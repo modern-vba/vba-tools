@@ -546,7 +546,7 @@ test('Run Tests Without Build confirms current-workbook execution without applyi
   let childArgs: readonly string[] = [];
   const capabilities = { toolVersion: 'test', contractVersion: '1.0',
     commands: { test: { outputSchemaVersion: '1.2' } }, featureVersions: {
-      'test.sourceWorkbook': '1.0', 'invocation.stdinCancellation': '1.0',
+      'test.sourceWorkbook': '2.0', 'invocation.stdinCancellation': '1.0',
       'invocation.stdinWorkbookConfirmation': '1.0'
     } };
   const explorer = createWorkbookBackedTestExplorer({
@@ -2470,7 +2470,7 @@ function createExplorer(
           contractVersion: '1.0',
           featureVersions: {
             'test.sourceSnapshot': '2.0',
-            'test.sourceWorkbook': '1.0',
+            'test.sourceWorkbook': '2.0',
             'invocation.stdinCancellation': '1.0',
             'invocation.stdinWorkbookConfirmation': '1.0',
             'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0',
@@ -2493,7 +2493,7 @@ function createExplorer(
       contractVersion: '1.0',
       featureVersions: {
         'test.sourceSnapshot': '2.0',
-        'test.sourceWorkbook': '1.0',
+        'test.sourceWorkbook': '2.0',
         'invocation.stdinCancellation': '1.0',
         'invocation.stdinWorkbookConfirmation': '1.0',
         'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0',
@@ -2542,7 +2542,7 @@ function stdinCancellationVbaDevResolver() {
         featureVersions: {
           'invocation.stdinCancellation': '1.0',
           'invocation.stdinWorkbookConfirmation': '1.0',
-          'test.sourceWorkbook': '1.0'
+          'test.sourceWorkbook': '2.0'
         },
         commands: {
           test: { outputSchemaVersion: '1.2' }

@@ -77,7 +77,7 @@ public sealed class SourceWorkbookTestPrivatePathTests
             Assert.NotNull(privateMirror);
             Assert.NotNull(privateMirrorUri);
             var warningIndex = result.StandardError.IndexOf(
-                "Warning: Test staging cleanup failed; inspect retained paths:", StringComparison.Ordinal);
+                "Warning: VBE import staging cleanup failed", StringComparison.Ordinal);
             Assert.True(warningIndex > 0, result.StandardError);
             var operationText = result.StandardError[..warningIndex];
             var cleanupWarning = result.StandardError[warningIndex..];
@@ -85,7 +85,7 @@ public sealed class SourceWorkbookTestPrivatePathTests
             Assert.DoesNotContain(privateMirrorUri, operationText, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("Import of module 'Local' failed", operationText, StringComparison.Ordinal);
             Assert.Contains(callerSource, operationText, StringComparison.Ordinal);
-            Assert.Contains("Retained paths:", cleanupWarning, StringComparison.Ordinal);
+            Assert.Contains("Retained exact paths:", cleanupWarning, StringComparison.Ordinal);
             Assert.Contains(privateMirror, cleanupWarning, StringComparison.Ordinal);
             Assert.Contains(Path.GetDirectoryName(privateMirror)!, cleanupWarning, StringComparison.Ordinal);
             Assert.True(File.Exists(privateMirror));

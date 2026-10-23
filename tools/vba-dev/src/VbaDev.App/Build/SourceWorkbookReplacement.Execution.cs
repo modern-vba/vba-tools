@@ -7,7 +7,7 @@ namespace VbaDev.App.Build;
 internal sealed partial class SourceWorkbookReplacement
 {
     /// <summary>Owns preparation resources through actual automation retirement and finalization.</summary>
-    internal static async Task<SourceWorkbookExecutionResult<TResult>> RunAsync<TResult>(
+    internal static Task<SourceWorkbookExecutionResult<TResult>> RunAsync<TResult>(
         Func<CancellationToken, Task<PreparedSourceWorkbookBuild>> prepare,
         string workbookPath,
         ISourceWorkbookAutomation automation,
@@ -16,6 +16,22 @@ internal sealed partial class SourceWorkbookReplacement
             CancellationToken, Task<TResult>> operation,
         CancellationToken cancellationToken,
         TimeSpan? recoveryBudget = null)
+        => RunOptionalAsync(async token => await prepare(token).ConfigureAwait(false), workbookPath,
+            automation, ownershipFactory, (prepared, replacement, session, token) =>
+                operation(prepared!, replacement!, session, token), cancellationToken,
+            WorkbookAutomationTimeouts.Default, recoveryBudget);
+
+    internal static async Task<SourceWorkbookExecutionResult<TResult>> RunOptionalAsync<TResult>(
+        Func<CancellationToken, Task<PreparedSourceWorkbookBuild?>> prepare,
+        string workbookPath,
+        ISourceWorkbookAutomation automation,
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
+        Func<PreparedSourceWorkbookBuild?, SourceWorkbookReplacement?, ISourceWorkbookSession,
+            CancellationToken, Task<TResult>> operation,
+        CancellationToken cancellationToken,
+        WorkbookAutomationTimeouts fallbackTimeouts,
+        TimeSpan? recoveryBudget = null,
+        SourceWorkbookReplacementDescription? description = null)
     {
         var prepared = await prepare(cancellationToken).ConfigureAwait(false);
         WorkbookExportStaging? recovery = null;
@@ -27,10 +43,13 @@ internal sealed partial class SourceWorkbookReplacement
         var warnings = new List<string>();
         try
         {
-            recovery = WorkbookExportStaging.Create(ownershipFactory);
-            replacement = new(prepared.SourceSet, prepared.SourcePreflight, recovery,
-                ownershipFactory, recoveryBudget);
-            await automation.RunAsync(workbookPath, prepared.Timeouts, async (session, token) =>
+            if (prepared is not null)
+            {
+                recovery = WorkbookExportStaging.Create(ownershipFactory);
+                replacement = new(prepared.SourceSet, prepared.SourcePreflight, recovery,
+                    ownershipFactory, recoveryBudget, description);
+            }
+            await automation.RunAsync(workbookPath, prepared?.Timeouts ?? fallbackTimeouts, async (session, token) =>
             {
                 var result = await operation(prepared, replacement, session, token).ConfigureAwait(false);
                 completed = result;
@@ -47,18 +66,18 @@ internal sealed partial class SourceWorkbookReplacement
         }
 
         var retain = facts is not null && !Released(facts);
-        var sourcePaths = prepared.SourceSet.SourceFiles.SelectMany(file =>
+        var sourcePaths = (prepared?.SourceSet.SourceFiles ?? []).SelectMany(file =>
             file.BinaryPath is null ? new[] { file.SourcePath } : new[] { file.SourcePath, file.BinaryPath });
         var retainedPaths = sourcePaths.Concat(new[] { recovery?.Path, replacement?.RecoveryVerification?.Path }
             .OfType<string>()).ToArray();
-        if (retain)
+        if (retain && retainedPaths.Length > 0)
         {
             var unproved = new List<string>();
             if (!facts!.ProcessReleaseProven) unproved.Add("Excel process release");
             if (!facts.DispatcherRetired) unproved.Add("STA retirement");
             if (!facts.ComReferenceReleaseProven) unproved.Add("COM reference release");
             failure = new BuildCommandException(
-                $"{failure?.Message} Source mirror and recovery files were retained because {string.Join(" and ", unproved)} could not be proved: {string.Join(", ", retainedPaths)}.",
+                $"{failure?.Message}{Environment.NewLine}Source mirror and recovery files were retained because {string.Join(" and ", unproved)} could not be proved: {string.Join(", ", retainedPaths)}.",
                 failure!);
         }
 
@@ -67,11 +86,14 @@ internal sealed partial class SourceWorkbookReplacement
         FinalizeExport(recovery, "Recovery-file cleanup", retain || replacement?.RetainRecovery == true);
         try
         {
-            if (retain) prepared.SourceSet.RetainWithoutCleanup();
-            else RecordCleanup(prepared.SourceSet.CleanupAfterRelease(), "VBE import staging cleanup");
+            if (prepared is not null)
+            {
+                if (retain) prepared.SourceSet.RetainWithoutCleanup();
+                else RecordCleanup(prepared.SourceSet.CleanupAfterRelease(), "VBE import staging cleanup");
+            }
         }
         catch (Exception error) { RecordFailure(error, "VBE import staging release"); }
-        return new(prepared, returned, completed, failure, facts, warnings.ToArray());
+        return new(prepared, returned, completed, failure, facts, warnings.ToArray(), retainedPaths);
 
         void FinalizeExport(WorkbookExportStaging? staging, string stage, bool keep)
         {
@@ -87,8 +109,8 @@ internal sealed partial class SourceWorkbookReplacement
         {
             if (evidence.Status == InvocationScratchCleanupStatus.Removed) return;
             var detail = $"{stage} failed ({evidence.Status}). Retained exact paths: {string.Join(", ", evidence.RetainedPaths)}";
-            if (failure is null) warnings.Add("Warning: " + detail);
-            else RecordFailure(new IOException(detail), stage);
+            warnings.Add("Warning: " + detail);
+            if (failure is not null) RecordFailure(new IOException(detail), stage);
         }
         void RecordFailure(Exception error, string stage)
         {
@@ -104,9 +126,14 @@ internal sealed partial class SourceWorkbookReplacement
 }
 
 internal sealed record SourceWorkbookExecutionResult<TResult>(
-    PreparedSourceWorkbookBuild Prepared,
+    PreparedSourceWorkbookBuild? Prepared,
     bool CallbackReturned,
     TResult? Completed,
     Exception? Failure,
     WorkbookAutomationTerminalFacts? TerminalFacts,
-    IReadOnlyList<string> CleanupWarnings);
+    IReadOnlyList<string> CleanupWarnings,
+    IReadOnlyList<string> ScratchPaths)
+{
+    internal bool RetainDependentScratch => TerminalFacts is { } facts &&
+        (!facts.ProcessReleaseProven || !facts.DispatcherRetired || !facts.ComReferenceReleaseProven);
+}

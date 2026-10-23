@@ -4,6 +4,19 @@ status: accepted
 
 # Run tests from command-owned snapshot workbooks
 
+## Issue #476 follow-up: source Test finalization
+
+Source Test now uses the SourceWorkbookReplacement execution owner established
+by #475. Optional preparation allows no-build to allocate no import/recovery
+resources; the snapshot-input ledger remains separate and consumes real terminal
+evidence. Complete normally returned test rows survive purely late trusted
+cancellation only after process, STA and COM-reference release are proved.
+Failed rows remain failed, and execution-start is still the restoration cutoff.
+Deletion-only failures add warnings without changing the outcome; their retained
+absolute paths remain available outside private-operation path redaction.
+Test feature 2.0 is updated with all extension consumers; NDJSON remains 1.2.
+Debug and Export contracts are unchanged.
+
 Issue #449 supersedes only this ADR's execution-workbook/output-generation
 decision. Production Test now imports into and executes the exact selected source
 workbook without tool-initiated Save. The historical decision below explains the

@@ -104,7 +104,7 @@ test('Test snapshot admission still requires the CLI Test snapshot feature', asy
     featureVersions: {
       'build.sourceSnapshot': '2.0',
       'build.sourceSnapshotAnalysis': '1.0',
-      'test.sourceWorkbook': '1.0',
+      'test.sourceWorkbook': '2.0',
       'invocation.stdinCancellation': '1.0',
       'invocation.stdinWorkbookConfirmation': '1.0',
       'sourceSnapshot.activeWindowsCodePage': '1.0'
@@ -149,7 +149,7 @@ test('Test rejects an injected adapter that lacks the declared source-workbook d
     toolVersion: '0.1.1', contractVersion: '1.0', activeWindowsCodePage: 1252,
     featureVersions: {
       'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0',
-      'test.sourceSnapshot': '2.0', 'test.sourceWorkbook': '1.0',
+      'test.sourceSnapshot': '2.0', 'test.sourceWorkbook': '2.0',
       'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
       'sourceSnapshot.activeWindowsCodePage': '1.0'
     },
@@ -210,7 +210,7 @@ test('Test snapshot admission rejects an old bin-semantic CLI despite unchanged 
   };
   await assert.rejects(resolveSnapshotProviders({
     purpose: 'test', extensionRoot: path.resolve('extension-root'),
-    requiredContract: { contractVersion: '1.0', featureVersions: { ...features, 'test.sourceWorkbook': '1.0' },
+    requiredContract: { contractVersion: '1.0', featureVersions: { ...features, 'test.sourceWorkbook': '2.0' },
       commandSchemaVersions: { test: '1.2' } },
     requiredDebugAdapterContract: adapter,
     vbaDevResolver: { resolve: async () => ({ executablePath: path.resolve('vba-dev.exe'),

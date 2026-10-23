@@ -107,9 +107,9 @@ internal sealed class SourceWorkbookBuildCommand(
             throw new BuildCommandException("Source workbook Build produced no verified completion.");
         return new WorkbookMaterializationResult(
             context.TemplateDocumentPath,
-            execution.Prepared.SourceSet.SourceFiles.Count,
+            execution.Prepared!.SourceSet.SourceFiles.Count,
             execution.Completed.Item1.Concat(execution.CleanupWarnings).ToArray(),
             execution.Completed.Item2,
-            execution.Prepared.SourceAdmission);
+            execution.Prepared!.SourceAdmission);
     }
 }

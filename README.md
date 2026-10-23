@@ -582,6 +582,11 @@ proved, temporary-file deletion failures preserve success and report retained
 paths as warnings. Unproved release or another failed step remains a failure.
 This completed-outcome contract requires `build.sourceWorkbook: 2.0`.
 
+Source Test also requires `test.sourceWorkbook: 2.0`: after complete results
+return, purely late cancellation preserves those results only when process,
+STA and COM-reference release are proved. Failed tests remain failed. Test
+execution is not replayed, and the tool does not initiate Save.
+
 Build captures the selected source files and form
 sidecars once. A supported UTF-8, UTF-16 LE, or UTF-16 BE BOM identifies the
 source encoding; files without a BOM use only the active Windows ANSI code page

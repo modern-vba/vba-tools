@@ -1,6 +1,5 @@
 using VbaDev.App.Build;
 using VbaDev.App.Cli;
-using VbaDev.App.Export;
 using VbaDev.App.FileSystem;
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
@@ -33,10 +32,7 @@ internal sealed class SourceWorkbookTestCommand(
         Func<string, CancellationToken, Task<bool>>? confirmUnsavedChanges,
         CancellationToken cancellationToken)
     {
-        VbeImportSourceSet? sourceSet = null;
-        WorkbookExportStaging? recovery = null;
-        SourceWorkbookReplacement? replacement = null;
-        PreparedSourceWorkbookBuild? prepared = null;
+        IReadOnlyList<string> scratchPaths = [];
         ExecutedSourceIndex? executedSourceIndex = null;
         IReadOnlyList<WorkbookTestResultRow>? rows = null;
         Exception? failure = null;
@@ -47,36 +43,33 @@ internal sealed class SourceWorkbookTestCommand(
         string preparationWarnings = string.Empty;
         try
         {
-            if (request.SourceSnapshotPath is not null || request.BuildFirst)
-            {
-                if (request.SourceSnapshotPath is { } snapshot)
-                {
-                    inputWorkspace = snapshotWorkspaceFactory?.Create(context, snapshot,
-                        Path.GetFileName(context.TemplateDocumentPath), cancellationToken);
-                    privateWorkspacePath = inputWorkspace?.WorkspacePath;
-                    var capture = inputWorkspace?.TakeSourceCapture()
-                        ?? new BuildSourceSnapshotCaptureFactory(ownershipFactory).Create(snapshot, cancellationToken);
-                    prepared = await materializer.PrepareSourceWorkbookTestSnapshotAsync(context,
-                        capture, cancellationToken).ConfigureAwait(false);
-                }
-                else
-                    prepared = await materializer.PrepareSourceWorkbookBuildAsync(context, cancellationToken).ConfigureAwait(false);
-                sourceSet = prepared.SourceSet;
-                executedSourceIndex = sourceLocator.CreateIndex(prepared.SourceAdmission,
-                    request.SourceSnapshotPath ?? context.DocumentSourceSetPath, context.DocumentSourceSetPath);
-                recovery = WorkbookExportStaging.Create(ownershipFactory);
-                replacement = new SourceWorkbookReplacement(sourceSet, prepared.SourcePreflight,
-                    recovery, ownershipFactory, recoveryBudget,
-                    new SourceWorkbookReplacementDescription("Test", "VBA test execution", "already-open source workbook"));
-            }
-            var timeouts = prepared?.Timeouts ?? WorkbookAutomationTimeouts.Default with
+            var timeouts = WorkbookAutomationTimeouts.Default with
             {
                 WorkbookOpen = CommandDefaultResolver.ResolveWorkbookOpenTimeout(context.Manifest),
                 WorkbookSave = CommandDefaultResolver.ResolveWorkbookSaveTimeout(context.Manifest)
             };
-            rows = await automation.RunAsync(context.TemplateDocumentPath, timeouts,
-                async (session, token) =>
+            var execution = await SourceWorkbookReplacement.RunOptionalAsync(
+                async token =>
                 {
+                    if (request.SourceSnapshotPath is { } snapshot)
+                    {
+                        inputWorkspace = snapshotWorkspaceFactory?.Create(context, snapshot,
+                            Path.GetFileName(context.TemplateDocumentPath), token);
+                        privateWorkspacePath = inputWorkspace?.WorkspacePath;
+                        var capture = inputWorkspace?.TakeSourceCapture()
+                            ?? new BuildSourceSnapshotCaptureFactory(ownershipFactory).Create(snapshot, token);
+                        return await materializer.PrepareSourceWorkbookTestSnapshotAsync(context, capture, token)
+                            .ConfigureAwait(false);
+                    }
+                    return request.BuildFirst
+                        ? await materializer.PrepareSourceWorkbookBuildAsync(context, token).ConfigureAwait(false)
+                        : null;
+                }, context.TemplateDocumentPath, automation, ownershipFactory,
+                async (prepared, replacement, session, token) =>
+                {
+                    if (prepared is not null)
+                        executedSourceIndex = sourceLocator.CreateIndex(prepared.SourceAdmission,
+                            request.SourceSnapshotPath ?? context.DocumentSourceSetPath, context.DocumentSourceSetPath);
                     if (session is not IWorkbookTestExecutionSession tests)
                         throw new InvalidOperationException(
                             "The source workbook session does not support bound Test execution; the workbook was not reopened or changed.");
@@ -106,7 +99,7 @@ internal sealed class SourceWorkbookTestCommand(
                             var desired = context.Document.References.Select(reference => reference.Name)
                                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
                             namePreflight.ThrowIfFailed(prepared.SourcePreflight,
-                                namePreflight.InspectLivePhase(sourceSet!.SourceFiles,
+                                namePreflight.InspectLivePhase(prepared.SourceSet.SourceFiles,
                                     modules.Where(module => !module.Kind.IsImportable()).ToArray(),
                                     projectName, references.Where(reference => !reference.IsRemovable
                                         || desired.Contains(reference.Name)).ToArray()));
@@ -135,7 +128,14 @@ internal sealed class SourceWorkbookTestCommand(
                             await replacement.RestoreAsync(replacementSession, operationFailure).ConfigureAwait(false);
                         throw;
                     }
-                }, cancellationToken).ConfigureAwait(false);
+                }, cancellationToken, timeouts, recoveryBudget,
+                new SourceWorkbookReplacementDescription("Test", "VBA test execution", "already-open source workbook"))
+                .ConfigureAwait(false);
+            rows = execution.Completed;
+            failure = execution.Failure;
+            retainScratch = execution.RetainDependentScratch;
+            scratchPaths = execution.ScratchPaths;
+            cleanupWarnings += string.Concat(execution.CleanupWarnings.Select(warning => warning + Environment.NewLine));
         }
         catch (Exception error)
         {
@@ -156,8 +156,6 @@ internal sealed class SourceWorkbookTestCommand(
                 || !facts.ComReferenceReleaseProven;
         }
 
-        foreach (var error in CleanupScratch(sourceSet, recovery, replacement, retainScratch))
-            cleanupWarnings += $"Warning: Test staging cleanup failed; inspect retained paths: {error.Message}{Environment.NewLine}";
         if (inputWorkspace is not null)
         {
             if (retainScratch) inputWorkspace.RetainWithoutCleanup();
@@ -206,9 +204,7 @@ internal sealed class SourceWorkbookTestCommand(
                 if (!facts.ProcessReleaseProven) unproved.Add("Excel process release");
                 if (!facts.DispatcherRetired) unproved.Add("STA retirement");
                 if (!facts.ComReferenceReleaseProven) unproved.Add("COM reference release");
-                var retainedPaths = MirrorPaths(sourceSet)
-                    .Concat(new[] { recovery?.Path, replacement?.RecoveryVerification?.Path, inputWorkspace?.WorkspacePath }
-                        .OfType<string>())
+                var retainedPaths = scratchPaths.Concat(new[] { inputWorkspace?.WorkspacePath }.OfType<string>())
                     .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
                 var retentionMessage = retainedPaths.Length == 0
                     ? $"{string.Join(" and ", unproved)} is unproved. No import or recovery staging was allocated."
@@ -231,7 +227,7 @@ internal sealed class SourceWorkbookTestCommand(
         var located = executedSourceIndex is null ? results : sourceLocator.Locate(executedSourceIndex, results);
         var run = TestRun.FromResults(context.Manifest.ProjectName, context.DocumentName, located);
         var output = outputFormatter.Format(request.Format, run);
-        var warnings = preparationWarnings + (prepared is null
+        var warnings = preparationWarnings + (!request.BuildFirst && request.SourceSnapshotPath is null
             ? $"Warning: Source locations were omitted because --no-build runs an existing workbook without a proved source capture.{Environment.NewLine}"
             : string.Concat(located.Where(result => result.Location is null)
                 .Select(result => $"{result.Category}.{result.TestName}")
@@ -291,41 +287,4 @@ internal sealed class SourceWorkbookTestCommand(
         return null;
     }
 
-    private static IEnumerable<string> MirrorPaths(VbeImportSourceSet? sourceSet)
-        => sourceSet?.SourceFiles.SelectMany(file => file.BinaryPath is null
-            ? new[] { file.SourcePath } : new[] { file.SourcePath, file.BinaryPath! }) ?? [];
-
-    private static IReadOnlyList<Exception> CleanupScratch(VbeImportSourceSet? sourceSet,
-        WorkbookExportStaging? recovery, SourceWorkbookReplacement? replacement, bool retain)
-    {
-        var failures = new List<Exception>();
-        void Release(WorkbookExportStaging? staging, bool keep)
-        {
-            if (staging is null) return;
-            if (!keep)
-            {
-                try
-                {
-                    var cleanup = staging.Cleanup();
-                    if (cleanup.Status != InvocationScratchCleanupStatus.Removed)
-                        throw new IOException($"Test recovery cleanup was {cleanup.Status}: {string.Join(", ", cleanup.RetainedPaths)}");
-                }
-                catch (Exception error) { failures.Add(error); }
-            }
-            try { staging.Dispose(); }
-            catch (Exception error) { failures.Add(error); }
-        }
-        Release(replacement?.RecoveryVerification, retain);
-        Release(recovery, retain || replacement?.RetainRecovery == true);
-        if (sourceSet is not null)
-        {
-            try
-            {
-                if (retain) sourceSet.RetainWithoutCleanup();
-                else sourceSet.Dispose();
-            }
-            catch (Exception error) { failures.Add(error); }
-        }
-        return failures;
-    }
 }

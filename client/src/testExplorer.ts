@@ -242,9 +242,10 @@ async function runTests(
         const provider = await options.vbaDevResolver?.resolve();
         if (provider !== undefined) {
           if (provider.capabilities.commands.test?.outputSchemaVersion !== '1.2' ||
-              ['test.sourceWorkbook', 'invocation.stdinCancellation', 'invocation.stdinWorkbookConfirmation']
+              provider.capabilities.featureVersions?.['test.sourceWorkbook'] !== '2.0' ||
+              ['invocation.stdinCancellation', 'invocation.stdinWorkbookConfirmation']
                 .some(feature => provider.capabilities.featureVersions?.[feature] !== '1.0')) {
-            throw new VbaDevCompatibilityError('Source workbook Test requires test.sourceWorkbook, stdin cancellation and workbook confirmation version 1.0, and Test schema 1.2.');
+            throw new VbaDevCompatibilityError('Source workbook Test requires test.sourceWorkbook 2.0, stdin cancellation and workbook confirmation 1.0, and Test schema 1.2.');
           }
           invocationOptions = { ...options, vbaDevResolver: { resolve: async () => provider } };
         }

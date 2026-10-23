@@ -718,6 +718,14 @@ itself.
 
 ### test
 
+Source Test uses the shared replacement owner to finalize import and recovery
+staging after process, STA and COM-reference release are proved. No-build
+allocates none of those resources. Complete returned rows survive a purely late
+trusted cancellation only with all three proofs; failed rows stay failed.
+Deletion-only cleanup warnings retain the test result and identify retained
+paths. Execution-start cancellation does not authorize replay or restoration.
+Consumers require `test.sourceWorkbook: 2.0`; Test NDJSON remains 1.2.
+
 ```text
 vba-dev test
 

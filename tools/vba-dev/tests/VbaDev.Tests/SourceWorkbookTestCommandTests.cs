@@ -350,6 +350,48 @@ public sealed class SourceWorkbookTestCommandTests
         Assert.Equal(binBytes, File.ReadAllBytes(binWorkbook));
         Assert.Contains("1 passed", result.StandardOutput, StringComparison.Ordinal);
     }
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, true, false)]
+    [InlineData(false, false, true)]
+    [InlineData(false, true, true)]
+    public async Task CompleteRowsSurviveOnlyPureLateCancellationWithAllReleaseProofs(
+        bool failedRows, bool noBuild, bool unprovedCom)
+    {
+        using var fixture = new SourceTestFixture();
+        using var cancellation = new CancellationTokenSource();
+        var stage = new WorkbookAutomationStage(WorkbookAutomationStageKind.ProcessCleanup);
+        var lateCancellation = new WorkbookAutomationCanceledException(stage, cancellation.Token);
+        var automation = new RecordingSourceWorkbookAutomation
+        {
+            AfterOperation = cancellation.Cancel,
+            AfterOperationFailure = unprovedCom
+                ? new WorkbookAutomationComReferenceReleaseException(lateCancellation,
+                    [new("result cell", new InvalidOperationException("Release failed."))])
+                : lateCancellation
+        };
+        automation.Session.TestRows =
+            [new("Local", "Test_Passes", failedRows ? "NG" : "OK", failedRows ? "assertion failed" : "")];
+        var application = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(
+            fixture.Root, sourceWorkbookAutomation: automation,
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty));
+
+        var result = await application.RunAsync(noBuild
+            ? ["test", "--no-build", "--format", "ndjson"]
+            : ["test", "--format", "ndjson"], cancellation.Token);
+
+        Assert.Equal(unprovedCom || failedRows ? 1 : 0, result.ExitCode);
+        if (unprovedCom)
+        {
+            Assert.Empty(result.StandardOutput);
+            Assert.Contains("COM reference release", result.StandardError);
+        }
+        else Assert.Contains("Test_Passes", result.StandardOutput);
+        Assert.Equal(1, automation.Session.Events.Count(item => item == "test"));
+        Assert.DoesNotContain("save", automation.Session.Events);
+    }
 }
 
 internal sealed class SourceTestFixture : IDisposable

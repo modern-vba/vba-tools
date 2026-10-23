@@ -223,7 +223,7 @@ function validateSnapshotVersions(
         cli.featureVersions?.['build.sourceSnapshot'] !== '2.0'
         || cli.featureVersions?.['build.sourceSnapshotAnalysis'] !== '1.0'
         || cli.featureVersions?.['test.sourceSnapshot'] !== '2.0'
-        || cli.featureVersions?.['test.sourceWorkbook'] !== '1.0'
+        || cli.featureVersions?.['test.sourceWorkbook'] !== '2.0'
         || cli.featureVersions?.['invocation.stdinCancellation'] !== '1.0'
         || cli.featureVersions?.['invocation.stdinWorkbookConfirmation'] !== '1.0'
         || cli.featureVersions?.['sourceSnapshot.activeWindowsCodePage'] !== '1.0'

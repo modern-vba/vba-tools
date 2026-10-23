@@ -1398,8 +1398,11 @@ automation evidence. Process release, STA retirement and COM-reference release
 must all be proved before dependent scratch deletion. Complete results survive
 deletion-only cleanup failures as warnings and purely late trusted cancellation;
 Save alone cannot suppress a failed callback. Recovery remains intent-owned and
-bounded before Save starts. During the staged migration, Test and Debug still
-use the existing direct capsule until their own slices migrate.
+bounded before Save starts. Source Test also uses this owner, with no-build
+allocating no replacement resources. Complete test rows survive purely late
+trusted cancellation only with all release proofs; failing rows remain failures.
+Snapshot input retains its own ledger and consumes the owner's terminal evidence.
+Debug still uses its direct capsule until its dependent migration.
 _Avoid_: caller-supplied release flags, generic resource registry, Save rollback
 
 **ISourceWorkbookAutomation**:

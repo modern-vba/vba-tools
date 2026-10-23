@@ -23,7 +23,7 @@ public sealed class VbaDevTestInteractionTests
         using var payload = JsonDocument.Parse(result.StandardOutput);
         var features = payload.RootElement.GetProperty("featureVersions");
         Assert.True(features.TryGetProperty("test.sourceWorkbook", out var sourceWorkbook));
-        Assert.Equal("1.0", sourceWorkbook.GetString());
+        Assert.Equal("2.0", sourceWorkbook.GetString());
         Assert.Equal("2.0", features.GetProperty("test.sourceSnapshot").GetString());
         Assert.Equal("1.0", features.GetProperty("invocation.stdinCancellation").GetString());
         Assert.Equal("1.0", features.GetProperty("invocation.stdinWorkbookConfirmation").GetString());

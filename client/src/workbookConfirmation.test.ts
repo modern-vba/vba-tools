@@ -218,7 +218,7 @@ test('managed source Test returns one declined workbook confirmation to the same
     }
   }, 'vba-dev.exe', { projectRoot: 'C:\\Project', argsBeforeProject: ['test'] }, {
     toolVersion: 'test', contractVersion: '1.0', commands: { test: { outputSchemaVersion: '1.2' } },
-    featureVersions: { 'test.sourceWorkbook': '1.0', 'invocation.stdinCancellation': '1.0',
+    featureVersions: { 'test.sourceWorkbook': '2.0', 'invocation.stdinCancellation': '1.0',
       'invocation.stdinWorkbookConfirmation': '1.0' }
   });
   assert.equal(result.exitCode, 1);
@@ -250,7 +250,7 @@ test('cancelled source snapshot Test waits for child cleanup without force killi
   }, 'vba-dev.exe', { projectRoot: 'C:\\Project', argsBeforeProject: ['test'],
     argsAfterProject: ['--source-snapshot', 'C:\\Snapshot', '--format', 'ndjson'] }, {
     toolVersion: 'test', contractVersion: '1.0', commands: { test: { outputSchemaVersion: '1.2' } },
-    featureVersions: { 'test.sourceWorkbook': '1.0', 'invocation.stdinCancellation': '1.0',
+    featureVersions: { 'test.sourceWorkbook': '2.0', 'invocation.stdinCancellation': '1.0',
       'invocation.stdinWorkbookConfirmation': '1.0' }
   }).then(result => { completed = true; return result; });
   cancel?.();
@@ -285,7 +285,7 @@ test('explicitly noninteractive managed Test does not ask for or answer workbook
   }, 'vba-dev.exe', { projectRoot: 'C:\\Project', argsBeforeProject: ['test'],
     argsAfterProject: ['--no-build', '--interactive', 'false'] }, {
     toolVersion: 'test', contractVersion: '1.0', commands: { test: { outputSchemaVersion: '1.2' } },
-    featureVersions: { 'test.sourceWorkbook': '1.0', 'invocation.stdinCancellation': '1.0',
+    featureVersions: { 'test.sourceWorkbook': '2.0', 'invocation.stdinCancellation': '1.0',
       'invocation.stdinWorkbookConfirmation': '1.0' }
   });
   assert.equal(result.exitCode, 1);
@@ -309,7 +309,7 @@ test('managed Test preserves an explicit equals-form noninteractive choice', asy
   }, 'vba-dev.exe', { projectRoot: 'C:\\Project', argsBeforeProject: ['test'],
     argsAfterProject: ['--no-build', '--interactive=false'] }, {
     toolVersion: 'test', contractVersion: '1.0', commands: { test: { outputSchemaVersion: '1.2' } },
-    featureVersions: { 'test.sourceWorkbook': '1.0', 'invocation.stdinCancellation': '1.0',
+    featureVersions: { 'test.sourceWorkbook': '2.0', 'invocation.stdinCancellation': '1.0',
       'invocation.stdinWorkbookConfirmation': '1.0' }
   });
   assert.deepEqual(invocation, ['test', '--project', 'C:\\Project', '--no-build', '--interactive=false',
