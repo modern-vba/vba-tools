@@ -335,7 +335,7 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
 
         object IVbeNativeOperationAdapter.GetCurrentWorkbook()
         {
-            if (!binding.IsExactWorkbook())
+            if (completion.Task.IsCompleted || !binding.IsExactWorkbook())
                 throw new DebugSetupException("The exact source workbook binding is no longer current.");
             return binding.Workbook;
         }
@@ -370,84 +370,88 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
                 if (inputWaitSink is not null && targetPromptPhase is not null)
                     throw new DebugSetupException("Source native Run already has an active modal observation phase.");
             }
-            void BeginPromptObservation()
-            {
-                if (inputWaitSink is null) return;
-                lock (disposalGate)
-                {
-                    ObjectDisposedException.ThrowIf(disposal is not null, this);
-                    if (targetPromptPhase is not null)
-                        throw new DebugSetupException("Source native Run already has an active modal observation phase.");
-                    var monitor = promptMonitor ?? new DebugModalPromptMonitor(
-                        new ExactSourceModalWindowApi(new(binding.ProcessId, binding.ProcessStartUtcTicks)));
-                    // This legacy monitor input is intentionally unresolved. It
-                    // is NOT process-exit evidence; typed source completion is
-                    // raced separately and retires the phase independently.
-                    var noExitEvidence = new TaskCompletionSource<DebugProcessExit>(
-                        TaskCreationOptions.RunContinuationsAsynchronously).Task;
-                    // The exact native context is already visible and verified.
-                    // Its ordinary VBE windows belong in this baseline; only
-                    // windows appearing after Execute can require new input.
-                    var phase = monitor.BeginPhase(new(DebugInputWaitKind.ExcelOrVbe,
-                        DebugInputWaitPhase.TargetStart, ProcessId), noExitEvidence,
-                        new SourceLifecycleInputWaitSink(inputWaitSink));
-                    targetPromptPhase = phase;
-                    targetPromptObservation = ObserveTargetPromptLifetimeAsync(phase);
-                    ObserveLateFailure(targetPromptObservation);
-                }
-            }
+            var preparation = new SourceRunPreparation(this, inputWaitSink);
             Task<bool> RunAsync() => dispatcher.InvokeAsync(() =>
             {
-                if (!binding.IsExactWorkbook())
-                    throw new DebugSetupException("The exact source workbook binding is no longer available.");
-                object? projectObject = null;
-                object? componentsObject = null;
-                object? componentObject = null;
-                object? codeObject = null;
-                Exception? failure = null;
-                try
-                {
-                    dynamic workbook = binding.Workbook;
-                    projectObject = workbook.VBProject;
-                    dynamic project = projectObject;
-                    if ((int)project.Mode != 2)
-                        throw new DebugSetupException("The exact source project is not in design mode before native Run.");
-                    componentsObject = project.VBComponents;
-                    dynamic components = componentsObject;
-                    componentObject = components.Item(target.ModuleName);
-                    dynamic component = componentObject;
-                    if ((int)component.Type != 1 || (string)component.Name != target.ModuleName)
-                        throw new DebugSetupException("The source debug target is not the exact standard module.");
-                    codeObject = component.CodeModule;
-                    dynamic code = codeObject;
-                    var line = (int)code.ProcBodyLine(target.ProcedureName, 0);
-                    if (line <= 0 || line > (int)code.CountOfLines)
-                        throw new DebugSetupException("The native source debug target procedure could not be resolved.");
-                    ExecuteNativeCommand(componentObject, codeObject, line, 186, "Run Sub/UserForm",
-                        BeginPromptObservation);
-                    return true;
-                }
-                catch (Exception error) { failure = error; throw; }
-                finally
-                {
-                    ReleaseScope(failure,
-                        ("target code module", codeObject), ("target component", componentObject),
-                        ("source VBA components", componentsObject), ("source VBA project", projectObject));
-                }
+                new VbeNativeOperations(this).RunTarget(target, preparation, cancellationToken);
+                return true;
             }, cancellationToken).WaitAsync(cancellationToken);
             // A late-created modal phase is supervised independently and faults
             // typed source Completion. Do not begin an earlier phase merely to
             // wrap this dispatch, or infer an exit from the monitor sentinel.
-            var running = RunAsync();
-            ObserveLateFailure(running);
-            _ = await Task.WhenAny(running, Completion).WaitAsync(cancellationToken).ConfigureAwait(false);
-            if (!running.IsCompleted && Completion.IsCompleted)
+            try
             {
-                var ended = await Completion.ConfigureAwait(false);
-                throw new DebugSetupException($"The source session ended ({ended.Reason}) before native Run completed. " +
-                    "No Excel process exit code was inferred. Use Reset in the selected source workbook's VBE if needed.");
+                var running = RunAsync();
+                ObserveLateFailure(running);
+                _ = await Task.WhenAny(running, Completion).WaitAsync(cancellationToken).ConfigureAwait(false);
+                if (Completion.IsFaulted || Completion.IsCanceled) await Completion.ConfigureAwait(false);
+                if (!running.IsCompleted && Completion.IsCompleted)
+                {
+                    var ended = await Completion.ConfigureAwait(false);
+                    throw new DebugSetupException($"The source session ended ({ended.Reason}) before native Run completed. " +
+                        "No Excel process exit code was inferred. Use Reset in the selected source workbook's VBE if needed.");
+                }
+                await running.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
-            await running.WaitAsync(cancellationToken).ConfigureAwait(false);
+            catch (Exception failure)
+            {
+                var completion = new DebugFailureCompletion(failure);
+                if (preparation.Phase is not null)
+                {
+                    try { await RetireTargetPromptAsync().ConfigureAwait(false); }
+                    catch (Exception cleanup)
+                    {
+                        completion.AddFailure("native Run start", "modal phase",
+                            DebugResourceKind.Observation, cleanup, ProcessId, binding.WorkbookPath);
+                    }
+                }
+                completion.Complete().Throw();
+                throw;
+            }
+        }
+
+        private IDebugModalPromptPhase? BeginPromptObservation(IDebugInputWaitSink? inputWaitSink)
+        {
+            if (inputWaitSink is null) return null;
+            lock (disposalGate)
+            {
+                ObjectDisposedException.ThrowIf(disposal is not null, this);
+                if (targetPromptPhase is not null)
+                    throw new DebugSetupException("Source native Run already has an active modal observation phase.");
+                var monitor = promptMonitor ?? new DebugModalPromptMonitor(
+                    new ExactSourceModalWindowApi(new(binding.ProcessId, binding.ProcessStartUtcTicks)));
+                // This legacy monitor input is intentionally unresolved. It
+                // is NOT process-exit evidence; typed source completion is
+                // raced separately and retires the phase independently.
+                var noExitEvidence = new TaskCompletionSource<DebugProcessExit>(
+                    TaskCreationOptions.RunContinuationsAsynchronously).Task;
+                // The exact native context is already visible and verified.
+                // Its ordinary VBE windows belong in this baseline; only
+                // windows appearing after Execute can require new input.
+                var phase = monitor.BeginPhase(new(DebugInputWaitKind.ExcelOrVbe,
+                    DebugInputWaitPhase.TargetStart, ProcessId), noExitEvidence,
+                    new SourceLifecycleInputWaitSink(inputWaitSink));
+                targetPromptPhase = phase;
+                targetPromptObservation = ObserveTargetPromptLifetimeAsync(phase);
+                ObserveLateFailure(targetPromptObservation);
+                return phase;
+            }
+        }
+
+        private sealed class SourceRunPreparation(
+            SourceVbeDebugSession owner, IDebugInputWaitSink? sink) : IVbeNativeRunPreparation
+        {
+            internal IDebugModalPromptPhase? Phase { get; private set; }
+            public void Begin()
+            {
+                Phase = owner.BeginPromptObservation(sink);
+                VerifyObservation();
+            }
+            public void VerifyObservation()
+            {
+                if (Phase?.Completion is { IsFaulted: true } or { IsCanceled: true })
+                    Phase.Completion.GetAwaiter().GetResult();
+            }
         }
 
         private async Task ObserveTargetPromptLifetimeAsync(IDebugModalPromptPhase phase)
@@ -479,75 +483,6 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
                 catch (Exception failure) { targetPromptRetirement = Task.FromException(failure); }
                 ObserveLateFailure(targetPromptRetirement);
                 return targetPromptRetirement;
-            }
-        }
-
-        private void ExecuteNativeCommand(object componentObject, object codeObject, int line,
-            int commandId, string commandName, Action? beforeExecute = null)
-        {
-            object? paneObject = null;
-            object? activePaneObject = null;
-            object? vbeObject = null;
-            object? windowObject = null;
-            object? codeWindowObject = null;
-            object? barsObject = null;
-            object? commandObject = null;
-            Exception? failure = null;
-            try
-            {
-                _ = windowActivator.AllowComServerForeground(binding.Application);
-                dynamic component = componentObject;
-                component.Activate();
-                dynamic code = codeObject;
-                paneObject = code.CodePane;
-                dynamic pane = paneObject;
-                dynamic excel = binding.Application;
-                vbeObject = excel.VBE;
-                dynamic vbe = vbeObject;
-                windowObject = vbe.MainWindow;
-                dynamic window = windowObject;
-                window.Visible = true;
-                pane.Show();
-                vbe.ActiveCodePane = paneObject;
-                pane.SetSelection(line, 1, line, 1);
-                window.SetFocus();
-                codeWindowObject = pane.Window;
-                dynamic codeWindow = codeWindowObject;
-                codeWindow.SetFocus();
-                windowActivator.BringOwnedWindowToForeground(
-                    new nint(Convert.ToInt64(window.HWnd)), ProcessId);
-                activePaneObject = vbe.ActiveCodePane;
-                if (!ReferenceEquals(activePaneObject, paneObject))
-                    throw new DebugSetupException("The exact source VBE code pane is not active.");
-                var startLine = 0;
-                var startColumn = 0;
-                var endLine = 0;
-                var endColumn = 0;
-                pane.GetSelection(ref startLine, ref startColumn, ref endLine, ref endColumn);
-                if (startLine != line || endLine != line || startColumn != 1 || endColumn != 1)
-                    throw new DebugSetupException("The exact source VBE line selection was not retained.");
-                barsObject = vbe.CommandBars;
-                dynamic bars = barsObject;
-                commandObject = bars.FindControl(1, commandId, Type.Missing, false);
-                if (commandObject is null)
-                    throw new DebugSetupException($"The native VBE {commandName} command (ID {commandId}) is unavailable.");
-                dynamic command = commandObject;
-                if ((int)command.Id != commandId || !(bool)command.BuiltIn || !(bool)command.Enabled)
-                    throw new DebugSetupException($"The built-in VBE {commandName} command is disabled in the exact source context. " +
-                        "The target or breakpoint was not relocated. Resolve any native compile dialog in the VBE.");
-                if (!binding.IsExactWorkbook())
-                    throw new DebugSetupException("The source workbook binding changed before native execution.");
-                beforeExecute?.Invoke();
-                command.Execute();
-            }
-            catch (Exception error) { failure = error; throw; }
-            finally
-            {
-                ReleaseScope(failure,
-                    ("native VBE command", commandObject), ("VBE command bars", barsObject),
-                    ("VBE code window", codeWindowObject), ("VBE main window", windowObject),
-                    ("active VBE code pane", activePaneObject), ("VBE", vbeObject),
-                    ("source code pane", paneObject));
             }
         }
 

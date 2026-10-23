@@ -390,6 +390,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         private IVbaDebugGenerationWorkspace? generationWorkspace;
         private Task targetPromptObservation = Task.CompletedTask;
         private IDebugModalPromptPhase? targetPromptPhase;
+        private Task? targetPromptRetirement;
         private Task workbookPromptObservation = Task.CompletedTask;
         private IDebugModalPromptPhase? workbookPromptPhase;
         private int? foregroundPermissionHResult;
@@ -651,12 +652,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 () =>
                 {
                     SetNativeBreakpoints([breakpoint], execute: false, cancellationToken);
-                    ExecuteTargetCommand(
-                        target,
-                        VbeDesignMode,
-                        "target code",
-                        beforeExecute: null,
-                        execute: false);
+                    new VbeNativeOperations(this).InspectTarget(target, cancellationToken);
                     return true;
                 },
                 cancellationToken).ConfigureAwait(false);
@@ -703,24 +699,75 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         }
 
         public async Task RunTargetAsync(
-            DebugTargetProcedure target,
-            IDebugInputWaitSink? inputWaitSink,
+            DebugTargetProcedure target, IDebugInputWaitSink? inputWaitSink,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var inputWait = new DebugInputWait(
-                DebugInputWaitKind.ExcelOrVbe,
-                DebugInputWaitPhase.TargetStart,
-                ProcessId);
-            var phase = StartPromptPhase(inputWait, inputWaitSink);
-            Task<bool> RunAsync() => InvokeSetupAsync(
-                () =>
+            var preparation = new DoctorRunPreparation(this, inputWaitSink);
+            var running = InvokeSetupAsync(() =>
+            {
+                new VbeNativeOperations(this).RunTarget(target, preparation, cancellationToken);
+                return true;
+            }, cancellationToken);
+            _ = running.ContinueWith(static task => _ = task.Exception, CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously | TaskContinuationOptions.OnlyOnFaulted,
+                TaskScheduler.Default);
+            try
+            {
+                _ = await Task.WhenAny(preparation.Ready, running, completion)
+                    .WaitAsync(cancellationToken).ConfigureAwait(false);
+                var phase = preparation.Ready.IsCompletedSuccessfully ? preparation.Ready.Result : null;
+                _ = await ObserveSetupOperationAsync(phase, () => running, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception failure)
+            {
+                var result = new DebugFailureCompletion(failure);
+                if (preparation.Phase is not null)
                 {
-                    RunTarget(target);
-                    return true;
-                },
-                cancellationToken);
-            _ = await ObserveSetupOperationAsync(phase, RunAsync, cancellationToken).ConfigureAwait(false);
+                    try { await RetireTargetPromptAsync().ConfigureAwait(false); }
+                    catch (Exception cleanup)
+                    {
+                        result.AddFailure("native Run start", "modal phase",
+                            DebugResourceKind.Observation, cleanup, ProcessId);
+                    }
+                }
+                result.Complete().Throw();
+                throw;
+            }
+        }
+
+        private sealed class DoctorRunPreparation(
+            VbeDebugSession owner, IDebugInputWaitSink? sink) : IVbeNativeRunPreparation
+        {
+            private readonly TaskCompletionSource<IDebugModalPromptPhase?> ready =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
+            internal Task<IDebugModalPromptPhase?> Ready => ready.Task;
+            internal IDebugModalPromptPhase? Phase { get; private set; }
+            public void Begin()
+            {
+                Phase = owner.StartPromptPhase(new(DebugInputWaitKind.ExcelOrVbe,
+                    DebugInputWaitPhase.TargetStart, owner.ProcessId), sink);
+                ready.TrySetResult(Phase);
+                VerifyObservation();
+                dynamic excel = owner.excelObject;
+                excel.EnableEvents = true;
+            }
+            public void VerifyObservation()
+            {
+                if (Phase?.Completion is { IsFaulted: true } or { IsCanceled: true })
+                    Phase.Completion.GetAwaiter().GetResult();
+            }
+        }
+
+        private Task RetireTargetPromptAsync()
+        {
+            lock (generationOwnershipGate)
+            {
+                if (targetPromptRetirement is not null) return targetPromptRetirement;
+                try { targetPromptRetirement = targetPromptPhase?.DisposeAsync().AsTask() ?? Task.CompletedTask; }
+                catch (Exception failure) { targetPromptRetirement = Task.FromException(failure); }
+                return targetPromptRetirement;
+            }
         }
 
         public Task WaitForBreakModeAsync(
@@ -745,11 +792,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             _ = await InvokeSetupAsync(
                 () =>
                 {
-                    ExecuteTargetCommand(
-                        target,
-                        VbeBreakMode,
-                        "break mode",
-                        beforeExecute: null);
+                    new VbeNativeOperations(this).ContinueTarget(target, cancellationToken);
                     return true;
                 },
                 cancellationToken).ConfigureAwait(false);
@@ -808,6 +851,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     else
                     {
                         targetPromptPhase = phase;
+                        targetPromptRetirement = null;
                         targetPromptObservation = observation;
                     }
                     return phase;
@@ -901,7 +945,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             if (targetPromptPhase is not null)
             {
                 await AttemptAsync("target observation", "modal phase", DebugResourceKind.Observation,
-                    targetPromptPhase.DisposeAsync).ConfigureAwait(false);
+                    () => new ValueTask(RetireTargetPromptAsync())).ConfigureAwait(false);
             }
             if (workbookPromptPhase is not null)
             {
@@ -1282,7 +1326,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
 
         object IVbeNativeOperationAdapter.GetCurrentWorkbook()
         {
-            if (completion.IsCompleted)
+            if (terminalEnd.Task.IsCompleted || completion.IsCompleted)
                 throw new DebugSetupException("The owned Excel session has ended.");
             var workbook = GetOpenedWorkbook();
             if (openedWorkbookIdentity is { } expected
@@ -1341,79 +1385,6 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                         ($"code module {sourceMap.ModuleName}", codeModuleObject),
                         ($"component {sourceMap.ModuleName}", componentObject));
                 }
-            }
-        }
-
-        private void RunTarget(DebugTargetProcedure target)
-            => ExecuteTargetCommand(
-                target,
-                VbeDesignMode,
-                "target code",
-                beforeExecute: () =>
-                {
-                    dynamic excel = excelObject;
-                    excel.EnableEvents = true;
-                });
-
-        private void ExecuteTargetCommand(
-            DebugTargetProcedure target,
-            int expectedProjectMode,
-            string contextName,
-            Action? beforeExecute,
-            bool execute = true)
-        {
-            object? projectObject = null;
-            object? componentsObject = null;
-            object? componentObject = null;
-            object? codeModuleObject = null;
-            Exception? primaryFailure = null;
-            try
-            {
-                dynamic workbook = GetOpenedWorkbook();
-                projectObject = workbook.VBProject;
-                dynamic project = projectObject;
-                EnsureProjectMode(project, expectedProjectMode);
-
-                componentsObject = project.VBComponents;
-                dynamic components = componentsObject;
-                componentObject = components.Item(target.ModuleName);
-                dynamic component = componentObject;
-                if ((int)component.Type != 1)
-                {
-                    throw new DebugSetupException(
-                        $"The debug target module '{target.ModuleName}' is not a standard module.");
-                }
-
-                codeModuleObject = component.CodeModule;
-                dynamic codeModule = codeModuleObject;
-                var bodyLine = (int)codeModule.ProcBodyLine(target.ProcedureName, 0);
-                if (bodyLine <= 0)
-                {
-                    throw new DebugSetupException(
-                        $"The debug target procedure '{target.ModuleName}.{target.ProcedureName}' could not be resolved.");
-                }
-
-                ExecuteNativeCommand(
-                    componentObject,
-                    codeModuleObject,
-                    bodyLine,
-                    VbeNativeCommandContract.RunOrContinueCommandId,
-                    "Run Sub/UserForm",
-                    contextName,
-                    beforeExecute: beforeExecute,
-                    execute: execute);
-            }
-            catch (Exception failure)
-            {
-                primaryFailure = failure;
-                throw;
-            }
-            finally
-            {
-                ReleaseComScope(primaryFailure,
-                    ($"code module {target.ModuleName}", codeModuleObject),
-                    ($"component {target.ModuleName}", componentObject),
-                    ("VBA components", componentsObject), ("VBA project", projectObject));
             }
         }
 
@@ -1505,143 +1476,6 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     ("Doctor probe worksheet", worksheetObject),
                     ("Doctor probe worksheets", worksheetsObject),
                     ("VBA project", projectObject));
-            }
-        }
-
-        private void ExecuteNativeCommand(
-            object componentObject,
-            object codeModuleObject,
-            int selectedLine,
-            int commandId,
-            string commandName,
-            string contextName,
-            string? disabledMessage = null,
-            Action? beforeExecute = null,
-            bool execute = true)
-        {
-            object? codePaneObject = null;
-            object? activeCodePaneObject = null;
-            object? vbeObject = null;
-            object? mainWindowObject = null;
-            object? codeWindowObject = null;
-            object? commandBarsObject = null;
-            object? commandControlObject = null;
-            Exception? primaryFailure = null;
-            try
-            {
-                dynamic component = componentObject;
-                dynamic codeModule = codeModuleObject;
-                dynamic excel = excelObject;
-                foregroundPermissionHResult =
-                    windowActivator.AllowComServerForeground(excelObject);
-                component.Activate();
-
-                codePaneObject = codeModule.CodePane;
-                dynamic codePane = codePaneObject;
-                vbeObject = excel.VBE;
-                dynamic vbe = vbeObject;
-                mainWindowObject = vbe.MainWindow;
-                dynamic mainWindow = mainWindowObject;
-                mainWindow.Visible = true;
-                codePane.Show();
-                vbe.ActiveCodePane = codePaneObject;
-                codePane.SetSelection(selectedLine, 1, selectedLine, 1);
-                mainWindow.SetFocus();
-                codeWindowObject = codePane.Window;
-                dynamic codeWindow = codeWindowObject;
-                codeWindow.SetFocus();
-                windowActivator.BringOwnedWindowToForeground(
-                    ToWindowHandle(mainWindow.HWnd),
-                    ProcessId);
-
-                activeCodePaneObject = vbe.ActiveCodePane;
-                if (!ReferenceEquals(activeCodePaneObject, codePaneObject))
-                {
-                    throw new DebugSetupException(
-                        $"The intended VBE code pane is not active in the {contextName} context.");
-                }
-
-                var actualStartLine = 0;
-                var actualStartColumn = 0;
-                var actualEndLine = 0;
-                var actualEndColumn = 0;
-                codePane.GetSelection(
-                    ref actualStartLine,
-                    ref actualStartColumn,
-                    ref actualEndLine,
-                    ref actualEndColumn);
-                if (actualStartLine != selectedLine ||
-                    actualStartColumn != 1 ||
-                    actualEndLine != selectedLine ||
-                    actualEndColumn != 1)
-                {
-                    throw new DebugSetupException(
-                        $"The exact VBE line selection was not retained in the {contextName} context.");
-                }
-
-                commandBarsObject = vbe.CommandBars;
-                dynamic commandBars = commandBarsObject;
-                commandControlObject = commandBars.FindControl(
-                    1,
-                    commandId,
-                    Type.Missing,
-                    false);
-                if (commandControlObject is null)
-                {
-                    throw new DebugSetupException(
-                        $"The native VBE {commandName} command (ID {commandId}) was not found.");
-                }
-
-                dynamic commandControl = commandControlObject;
-                if ((int)commandControl.Id != commandId || !(bool)commandControl.BuiltIn)
-                {
-                    throw new DebugSetupException(
-                        $"The resolved VBE command is not the built-in {commandName} command (ID {commandId}).");
-                }
-
-                if (!(bool)commandControl.Enabled)
-                {
-                    throw new DebugSetupException(
-                        disabledMessage
-                            ?? $"The native VBE {commandName} command (ID {commandId}) is disabled in the {contextName} context.");
-                }
-
-                if (!execute)
-                {
-                    return;
-                }
-
-                beforeExecute?.Invoke();
-                try
-                {
-                    commandControl.Execute();
-                }
-                catch (Exception ex) when (
-                    ex is COMException or RuntimeBinderException or InvalidCastException or
-                        ArgumentException or TargetParameterCountException)
-                {
-                    throw new DebugSetupException(
-                        $"The native VBE {commandName} command (ID {commandId}) was found and " +
-                        "enabled, but its invocation did not complete. Resolve any visible VBE " +
-                        "dialog and retry.",
-                        ex);
-                }
-            }
-            catch (Exception failure)
-            {
-                primaryFailure = failure;
-                throw;
-            }
-            finally
-            {
-                ReleaseComScope(primaryFailure,
-                    ($"native {commandName} command", commandControlObject),
-                    ("VBE command bars", commandBarsObject),
-                    ("VBE code window", codeWindowObject),
-                    ("VBE main window", mainWindowObject),
-                    ("VBE", vbeObject),
-                    ("active VBE code pane", activeCodePaneObject),
-                    ("VBE code pane", codePaneObject));
             }
         }
 

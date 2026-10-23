@@ -551,6 +551,8 @@ public sealed class VbeDebugEnvironmentProbeTests
                     model.Workbook.CompletionMarker = "vba-tools-doctor-complete";
                 }
             });
+        Assert.IsType<FakeVbComponent>(model.Project.VBComponents.Item("VbaToolsDoctorProbe"))
+            .CodeModule.ProcedureLine = _ => 4;
         var process = new FakeDebugOwnedProcess(
             4321,
             new DateTime(2026, 8, 23, 9, 0, 0, DateTimeKind.Local),

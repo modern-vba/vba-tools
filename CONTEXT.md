@@ -691,6 +691,25 @@ is resolved and executed. A command that remains disabled in this context
 invalidates launch.
 _Avoid_: caption matching, SendKeys, background code-pane selection
 
+The shared native-operation Module establishes this context for Source Run,
+Doctor Run, non-executing inspection, and Doctor Continue. Public operations
+select the closed intent; callers cannot supply arbitrary command identifiers or
+skip validation. Run requires design mode, Continue requires break mode, and
+target resolution retains the existing native procedure-name/line authority.
+UI activation is followed by current component/code membership, procedure
+position/bounds, mode, pane/selection, command and workbook-binding checks.
+
+A typed preparation Adapter owned by the existing session begins Run's modal
+baseline only after the ordinary VBE context is visible and verified. Doctor's
+owned execution settings remain in that Adapter. The Module verifies observation
+health and repeats currentness/cancellation fences after baseline creation;
+failure before invocation executes no Run. The responsible owner retires a
+failed-start phase once and preserves original and retirement failures. A late
+phase remains supervised by the same owner. Inspect performs neither Execute nor
+execution-setting changes; Continue starts no new Run phase. Reset remains an
+independent exact-active-project operation and never selects another project.
+
+
 **VbeDebugEnvironment**:
 The user-owned VBE debugging preferences and facilities that govern interactive
 execution, including error trapping, compile-on-demand behavior, watches, and

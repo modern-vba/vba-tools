@@ -1395,8 +1395,9 @@ public sealed class VbeDebugAutomationTests
             events.IndexOf("prompt-capture:WorkbookOpen") <
             events.FindIndex(entry => entry.StartsWith("open:", StringComparison.Ordinal)));
         Assert.True(
-            events.IndexOf("prompt-capture:TargetStart") <
+            events.IndexOf("prompt-capture:TargetStart") >
             events.IndexOf("find-control:1:186:False"));
+        Assert.True(events.IndexOf("prompt-capture:TargetStart") < events.IndexOf("execute:186"));
         Assert.Contains("prompt-watch:TargetStart", events);
 
         process.Exit(0);
@@ -1989,7 +1990,7 @@ public sealed class VbeDebugAutomationTests
             new DebugTargetProcedure("DebugModule", "RunTarget"),
             CancellationToken.None);
 
-        Assert.Equal(
+        string[] requiredOrder =
             [
                 "enable-events:False",
                 $"open:{Path.GetFullPath(workbookPath)}",
@@ -2009,8 +2010,14 @@ public sealed class VbeDebugAutomationTests
                 "find-control:1:186:False",
                 "enable-events:True",
                 "execute:186"
-            ],
-            events);
+            ];
+        var next = 0;
+        foreach (var required in requiredOrder)
+        {
+            var found = events.FindIndex(next, entry => entry == required);
+            Assert.True(found >= 0, $"Missing ordered event: {required}");
+            next = found + 1;
+        }
         Assert.False(session.Completion.IsCompleted);
 
         process.Exit(0);
@@ -2738,7 +2745,9 @@ internal sealed record FakeVbeModel(
         bool recordAutomationSecurityEvents = false,
         bool recordVbProjectAccess = false,
         bool breakpointCommandBuiltIn = true,
-        int breakpointCommandId = 51)
+        int breakpointCommandId = 51,
+        bool runCommandBuiltIn = true,
+        int runCommandId = 186)
     {
         var codeWindow = new FakeVbeWindow(8642, events, "code-focus");
         var codePane = new FakeCodePane(codeWindow, events, selectionMatches);
@@ -2803,8 +2812,9 @@ internal sealed record FakeVbeModel(
             };
         var runControl = runCommandMissing
             ? null
-            : new FakeCommandBarControl(186, events)
+            : new FakeCommandBarControl(runCommandId, events)
             {
+                BuiltIn = runCommandBuiltIn,
                 Enabled = runCommandEnabled,
                 ExecuteException = runCommandException,
                 ExecuteAction = runCommandExecuteAction
@@ -3000,10 +3010,12 @@ public sealed class FakeCodeModule(
 
     public int CountOfLines => codeLines.Count;
 
+    public Func<string, int>? ProcedureLine { get; set; }
+
     public int ProcBodyLine(string procedureName, int procedureKind)
     {
         events.Add($"procedure:{procedureName}:{procedureKind}");
-        return 7;
+        return ProcedureLine?.Invoke(procedureName) ?? 7;
     }
 
     public string Lines(int startLine, int count)

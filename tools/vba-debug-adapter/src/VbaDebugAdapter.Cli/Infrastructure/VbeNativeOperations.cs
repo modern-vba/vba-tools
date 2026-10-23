@@ -6,6 +6,12 @@ using VbaTools.Syntax;
 namespace VbaDebugAdapter.Infrastructure;
 
 /// <summary>Borrowed native context; the concrete session retains all lifetime policy.</summary>
+internal interface IVbeNativeRunPreparation
+{
+    void Begin();
+    void VerifyObservation();
+}
+
 internal interface IVbeNativeOperationAdapter
 {
     object Application { get; }
@@ -15,9 +21,75 @@ internal interface IVbeNativeOperationAdapter
     void ReleaseScope(Exception? failure, params (string Resource, object? Value)[] references);
 }
 
-/// <summary>Owns exact breakpoint transfer, not Excel or COM lifetime.</summary>
+/// <summary>Owns exact native breakpoint, Run and inspection proof without acquiring Excel or COM lifetime.</summary>
 internal sealed class VbeNativeOperations(IVbeNativeOperationAdapter adapter)
 {
+    private sealed record NativeContext(object Workbook, object Project, object Components,
+        object Component, object Code, int Line, int Mode,
+        VbeBreakpoint? Breakpoint = null, DebugTargetProcedure? Target = null)
+    {
+        public int CommandId => Breakpoint is null ? VbeNativeCommandContract.RunOrContinueCommandId
+            : VbeNativeCommandContract.ToggleBreakpointCommandId;
+        public string CommandName => Breakpoint is null ? "Run Sub/UserForm" : "Toggle Breakpoint";
+        public string ContextName => Breakpoint is not null ? "breakpoint"
+            : Mode == 1 ? "break mode" : "target code";
+    }
+
+    public void RunTarget(DebugTargetProcedure target, IVbeNativeRunPreparation preparation,
+        CancellationToken token)
+        => ProcessTarget(target, 2, execute: true, preparation, token);
+
+    public void ContinueTarget(DebugTargetProcedure target, CancellationToken token)
+        => ProcessTarget(target, 1, execute: true, preparation: null, token);
+
+    public void InspectTarget(DebugTargetProcedure target, CancellationToken token)
+        => ProcessTarget(target, 2, execute: false, preparation: null, token);
+
+    private void ProcessTarget(DebugTargetProcedure target, int mode, bool execute,
+        IVbeNativeRunPreparation? preparation, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        var references = new List<(string Resource, object? Value)>();
+        Exception? failure = null;
+        int? selectedLine = null;
+        try
+        {
+            var workbook = GetWorkbook(null);
+            dynamic book = workbook;
+            object projectObject = book.VBProject;
+            references.Insert(0, ("target VBA project", projectObject));
+            dynamic project = projectObject;
+            if ((int)project.Mode != mode)
+                throw new DebugSetupException(mode == 2
+                    ? "The workbook VBA project is not in design mode."
+                    : "The workbook VBA project is not in break mode.");
+            object componentsObject = project.VBComponents;
+            references.Insert(0, ("target VBA components", componentsObject));
+            dynamic components = componentsObject;
+            object componentObject = components.Item(target.ModuleName);
+            references.Insert(0, ("target component", componentObject));
+            dynamic component = componentObject;
+            object codeObject = component.CodeModule;
+            references.Insert(0, ("target code module", codeObject));
+            dynamic code = codeObject;
+            var line = (int)code.ProcBodyLine(target.ProcedureName, 0);
+            selectedLine = line;
+            var context = new NativeContext(workbook, projectObject, componentsObject,
+                componentObject, codeObject, line, mode, Target: target);
+            VerifyTarget(context);
+            ExecuteCommand(context, references, execute, preparation, token);
+        }
+        catch (Exception error)
+        {
+            if (error is DebugSetupException setup)
+                setup.WithNativeFailure(new(setup.NativeFailure?.Reason ?? VbeNativeFailureReason.BindingChanged,
+                    "Run Sub/UserForm", null, null, target.ModuleName, selectedLine));
+            failure = error;
+            throw;
+        }
+        finally { adapter.ReleaseScope(failure, references.ToArray()); }
+    }
+
     public void TransferBreakpoints(IReadOnlyList<VbeBreakpoint> breakpoints, CancellationToken token)
         => ProcessBreakpoints(breakpoints, execute: true, token);
 
@@ -63,8 +135,9 @@ internal sealed class VbeNativeOperations(IVbeNativeOperationAdapter adapter)
             {
                 token.ThrowIfCancellationRequested();
                 var module = modules[breakpoint.ModuleName];
-                ExecuteToggle(workbook, projectObject, componentsObject,
-                    module.Component, module.Code, breakpoint, references, execute, token);
+                ExecuteCommand(new NativeContext(workbook, projectObject, componentsObject,
+                    module.Component, module.Code, breakpoint.VbideLine, 2, Breakpoint: breakpoint),
+                    references, execute, preparation: null, token);
             }
         }
         catch (Exception error) { failure = error; throw; }
@@ -134,7 +207,7 @@ internal sealed class VbeNativeOperations(IVbeNativeOperationAdapter adapter)
                     $"The whole code module '{map.ModuleName}' does not exactly match its source map at line {line}.");
     }
 
-    private object GetWorkbook(VbeBreakpoint breakpoint, object? expected = null)
+    private object GetWorkbook(VbeBreakpoint? breakpoint, object? expected = null)
     {
         object workbook;
         try { workbook = adapter.GetCurrentWorkbook(); }
@@ -156,67 +229,66 @@ internal sealed class VbeNativeOperations(IVbeNativeOperationAdapter adapter)
                 "The exact workbook VBA project is not in design mode.");
     }
 
-    private void ExecuteToggle(object workbook, object projectObject, object componentsObject,
-        object componentObject, object codeObject, VbeBreakpoint breakpoint,
-        List<(string Resource, object? Value)> moduleReferences, bool execute, CancellationToken token)
+    private void ExecuteCommand(NativeContext context,
+        List<(string Resource, object? Value)> moduleReferences, bool execute,
+        IVbeNativeRunPreparation? preparation, CancellationToken token)
     {
         var references = new List<(string Resource, object? Value)>();
         Exception? failure = null;
         try
         {
-            GetWorkbook(breakpoint, workbook);
+            GetWorkbook(context.Breakpoint, context.Workbook);
             adapter.AllowForeground();
-            dynamic component = componentObject;
+            dynamic component = context.Component;
             component.Activate();
-            dynamic code = codeObject;
+            dynamic code = context.Code;
             object paneObject = code.CodePane;
-            references.Insert(0, ("breakpoint code pane", paneObject));
+            references.Insert(0, ("native code pane", paneObject));
             dynamic pane = paneObject;
             dynamic excel = adapter.Application;
             object vbeObject = excel.VBE;
-            references.Insert(0, ("breakpoint VBE", vbeObject));
+            references.Insert(0, ("native VBE", vbeObject));
             dynamic vbe = vbeObject;
             object windowObject = vbe.MainWindow;
-            references.Insert(0, ("breakpoint VBE main window", windowObject));
+            references.Insert(0, ("VBE main window", windowObject));
             dynamic window = windowObject;
             window.Visible = true;
             pane.Show();
             vbe.ActiveCodePane = paneObject;
-            pane.SetSelection(breakpoint.VbideLine, 1, breakpoint.VbideLine, 1);
+            pane.SetSelection(context.Line, 1, context.Line, 1);
             window.SetFocus();
             object codeWindowObject = pane.Window;
-            references.Insert(0, ("breakpoint code window", codeWindowObject));
+            references.Insert(0, ("VBE code window", codeWindowObject));
             dynamic codeWindow = codeWindowObject;
             codeWindow.SetFocus();
             adapter.BringVbeToForeground(new nint(Convert.ToInt64(window.HWnd)));
-            CheckPane(vbeObject, paneObject, breakpoint, references);
+            CheckPane(vbeObject, paneObject, context, references);
             object barsObject = vbe.CommandBars;
-            references.Insert(0, ("breakpoint command bars", barsObject));
+            references.Insert(0, ("VBE command bars", barsObject));
             dynamic bars = barsObject;
-            object? commandObject = bars.FindControl(1,
-                VbeNativeCommandContract.ToggleBreakpointCommandId, Type.Missing, false);
+            object? commandObject = bars.FindControl(1, context.CommandId, Type.Missing, false);
             if (commandObject is null)
-                throw Failure(VbeNativeFailureReason.CommandMissing, breakpoint,
-                    "The native VBE Toggle Breakpoint command (ID 51) was not found.");
-            references.Insert(0, ("native Toggle Breakpoint command", commandObject));
-            CheckCommand(commandObject, breakpoint);
-
-            // Reacquired aliases belong to the outer scope: a Doctor final-release
-            // must not invalidate cached component/code RCWs between commands.
-            dynamic components = componentsObject;
-            object currentComponent = components.Item(breakpoint.ModuleName);
-            moduleReferences.Insert(0, ("current breakpoint component", currentComponent));
-            dynamic current = currentComponent;
-            object currentCode = current.CodeModule;
-            moduleReferences.Insert(0, ("current breakpoint code module", currentCode));
-            if (!ReferenceEquals(currentComponent, componentObject) || !ReferenceEquals(currentCode, codeObject))
-                throw Failure(VbeNativeFailureReason.SourceMapMismatch, breakpoint,
-                    "The exact breakpoint component or code module was replaced.");
-            VerifyContents(currentComponent, currentCode, breakpoint.SourceMap, breakpoint);
-            RequireDesignMode((dynamic)projectObject, breakpoint);
-            CheckPane(vbeObject, paneObject, breakpoint, references);
-            CheckCommand(commandObject, breakpoint);
-            GetWorkbook(breakpoint, workbook);
+                throw Failure(VbeNativeFailureReason.CommandMissing, context.Breakpoint,
+                    $"The native VBE {context.CommandName} command (ID {context.CommandId}) was not found.",
+                    context: context);
+            references.Insert(0, ($"native {context.CommandName} command", commandObject));
+            CheckCommand(commandObject, context);
+            RevalidateModule(context, moduleReferences);
+            token.ThrowIfCancellationRequested();
+            if (preparation is not null)
+            {
+                preparation.Begin();
+                preparation.VerifyObservation();
+                RevalidateModule(context, moduleReferences);
+            }
+            dynamic project = context.Project;
+            if ((int)project.Mode != context.Mode)
+                throw Failure(VbeNativeFailureReason.BindingChanged, context.Breakpoint,
+                    $"The exact project mode changed in the {context.ContextName} context.", context: context);
+            CheckPane(vbeObject, paneObject, context, references);
+            CheckCommand(commandObject, context);
+            preparation?.VerifyObservation();
+            GetWorkbook(context.Breakpoint, context.Workbook);
             token.ThrowIfCancellationRequested();
             if (execute)
             {
@@ -225,8 +297,9 @@ internal sealed class VbeNativeOperations(IVbeNativeOperationAdapter adapter)
                 catch (Exception error) when (error is COMException or RuntimeBinderException
                     or InvalidCastException or ArgumentException or System.Reflection.TargetParameterCountException)
                 {
-                    throw Failure(VbeNativeFailureReason.InvocationFailed, breakpoint,
-                        "The native VBE Toggle Breakpoint command (ID 51) was found and enabled, but its invocation did not complete. Resolve any visible VBE dialog and retry.", error);
+                    throw Failure(VbeNativeFailureReason.InvocationFailed, context.Breakpoint,
+                        $"The native VBE {context.CommandName} command (ID {context.CommandId}) was found and enabled, but its invocation did not complete. Resolve any visible VBE dialog and retry.",
+                        error, context);
                 }
             }
         }
@@ -234,44 +307,85 @@ internal sealed class VbeNativeOperations(IVbeNativeOperationAdapter adapter)
         finally { adapter.ReleaseScope(failure, references.ToArray()); }
     }
 
-    private static void CheckPane(object vbeObject, object paneObject, VbeBreakpoint breakpoint,
+    private static void RevalidateModule(NativeContext context,
+        List<(string Resource, object? Value)> references)
+    {
+        dynamic components = context.Components;
+        var name = context.Breakpoint?.ModuleName ?? context.Target!.ModuleName;
+        object currentComponent = components.Item(name);
+        references.Insert(0, ("current native component", currentComponent));
+        dynamic current = currentComponent;
+        object currentCode = current.CodeModule;
+        references.Insert(0, ("current native code module", currentCode));
+        if (!ReferenceEquals(currentComponent, context.Component) || !ReferenceEquals(currentCode, context.Code))
+            throw Failure(VbeNativeFailureReason.SourceMapMismatch, context.Breakpoint,
+                "The exact component or code module was replaced.", context: context);
+        if (context.Breakpoint is { } breakpoint)
+            VerifyContents(currentComponent, currentCode, breakpoint.SourceMap, breakpoint);
+        else VerifyTarget(context);
+    }
+
+    private static void VerifyTarget(NativeContext context)
+    {
+        dynamic component = context.Component;
+        dynamic code = context.Code;
+        var target = context.Target!;
+        if ((int)component.Type != 1)
+            throw Failure(VbeNativeFailureReason.SourceMapMismatch, null,
+                $"The debug target module '{target.ModuleName}' is not a standard module.", context: context);
+        if (!string.Equals((string)component.Name, target.ModuleName, StringComparison.Ordinal))
+            throw Failure(VbeNativeFailureReason.SourceMapMismatch, null,
+                "The exact target component identity changed.", context: context);
+        if (context.Line <= 0 || context.Line > (int)code.CountOfLines
+            || (int)code.ProcBodyLine(target.ProcedureName, 0) != context.Line)
+            throw Failure(VbeNativeFailureReason.SourceMapMismatch, null,
+                $"The debug target procedure '{target.ModuleName}.{target.ProcedureName}' could not be resolved at the exact selected line.",
+                context: context);
+    }
+
+    private static void CheckPane(object vbeObject, object paneObject, NativeContext context,
         List<(string Resource, object? Value)> references)
     {
         dynamic vbe = vbeObject;
         object active = vbe.ActiveCodePane;
-        references.Insert(0, ("active breakpoint code pane", active));
+        references.Insert(0, ("active native code pane", active));
         if (!ReferenceEquals(active, paneObject))
-            throw Failure(VbeNativeFailureReason.WrongPane, breakpoint,
-                "The intended VBE code pane is not active in the breakpoint context.");
+            throw Failure(VbeNativeFailureReason.WrongPane, context.Breakpoint,
+                $"The intended VBE code pane is not active in the {context.ContextName} context.", context: context);
         dynamic pane = paneObject;
         int startLine = 0, startColumn = 0, endLine = 0, endColumn = 0;
         pane.GetSelection(ref startLine, ref startColumn, ref endLine, ref endColumn);
-        if (startLine != breakpoint.VbideLine || endLine != breakpoint.VbideLine
-            || startColumn != 1 || endColumn != 1)
-            throw Failure(VbeNativeFailureReason.WrongSelection, breakpoint,
-                "The exact VBE line selection was not retained in the breakpoint context.");
+        if (startLine != context.Line || endLine != context.Line || startColumn != 1 || endColumn != 1)
+            throw Failure(VbeNativeFailureReason.WrongSelection, context.Breakpoint,
+                $"The exact VBE line selection was not retained in the {context.ContextName} context.", context: context);
     }
 
-    private static void CheckCommand(object commandObject, VbeBreakpoint breakpoint)
+    private static void CheckCommand(object commandObject, NativeContext context)
     {
         dynamic command = commandObject;
-        if ((int)command.Id != VbeNativeCommandContract.ToggleBreakpointCommandId || !(bool)command.BuiltIn)
-            throw Failure(VbeNativeFailureReason.WrongCommand, breakpoint,
-                "The resolved VBE command is not the built-in Toggle Breakpoint command (ID 51).");
+        if ((int)command.Id != context.CommandId || !(bool)command.BuiltIn)
+            throw Failure(VbeNativeFailureReason.WrongCommand, context.Breakpoint,
+                $"The resolved VBE command is not the built-in {context.CommandName} command (ID {context.CommandId}).",
+                context: context);
         if (!(bool)command.Enabled)
-            throw Failure(VbeNativeFailureReason.CommandDisabled, breakpoint,
-                "The native VBE Toggle Breakpoint command (ID 51) is disabled in the actual workbook compilation context, so the mapped line is inactive or non-executable. The breakpoint was not relocated.");
+            throw Failure(VbeNativeFailureReason.CommandDisabled, context.Breakpoint,
+                context.Breakpoint is not null
+                    ? "The native VBE Toggle Breakpoint command (ID 51) is disabled in the actual workbook compilation context, so the mapped line is inactive or non-executable. The breakpoint was not relocated."
+                    : $"The native VBE {context.CommandName} command (ID {context.CommandId}) is disabled in the {context.ContextName} context.",
+                context: context);
     }
 
     private static DebugSetupException Failure(VbeNativeFailureReason reason,
-        VbeBreakpoint? breakpoint, string message, Exception? cause = null)
+        VbeBreakpoint? breakpoint, string message, Exception? cause = null, NativeContext? context = null)
     {
-        var prefix = breakpoint is null ? "" :
+        var prefix = breakpoint is null
+            ? context?.Target is { } target ? $"Invalid target '{target.ModuleName}.{target.ProcedureName}' at VBE line {context.Line}: " : ""
+            :
             $"Invalid breakpoint at '{breakpoint.Source.SourceUri}:{breakpoint.Source.EditorLine + 1}' mapped to '{breakpoint.ModuleName}:{breakpoint.VbideLine}': ";
         var failure = cause is null ? new DebugSetupException(prefix + message)
             : new DebugSetupException(prefix + message, cause);
-        return failure.WithNativeFailure(new(reason, breakpoint is null ? "Verify source map" : "Toggle Breakpoint",
+        return failure.WithNativeFailure(new(reason, context?.CommandName ?? (breakpoint is null ? "Verify source map" : "Toggle Breakpoint"),
             breakpoint?.Source.SourceUri, breakpoint?.Source.EditorLine,
-            breakpoint?.ModuleName, breakpoint?.VbideLine));
+            breakpoint?.ModuleName ?? context?.Target?.ModuleName, breakpoint?.VbideLine ?? context?.Line));
     }
 }

@@ -488,6 +488,23 @@ Doctor's final-release policy must not invalidate cached aliases between native
 commands. Shared native operations do not acquire an Excel lifetime or broaden
 DebugTargetProcedure eligibility.
 
+The same native-operation Module now owns Run, Doctor Continue, and target
+inspection. Closed operations select command and required mode internally.
+Target component membership and native procedure line/bounds are rechecked
+after UI preparation; this does not add a target source-map projection, allow
+duplicate conditional targets, or reorder source admission.
+
+Run's typed preparation Adapter belongs to the existing session owner. It starts
+the baseline after ordinary VBE UI and the native context are verified, then
+applies only that owner's execution settings. Observation health, binding,
+module/position, mode, pane, command, and cancellation are checked again before
+Execute. A failed start retires its acquired phase once and retains both the
+original failure and any retirement failure. No observation coordinator or Excel
+owner is added. Doctor observes its late-created phase with the original owned
+operation, while Source retains independent late-phase supervision. Inspect has
+no Execute, event-setting changes, or modal phase; Continue uses break mode and
+the existing phase. Reset retains its separate exact-active-project authority.
+
 If the VBE reports a compile error before the target begins, the modal error
 remains visible and has no timeout. `DebugLifecycleOutput` reports a VBE-input
 wait. Dismissing the dialog may produce `DebugSetupError`; source cleanup does

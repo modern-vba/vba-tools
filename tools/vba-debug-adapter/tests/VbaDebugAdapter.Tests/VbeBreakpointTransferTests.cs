@@ -134,7 +134,7 @@ public sealed class VbeBreakpointTransferTests
     public async Task A_later_failure_does_not_retry_or_compensate_prior_toggles(bool source)
     {
         await using var fixture = await Fixture.CreateAsync(source, "mutateAfterToggle");
-        await fixture.RejectAsync([fixture.Breakpoint(), fixture.Breakpoint(line: 4)], "SourceMapMismatch");
+        await fixture.RejectAsync([fixture.Breakpoint(), fixture.Breakpoint(line: 8)], "SourceMapMismatch");
         Assert.Equal(1, fixture.Events.Count(entry => entry == "execute:51"));
     }
 
@@ -175,25 +175,31 @@ public sealed class VbeBreakpointTransferTests
         Assert.DoesNotContain("execute:51", fixture.Events);
     }
 
-    private sealed class Fixture : IAsyncDisposable
+    internal sealed class Fixture : IAsyncDisposable
     {
         private readonly TempDirectory temp;
         private readonly LeaseIssuedVbeGenerationFixture generation;
         private IAsyncDisposable session = null!;
         private Func<IReadOnlyList<VbeBreakpoint>, CancellationToken, Task> transfer = null!;
-        private bool expectedFailure;
+        internal bool ExpectedFailure;
+        internal bool AllowObservationFailure;
+        internal Exception? ExpectedObservationFailure;
         internal bool ExpectedCancellation;
         internal bool BindingCurrent = true;
         internal List<string> Rows { get; } =
-            ["Option Explicit", "Public Sub Probe()", "    Debug.Print 1", "    Debug.Print 2", "End Sub"];
+            ["Option Explicit", "", "", "", "", "Public Sub Probe()", "    Debug.Print 1", "    Debug.Print 2", "End Sub"];
         internal List<string> Events { get; } = [];
         internal FakeVbeModel Model = null!;
+        internal Func<DebugTargetProcedure, IDebugInputWaitSink?, CancellationToken, Task> RunAsync = null!;
+        internal Func<DebugTargetProcedure, CancellationToken, Task> ContinueAsync = null!;
+        internal Func<VbeBreakpoint, DebugTargetProcedure, CancellationToken, Task> InspectAsync = null!;
 
         private Fixture(TempDirectory temp, LeaseIssuedVbeGenerationFixture generation)
         { this.temp = temp; this.generation = generation; }
 
         internal static async Task<Fixture> CreateAsync(
-            bool source, string behavior = "", bool foreground = true)
+            bool source, string behavior = "", bool foreground = true,
+            IDebugModalPromptMonitor? monitor = null)
         {
             var temp = TempDirectory.Create();
             var generation = await LeaseIssuedVbeGenerationFixture.CreateAsync(temp.Path, "Source.xlsm");
@@ -207,7 +213,12 @@ public sealed class VbeBreakpointTransferTests
                 breakpointCommandId: behavior == "wrong" ? 99 : 51,
                 breakpointCommandException: behavior == "throws" ? new COMException("native failure") : null,
                 breakpointCommandExecuteAction: behavior == "mutateAfterToggle"
-                    ? () => fixture.Rows[0] = "changed after toggle" : null);
+                    ? () => fixture.Rows[0] = "changed after toggle" : null,
+                runCommandMissing: behavior == "runMissing",
+                runCommandEnabled: behavior != "runDisabled",
+                runCommandBuiltIn: behavior != "runNotBuiltIn",
+                runCommandId: behavior == "runWrong" ? 99 : 186,
+                runCommandException: behavior == "runThrows" ? new COMException("native Run failure") : null);
             var window = new FakeDebugWindowActivator(fixture.Events, foregroundReached: foreground);
             var dispatchers = new FakeStaComDispatcherFactory(new RecordingStaComDispatcher());
             if (source)
@@ -215,10 +226,11 @@ public sealed class VbeBreakpointTransferTests
                 var binding = new SourceVbeDesktopBinding(fixture.Model.Excel, fixture.Model.Workbook,
                     path, 12345, 638000000000000000, true,
                     () => fixture.BindingCurrent, () => fixture.Events.Add("source-reference-release"));
-                var session = await new SourceVbeDebugAutomation(new Connector(binding), dispatchers, window)
+                var session = await new SourceVbeDebugAutomation(new Connector(binding), dispatchers, window, monitor)
                     .AttachOrOpenAsync(path, CancellationToken.None);
                 fixture.session = session;
                 fixture.transfer = session.SetNativeBreakpointsAsync;
+                fixture.RunAsync = session.RunTargetAsync;
             }
             else
             {
@@ -226,10 +238,14 @@ public sealed class VbeBreakpointTransferTests
                     new DateTime(2026, 7, 21, 10, 30, 0, DateTimeKind.Local));
                 var session = await new VbeDebugAutomation(
                     new FakeExcelDebugApplicationFactory(fixture.Model.Excel),
-                    new FakeDebugExcelProcessApi(27182, process), window, dispatchers)
+                    new FakeDebugExcelProcessApi(27182, process), window, dispatchers, promptMonitor: monitor)
                     .StartVisibleAsync(CancellationToken.None);
                 fixture.session = session;
                 fixture.transfer = session.SetNativeBreakpointsAsync;
+                fixture.RunAsync = session.RunTargetAsync;
+                var doctor = Assert.IsAssignableFrom<IVbeDebugDoctorControl>(session);
+                fixture.ContinueAsync = doctor.ContinueTargetAsync;
+                fixture.InspectAsync = doctor.VerifyCommandContextAsync;
                 await session.OpenTestGenerationAsync(generation.GenerationWorkspace, CancellationToken.None);
             }
             return fixture;
@@ -238,7 +254,7 @@ public sealed class VbeBreakpointTransferTests
         internal VbeCodeModuleSourceMap Map(string module)
             => new(module, VbaModuleKind.StandardModule, Rows.ToImmutableArray());
 
-        internal VbeBreakpoint Breakpoint(string module = "DebugModule", int line = 3)
+        internal VbeBreakpoint Breakpoint(string module = "DebugModule", int line = 7)
             => new(new DebugSourceBreakpoint("file:///C:/work/" + module + ".bas", 7), Map(module), line);
 
         internal Task TransferAsync(IReadOnlyList<VbeBreakpoint> breakpoints, CancellationToken token)
@@ -247,7 +263,7 @@ public sealed class VbeBreakpointTransferTests
         internal async Task<DebugSetupException> RejectAsync(
             IReadOnlyList<VbeBreakpoint> breakpoints, string reason)
         {
-            expectedFailure = true;
+            ExpectedFailure = true;
             var failure = await Assert.ThrowsAsync<DebugSetupException>(() =>
                 TransferAsync(breakpoints, CancellationToken.None));
             Assert.NotNull(failure.NativeFailure);
@@ -260,7 +276,7 @@ public sealed class VbeBreakpointTransferTests
             var failure = await Record.ExceptionAsync(() => session.DisposeAsync().AsTask());
             if (failure is not null)
             {
-                Assert.True(expectedFailure || ExpectedCancellation);
+                Assert.True(ExpectedFailure || ExpectedCancellation);
                 var owner = Assert.IsAssignableFrom<IDebugResourceOwnerEvidence>(session);
                 Assert.NotNull(owner.CleanupOutcome);
                 if (ExpectedCancellation)
@@ -276,8 +292,14 @@ public sealed class VbeBreakpointTransferTests
                 }
                 else
                 {
-                    Assert.True(!owner.CleanupOutcome.HasCleanupFailure, owner.CleanupOutcome.Describe());
-                    Assert.IsType<DebugSetupException>(failure);
+                    if (!AllowObservationFailure)
+                        Assert.True(!owner.CleanupOutcome.HasCleanupFailure, owner.CleanupOutcome.Describe());
+                    else
+                        Assert.All(owner.CleanupOutcome.CleanupFailures, item =>
+                            Assert.Same(ExpectedObservationFailure, item.Exception));
+                    if (failure is IDebugFailureEvidence evidence)
+                        Assert.Same(owner.CleanupOutcome, evidence.FailureOutcome);
+                    else Assert.Same(owner.CleanupOutcome.PrimaryFailure, failure);
                 }
             }
             await generation.DisposeAsync();
