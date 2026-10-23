@@ -8,10 +8,11 @@ using VbaTools.Syntax;
 namespace VbaDev.App.Build;
 
 /// <summary>
-/// Captures and restores source-workbook VBA state without persistence or Excel lifetime authority.
-/// The caller retains this capsule and its staging through its intent-specific finalization.
+/// Captures and restores source-workbook VBA state without persistence authority.
+/// RunAsync owns execution staging through automation retirement; direct capsule
+/// callers retain their existing ownership during the staged Test/Debug migration.
 /// </summary>
-internal sealed class SourceWorkbookReplacement
+internal sealed partial class SourceWorkbookReplacement
 {
     private readonly VbeImportSourceSet sourceSet;
     private readonly WorkbookMaterializationNamePreflightReport sourcePreflight;

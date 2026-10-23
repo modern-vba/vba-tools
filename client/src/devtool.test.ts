@@ -1018,7 +1018,7 @@ for (const feature of [
   test(`Packaged VbaDev contract rejects a provider missing ${feature} before command use`, async () => {
     const extensionRoot = path.resolve(__dirname, '..', '..');
     const contract = loadRequiredVbaDevContract(extensionRoot);
-    assert.equal(contract.featureVersions?.[feature], '1.0');
+    assert.equal(contract.featureVersions?.[feature], feature === 'build.sourceWorkbook' ? '2.0' : '1.0');
     const featureVersions = { ...contract.featureVersions };
     delete featureVersions[feature];
     const commands = Object.fromEntries(Object.entries(contract.commandSchemaVersions)

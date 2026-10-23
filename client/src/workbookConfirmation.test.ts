@@ -8,7 +8,7 @@ import * as path from 'node:path';
 test('packaged contract rejects providers without source Build, Export, or confirmation', () => {
   const contract = loadRequiredVbaDevContract(path.resolve(__dirname, '..', '..'));
   for (const feature of ['build.sourceWorkbook', 'export.sourceWorkbook', 'invocation.stdinWorkbookConfirmation']) {
-    assert.equal(contract.featureVersions?.[feature], '1.0');
+    assert.equal(contract.featureVersions?.[feature], feature === 'build.sourceWorkbook' ? '2.0' : '1.0');
   }
 });
 
@@ -162,7 +162,7 @@ test('managed source Build explicitly enables its UI confirmation without replay
   }, {
     toolVersion: '0.1.0', contractVersion: '1.0', commands: { build: { outputSchemaVersion: '3.0' } },
     featureVersions: { 'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
-      'build.sourceWorkbook': '1.0' }
+      'build.sourceWorkbook': '2.0' }
   });
 
   assert.equal(calls.length, 1);
@@ -185,7 +185,7 @@ test('managed source Build without a UI callback explicitly refuses interactive 
   }, 'vba-dev.exe', { projectRoot: 'C:\\Project', argsBeforeProject: ['build'] }, {
     toolVersion: 'test', contractVersion: '1.0', commands: { build: { outputSchemaVersion: '3.0' } },
     featureVersions: { 'invocation.stdinCancellation': '1.0', 'invocation.stdinWorkbookConfirmation': '1.0',
-      'build.sourceWorkbook': '1.0' }
+      'build.sourceWorkbook': '2.0' }
   });
   assert.deepEqual(startedArgs, ['build', '--project', 'C:\\Project', '--interactive', 'false',
     '--cancellation-transport', 'stdin-v1']);

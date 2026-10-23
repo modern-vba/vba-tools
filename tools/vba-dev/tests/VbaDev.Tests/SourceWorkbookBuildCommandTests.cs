@@ -1,4 +1,5 @@
 using System.Text;
+using VbaDev.App.Cli;
 using VbaDev.App.FileSystem;
 using VbaDev.App.Projects;
 using VbaDev.App.Testing;
@@ -599,11 +600,11 @@ public sealed class SourceWorkbookBuildCommandTests
                 .Resolve(new ProjectResolutionRequest(root, null, root)),
             CancellationToken.None);
 
-        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(0, result.ExitCode);
         Assert.Equal(SourceWorkbookSaveState.Saved, automation.Session.SaveState);
-        Assert.Contains("Save completed", result.StandardError);
-        Assert.Contains("VBE import staging cleanup failed", result.StandardError);
-        Assert.Contains(automation.Session.LastBuildImportSourcePath!, result.StandardError);
+        Assert.Contains("Warning:", result.StandardOutput);
+        Assert.Contains("VBE import staging cleanup failed", result.StandardOutput);
+        Assert.Contains(automation.Session.LastBuildImportSourcePath!, result.StandardOutput);
     }
 
     [Fact]
@@ -778,6 +779,58 @@ public sealed class SourceWorkbookBuildCommandTests
         Assert.Equal(0, result.ExitCode);
         Assert.Contains($"Built {sourceWorkbook}", result.StandardOutput);
         Assert.Equal(SourceWorkbookSaveState.Saved, automation.Session.SaveState);
+    }
+    [Theory]
+    [InlineData("process")]
+    [InlineData("dispatcher")]
+    [InlineData("com")]
+    [InlineData("late-cancel-com")]
+    public async Task CompletedSaveWithUnprovedReleaseRetainsMirror(string uncertainty)
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var sourceSet = Path.Combine(root, "src", "Book1");
+        Directory.CreateDirectory(sourceSet);
+        File.WriteAllText(Path.Combine(sourceSet, "Book1.xlsm"), "saved workbook", Encoding.UTF8);
+        File.WriteAllText(Path.Combine(sourceSet, "Local.bas"),
+            "Attribute VB_Name = \"Local\"", Encoding.UTF8);
+        var stage = new WorkbookAutomationStage(WorkbookAutomationStageKind.ProcessCleanup);
+        Exception error;
+        if (uncertainty.Contains("com", StringComparison.Ordinal))
+            error = new WorkbookAutomationComReferenceReleaseException(
+                uncertainty == "late-cancel-com" ? new WorkbookAutomationCanceledException(stage, cancellation.Token) : null,
+                [new("workbook", new InvalidOperationException("Release failed."))]);
+        else
+        {
+            var cleanup = new WorkbookAutomationCleanupException("Release uncertain.");
+            ((IWorkbookAutomationLifecycleFailure)cleanup).LifecycleEvidence =
+                new(stage, uncertainty != "process", uncertainty != "dispatcher", false);
+            error = cleanup;
+        }
+        var automation = new RecordingSourceWorkbookAutomation
+        {
+            AfterOperation = uncertainty == "late-cancel-com" ? cancellation.Cancel : null,
+            AfterOperationFailure = error
+        };
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(root,
+            sourceWorkbookAutomation: automation,
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty);
+        var result = await composition.BuildCommand.RunAsync(
+            new ProjectContextResolver(new JsonProjectManifestStore())
+                .Resolve(new ProjectResolutionRequest(root, null, root)), cancellation.Token);
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(SourceWorkbookSaveState.Saved, automation.Session.SaveState);
+        Assert.True(File.Exists(automation.Session.LastBuildImportSourcePath));
+        Assert.Contains("retained", result.StandardError);
+        Assert.Contains(automation.Session.LastBuildImportSourcePath!, result.StandardError);
+        if (uncertainty.Contains("com", StringComparison.Ordinal))
+        {
+            Assert.Contains("COM reference release", result.StandardError);
+            Assert.Equal(OwnedProcessReleaseProof.ProvenOrNotStarted, result.OwnedProcessReleaseProof);
+        }
     }
 }
 

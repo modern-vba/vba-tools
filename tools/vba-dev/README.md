@@ -682,8 +682,12 @@ Confirmation requires native Save to return with the selected workbook still
 marked saved and bound to its selected path; this is not a separate package
 reopen/hash verification.
 Once required live verification and native Save finish, late cancellation does
-not override success. A later step or cleanup failure reports that saving
-completed but identifies the failed step. When Save was attempted but its
+not override success when all automation release proofs hold. After a normally
+completed Build, temporary-file deletion failures preserve success and report
+retained paths as warnings. An unproved process, STA, or COM-reference release,
+or another failed operation, still reports failure and the completed Save fact.
+This contract is advertised as `build.sourceWorkbook: 2.0`.
+When Save was attempted but its
 outcome cannot be confirmed, the error reports an unknown save outcome. The
 command neither claims byte-for-byte workbook rollback nor automatically undoes
 a completed Save. It does not force-close or terminate a borrowed Excel session.

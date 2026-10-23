@@ -363,7 +363,7 @@ function forceKillDelayForManagedCommand(
     isCallerForceKillExemptCommand(args) ||
     (args[0] === 'test' && capabilities.featureVersions?.['test.sourceWorkbook'] === '1.0') ||
     (args[0] === 'build' && !args.includes('--source-snapshot') &&
-      capabilities.featureVersions?.['build.sourceWorkbook'] === '1.0')
+      capabilities.featureVersions?.['build.sourceWorkbook'] === '2.0')
   ) {
     return undefined;
   }

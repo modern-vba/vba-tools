@@ -101,7 +101,7 @@ internal sealed class VbaDevContractCommandFamily
                 {
                     ["build.sourceSnapshot"] = "2.0",
                     ["build.sourceSnapshotAnalysis"] = "1.0",
-                    ["build.sourceWorkbook"] = "1.0",
+                    ["build.sourceWorkbook"] = "2.0",
                     ["export.sourceWorkbook"] = "1.0",
                     ["test.sourceSnapshot"] = "2.0",
                     ["test.sourceWorkbook"] = "1.0",

@@ -23,6 +23,19 @@ compatibility statements below remain history of the #447 integration point.
 
 ## Context
 
+### Issue #475 follow-up: ordinary Build finalization
+
+Ordinary Build now uses SourceWorkbookReplacement to own preparation resources,
+await the actual automation call, and finalize verification, recovery and mirror
+resources in that order. All process, STA and COM-reference release proofs gate
+dependent deletion. A normally completed callback survives deletion-only
+failures with warnings and purely late trusted cancellation with all proofs.
+Save alone does not establish callback completion. Unknown Save, incomplete
+restoration, ownership/handle failures and unrelated later errors remain failures.
+The Build feature is 2.0 with synchronized extension consumers; output schemas
+are unchanged. Test and Debug migrate in their dependent slices. Export and the
+neutral terminal-fact Module retain their existing contracts.
+
 Ordinary Build previously copied a saved template, imported saved source, and
 committed a separate bin workbook. Project Export then extracted that generated
 copy. This split the authoring round trip across two workbooks and prevented the

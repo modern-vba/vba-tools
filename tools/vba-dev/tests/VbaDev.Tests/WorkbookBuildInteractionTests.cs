@@ -38,7 +38,7 @@ public sealed class WorkbookBuildInteractionTests
         using var payload = JsonDocument.Parse(result.StandardOutput);
         var features = payload.RootElement.GetProperty("featureVersions");
         Assert.True(features.TryGetProperty("build.sourceWorkbook", out var build));
-        Assert.Equal("1.0", build.GetString());
+        Assert.Equal("2.0", build.GetString());
         Assert.Equal("1.0", features.GetProperty("export.sourceWorkbook").GetString());
         Assert.Equal("1.0", features.GetProperty("invocation.stdinWorkbookConfirmation").GetString());
     }

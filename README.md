@@ -577,6 +577,11 @@ Build. Publish retains its staged-copy lifecycle. Test and Source Debug use
 separate no-save preparation against the source workbook; neither invokes
 ordinary Build's Save. These paths do not change this Build contract.
 
+After ordinary Build completes and process, STA and COM-reference release are
+proved, temporary-file deletion failures preserve success and report retained
+paths as warnings. Unproved release or another failed step remains a failure.
+This completed-outcome contract requires `build.sourceWorkbook: 2.0`.
+
 Build captures the selected source files and form
 sidecars once. A supported UTF-8, UTF-16 LE, or UTF-16 BE BOM identifies the
 source encoding; files without a BOM use only the active Windows ANSI code page

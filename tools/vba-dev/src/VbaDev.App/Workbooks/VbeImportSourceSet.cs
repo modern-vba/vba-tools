@@ -302,6 +302,14 @@ public sealed class VbeImportSourceSet : IDisposable
             throw new InvalidOperationException(DescribeCleanup(cleanup, usesStableParent));
     }
 
+    internal InvocationScratchCleanupEvidence CleanupAfterRelease()
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        disposed = true;
+        try { return CleanupEvidence = scratch.Cleanup(); }
+        finally { ownership.Dispose(); }
+    }
+
     internal void RetainWithoutCleanup()
     {
         if (disposed) return;

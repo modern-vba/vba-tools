@@ -1390,6 +1390,18 @@ no whole-workbook, arbitrary-side-effect or completed-Save rollback.
 See [ADR 0061](docs/adr/0061-build-and-export-the-source-workbook-in-place.md).
 _Avoid_: bin generation, automatic source-editor save, full-workbook transaction
 
+**SourceWorkbookReplacement**:
+The source replacement Module owns the ordinary Build execution lifetime from
+successful preparation through actual automation retirement and exact scratch
+finalization. It captures the callback's normal result independently of terminal
+automation evidence. Process release, STA retirement and COM-reference release
+must all be proved before dependent scratch deletion. Complete results survive
+deletion-only cleanup failures as warnings and purely late trusted cancellation;
+Save alone cannot suppress a failed callback. Recovery remains intent-owned and
+bounded before Save starts. During the staged migration, Test and Debug still
+use the existing direct capsule until their own slices migrate.
+_Avoid_: caller-supplied release flags, generic resource registry, Save rollback
+
 **ISourceWorkbookAutomation**:
 The operation boundary that borrows the exact open source workbook or opens the
 closed source file hidden with command-owned cleanup. Its bounded
