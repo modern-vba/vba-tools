@@ -44,6 +44,21 @@ session. Prepared navigation comes only from the executed admission; no-build
 invents no captured source or locations. Preserve bound macro execution, result
 reading, COM release, completed rows, cancellation and cleanup semantics through
 the real source-session Interface. This changes no CLI schema or feature version.
+## Input-only snapshot Test
+
+Issue #482 replaces SnapshotTestExecutionWorkspace with SnapshotTestInput.
+Delete the fictional execution-workbook basename/path, registration/receipt and
+output validation. Validate canonical placement of the actual scratch directory
+and captured input instead, preserving create-only exact ownership, caller and
+persistent-source isolation, rejection of foreign/linked captures, and nested
+cleanup evidence even after materialization consumes the capture.
+
+The shared Test finalization facts still govern retention and cleanup. Saved
+and no-build Test allocate no snapshot-input workspace. The real paired-output
+Build validator is unchanged. Input ownership tests use real captured files for
+changed/replaced/locked/missing evidence; a fictional output alias no longer
+rejects input-only Test. No CLI schema or feature changes are introduced.
+This slice depends on shared source Test finalization, not direct Test wiring.
 ## Consequences
 
 Dependency construction cannot revive obsolete ordinary bin generation.

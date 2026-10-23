@@ -235,3 +235,13 @@ Snapshot Test's projected CLI matrix now has seven entries:
 and `sourceSnapshot.activeWindowsCodePage: 1.0`, with Test schema `1.2`.
 Debug's exact five-entry adapter dependency map is unchanged. Publish, explicit
 snapshot-output Build and standalone Import remain outside this follow-up.
+
+## Issue #482 follow-up: input-only ownership
+
+[ADR 0066](0066-retire-obsolete-source-workbook-execution-routes.md) replaces
+SnapshotTestExecutionWorkspace with SnapshotTestInput. The legacy execution
+workbook path, basename, reservation, registration and receipt are removed.
+Canonical placement and exact ownership now cover only actual captured inputs,
+with nested cleanup evidence preserved after materialization. The selected
+SourceWorkbook and caller snapshot remain outside cleanup ownership; real
+paired snapshot/output Build retains its independent output validator.

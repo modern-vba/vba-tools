@@ -844,33 +844,30 @@ identifier-classified fragments of based or decimal-exponent numeric literals,
 remain ordinal-exact and fail closed. This is not `CasingNormalization`.
 _Avoid_: case-insensitive line comparison, component recasing, source formatting
 
-**SnapshotTestExecutionWorkspace**:
-The command-owned temporary ownership ledger for invocation-fixed snapshot
-inputs. Its historical name comes from the execution-copy route described in
-ADR 0026; Issue #449 supersedes that route and reuses the abstraction only for
-source input capture and cleanup. Production snapshot Test does not create,
-copy, register or execute a workbook in this directory. Its legacy
-`WorkbookPath` is a validated layout reservation, not the current execution
-target. `SourceWorkbookTestCommand` runs the exact manifest source workbook
-outside this ledger with a separate no-Save lifetime. Normal saved-source Test
-and `--no-build` do not create this snapshot input ledger.
-The ledger contains create-only GUID/root source-container receipts and the
-nested capture's immutable cleanup evidence. The nested capture remains in the
-ledger after its source input is transferred to the materializer; encoding and
-provenance stay tied to that admitted capture. After automation release and STA
-retirement are proved, `InvocationScratch` performs bounded file-first,
-deepest-directory cleanup. It never recursively deletes or adopts a later path
-occupant. Missing owned content counts as removed; changed, replaced, linked,
-reparse, foreign or unproved content is preserved. Retained or inconclusive file
-cleanup is reported with stable absolute paths as a warning without changing
-individual test outcomes, NDJSON ordering or the test-result exit status.
-Unproved automation release or STA retirement retains dependent input scratch
-and is an infrastructure failure, including during cancellation. Shared scratch
-containers, the caller's snapshot directory, the actual source workbook,
-persistent source files and legacy bin output are never adopted into the ledger.
-Caller-owned snapshot cleanup remains a separate post-command-close obligation.
-_Avoid_: BuildSourceSnapshot, caller-selected build output, persistent bin directory
+**SnapshotTestInput**:
+The command-owned ownership ledger for invocation-fixed snapshot inputs only.
+It has no execution-workbook basename, WorkbookPath, output reservation,
+committed-workbook receipt or registration. SourceWorkbookTestCommand executes
+the exact manifest source workbook outside this ledger without tool-controlled
+Save. Saved-input Test and no-build create no snapshot-input ledger.
 
+The factory validates the actual scratch directory's canonical isolation from
+caller snapshots, persistent document source sets and source workbooks, then
+creates only one exact GUID child and source container. Capture placement must
+match both the owned layout and canonical container; a foreign or linked
+capture is never adopted. Real paired snapshot/output Build retains its separate
+output safety validator unchanged. Fictional output aliases cannot reject Test.
+
+Nested capture cleanup evidence remains in the ledger after materialization
+consumes the capture. Only proved process release, STA retirement and acquired
+COM-reference release allow bounded file-first, deepest-directory cleanup.
+Missing owned input counts as removed; changed, replaced, linked, locked,
+foreign or unproved input is retained with stable evidence. Cleanup-only
+failures after completed execution remain warnings without changing test rows,
+ordering or result exit status; unproved terminal release is an infrastructure
+failure and retains dependent input. Shared scratch parents, the caller's
+snapshot, persistent source and the actual SourceWorkbook are never cleanup-owned.
+_Avoid_: execution workbook, generated output, workbook reservation, caller snapshot ownership
 **SourceWorkbookTestCommand**:
 The CLI composition supplies this Module directly, with its snapshot-input
 factory fixed once at construction. Build exposes no Test lookup, forwarding

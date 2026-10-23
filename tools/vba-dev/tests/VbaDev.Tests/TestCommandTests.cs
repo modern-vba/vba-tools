@@ -1152,7 +1152,7 @@ public sealed class TestCommandTests
         var scratchRoot = Path.Combine(snapshotPath, "vba-dev-snapshot-test");
         var runner = new FakeWorkbookTestSession();
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotInputFactory: new SnapshotTestInputFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1356,7 +1356,7 @@ public sealed class TestCommandTests
                 workbookOutcome == "OK" ? "" : "synthetic assertion failure"));
         var composition = CreateSourceTestComposition(root, runner);
         var fileSystem = new RetainingSnapshotWorkspaceObserver();
-        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotInputFactory: new SnapshotTestInputFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 temp.CreateDirectory("snapshot-test-scratch"),
                 afterWorkspaceCreated: fileSystem.AddForeignContent)).TestCommand;
@@ -1400,7 +1400,7 @@ public sealed class TestCommandTests
         var runner = new FakeWorkbookTestSession();
         var composition = CreateSourceTestComposition(root, runner);
         var fileSystem = new RetainingSnapshotWorkspaceObserver();
-        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotInputFactory: new SnapshotTestInputFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 scratchRoot,
                 afterWorkspaceCreated: fileSystem.AddForeignContent)).TestCommand;
@@ -1452,7 +1452,7 @@ public sealed class TestCommandTests
         var composition = CreateSourceTestComposition(root, runner);
         using var cancellation = new CancellationTokenSource();
         using var captureFactory = new CancelingLockedSnapshotSourceCaptureFactory(cancellation);
-        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotInputFactory: new SnapshotTestInputFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 scratchRoot,
                 sourceCaptureFactory: captureFactory)).TestCommand;
@@ -1494,7 +1494,7 @@ public sealed class TestCommandTests
         var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
         var runner = new FakeWorkbookTestSession();
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotInputFactory: new SnapshotTestInputFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 scratchRoot,
                 sourceCaptureFactory: new NestedCancellationSnapshotSourceCaptureFactory())).TestCommand;
@@ -1538,7 +1538,7 @@ public sealed class TestCommandTests
         var runner = new FakeWorkbookTestSession();
         var captureFactory = new PathReportingFailingSnapshotSourceCaptureFactory();
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotInputFactory: new SnapshotTestInputFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 scratchRoot,
                 sourceCaptureFactory: captureFactory)).TestCommand;
@@ -1591,7 +1591,7 @@ public sealed class TestCommandTests
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var composition = CreateSourceTestComposition(root, runner,
             new CleanupFailingWorkbookGenerationAutomation());
-        var testCommand = CreateSourceTestComposition(root, runner, new CleanupFailingWorkbookGenerationAutomation(), snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
+        var testCommand = CreateSourceTestComposition(root, runner, new CleanupFailingWorkbookGenerationAutomation(), snapshotInputFactory: new SnapshotTestInputFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1630,7 +1630,7 @@ public sealed class TestCommandTests
         var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
         var runner = new FakeWorkbookTestSession();
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotInputFactory: new SnapshotTestInputFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1679,7 +1679,7 @@ public sealed class TestCommandTests
             Guid.NewGuid().ToString("N"));
         var composition = CreateSourceTestComposition(root, runner,
             new PathReportingFailingWorkbookGenerationAutomation(privateVbePath));
-        var testCommand = CreateSourceTestComposition(root, runner, new PathReportingFailingWorkbookGenerationAutomation(privateVbePath), snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
+        var testCommand = CreateSourceTestComposition(root, runner, new PathReportingFailingWorkbookGenerationAutomation(privateVbePath), snapshotInputFactory: new SnapshotTestInputFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1729,7 +1729,7 @@ public sealed class TestCommandTests
                     "The owned Excel process could not be verified as released."))
         };
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotInputFactory: new SnapshotTestInputFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1772,7 +1772,7 @@ public sealed class TestCommandTests
                 "The owned Excel process could not be verified as released.")
         };
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotInputFactory: new SnapshotTestInputFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1813,7 +1813,7 @@ public sealed class TestCommandTests
             Error = new Exception("synthetic unexpected runner failure")
         };
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotInputFactory: new SnapshotTestInputFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1849,7 +1849,7 @@ public sealed class TestCommandTests
         var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
         var runner = new PathReportingFailingWorkbookTestSession();
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotInputFactory: new SnapshotTestInputFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(), scratchRoot,
                 afterWorkspaceCreated: path => runner.ReportedPrivatePath = path)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
@@ -1895,7 +1895,7 @@ public sealed class TestCommandTests
         var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
         var runner = new PathMessageWorkbookTestSession();
         var composition = CreateSourceTestComposition(root, runner);
-        var testCommand = CreateSourceTestComposition(root, runner, snapshotWorkspaceFactory: new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+        var testCommand = CreateSourceTestComposition(root, runner, snapshotInputFactory: new SnapshotTestInputFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(), scratchRoot,
                 afterWorkspaceCreated: path => runner.ReportedPrivatePath = path)).TestCommand;
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
@@ -2136,16 +2136,16 @@ public sealed class TestCommandTests
         string root,
         WorkbookTestSessionDouble runner,
         IWorkbookGenerationAutomation? automation = null,
-        SnapshotTestExecutionWorkspaceFactory? snapshotWorkspaceFactory = null)
+        SnapshotTestInputFactory? snapshotInputFactory = null)
     {
         automation ??= new FakeWorkbookGenerationAutomation();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(root,
             projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             workbookGenerationAutomation: automation,
             sourceWorkbookAutomation: new SourceWorkbookTestAutomation(automation, runner));
-        return snapshotWorkspaceFactory is null ? composition : composition with
+        return snapshotInputFactory is null ? composition : composition with
         {
-            TestCommand = CommandLineTestFactory.CreateSourceTestCommand(new SourceWorkbookTestAutomation(automation, runner), snapshotWorkspaceFactory, automation)
+            TestCommand = CommandLineTestFactory.CreateSourceTestCommand(new SourceWorkbookTestAutomation(automation, runner), snapshotInputFactory, automation)
         };
     }
 }

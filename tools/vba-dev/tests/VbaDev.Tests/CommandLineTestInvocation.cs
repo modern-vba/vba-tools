@@ -44,7 +44,7 @@ internal static class CommandLineTestInvocation
 internal static class CommandLineTestFactory
 {
     internal static SourceWorkbookTestCommand CreateSourceTestCommand(
-        ISourceWorkbookAutomation automation, SnapshotTestExecutionWorkspaceFactory factory,
+        ISourceWorkbookAutomation automation, SnapshotTestInputFactory factory,
         IWorkbookGenerationAutomation? generation = null)
     {
         var ownership = new WindowsExactFileSystemObjectOwnershipFactory();

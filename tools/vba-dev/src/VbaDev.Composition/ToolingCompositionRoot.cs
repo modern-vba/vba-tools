@@ -169,7 +169,7 @@ public static class ToolingCompositionRoot
             testSourceWorkbookAutomation ?? sourceWorkbookAutomation
                 ?? ExcelComSourceWorkbookAutomation.CreateForTestExecution(),
             referenceNormalizer, sourceWorkbookRecoveryOwnershipFactory ?? ownershipFactory,
-            new SnapshotTestExecutionWorkspaceFactory(ownershipFactory, pathIdentityResolver),
+            new SnapshotTestInputFactory(ownershipFactory, pathIdentityResolver),
             sourceWorkbookRecoveryBudget,
             saveFailureEvidence: persistSourceAnalysisFailureEvidence ? new SourceAnalysisEvidenceStore().Save : null);
         var buildCommand = new BuildCommand(workbookOutputCommand, pathIdentityResolver,

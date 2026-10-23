@@ -15,7 +15,7 @@ public sealed class SourceWorkbookTestCommand
     private readonly ISourceWorkbookAutomation automation;
     private readonly WorkbookReferenceNormalizer referenceNormalizer;
     private readonly IExactFileSystemObjectOwnershipFactory ownershipFactory;
-    private readonly SnapshotTestExecutionWorkspaceFactory snapshotWorkspaceFactory;
+    private readonly SnapshotTestInputFactory snapshotInputFactory;
     private readonly Func<ResolvedProjectContext, string, VbaSourceAnalysisReport, string>? saveFailureEvidence;
 
     private readonly TimeSpan recoveryBudget;
@@ -25,7 +25,7 @@ public sealed class SourceWorkbookTestCommand
 
     internal SourceWorkbookTestCommand(WorkbookMaterializer materializer, ISourceWorkbookAutomation automation,
         WorkbookReferenceNormalizer referenceNormalizer, IExactFileSystemObjectOwnershipFactory ownershipFactory,
-        SnapshotTestExecutionWorkspaceFactory snapshotWorkspaceFactory,
+        SnapshotTestInputFactory snapshotInputFactory,
         TimeSpan? recoveryBudgetOverride = null,
         Func<ResolvedProjectContext, string, VbaSourceAnalysisReport, string>? saveFailureEvidence = null)
     {
@@ -33,7 +33,7 @@ public sealed class SourceWorkbookTestCommand
         this.automation = automation;
         this.referenceNormalizer = referenceNormalizer;
         this.ownershipFactory = ownershipFactory;
-        this.snapshotWorkspaceFactory = snapshotWorkspaceFactory ?? throw new ArgumentNullException(nameof(snapshotWorkspaceFactory));
+        this.snapshotInputFactory = snapshotInputFactory ?? throw new ArgumentNullException(nameof(snapshotInputFactory));
         this.saveFailureEvidence = saveFailureEvidence;
         recoveryBudget = recoveryBudgetOverride ?? TimeSpan.FromMinutes(10);
     }
@@ -58,7 +58,7 @@ public sealed class SourceWorkbookTestCommand
         IReadOnlyList<WorkbookTestResultRow>? rows = null;
         Exception? failure = null;
         var retainScratch = false;
-        SnapshotTestExecutionWorkspace? inputWorkspace = null;
+        SnapshotTestInput? snapshotInput = null;
         string? privateWorkspacePath = null;
         string cleanupWarnings = string.Empty;
         string preparationWarnings = string.Empty;
@@ -74,10 +74,9 @@ public sealed class SourceWorkbookTestCommand
                 {
                     if (request.SourceSnapshotPath is { } snapshot)
                     {
-                        inputWorkspace = snapshotWorkspaceFactory.Create(context, snapshot,
-                            Path.GetFileName(context.TemplateDocumentPath), token);
-                        privateWorkspacePath = inputWorkspace.WorkspacePath;
-                        var capture = inputWorkspace.TakeSourceCapture();
+                        snapshotInput = snapshotInputFactory.Create(context, snapshot, token);
+                        privateWorkspacePath = snapshotInput.WorkspacePath;
+                        var capture = snapshotInput.TakeSourceCapture();
                         return await materializer.PrepareSourceWorkbookTestSnapshotAsync(context, capture, token)
                             .ConfigureAwait(false);
                     }
@@ -165,7 +164,7 @@ public sealed class SourceWorkbookTestCommand
                 cleanupWarnings += inputFailure.CleanupWarning;
                 error = inputFailure.PreparationFailure;
             }
-            if (error is SnapshotTestWorkspacePreparationException preparationFailure)
+            if (error is SnapshotTestInputPreparationException preparationFailure)
             {
                 privateWorkspacePath = preparationFailure.WorkspacePath;
                 cleanupWarnings += preparationFailure.CleanupWarning;
@@ -177,16 +176,16 @@ public sealed class SourceWorkbookTestCommand
                 || !facts.ComReferenceReleaseProven;
         }
 
-        if (inputWorkspace is not null)
+        if (snapshotInput is not null)
         {
-            if (retainScratch) inputWorkspace.RetainWithoutCleanup();
+            if (retainScratch) snapshotInput.RetainWithoutCleanup();
             else
             {
-                try { cleanupWarnings += inputWorkspace.Cleanup().Warning; }
+                try { cleanupWarnings += snapshotInput.Cleanup().Warning; }
                 catch (Exception cleanupError)
                 {
-                    cleanupWarnings += $"Input workspace cleanup failed: {inputWorkspace.WorkspacePath}. {cleanupError.Message}{Environment.NewLine}";
-                    inputWorkspace.RetainWithoutCleanup();
+                    cleanupWarnings += $"Input workspace cleanup failed: {snapshotInput.WorkspacePath}. {cleanupError.Message}{Environment.NewLine}";
+                    snapshotInput.RetainWithoutCleanup();
                 }
             }
         }
@@ -225,7 +224,7 @@ public sealed class SourceWorkbookTestCommand
                 if (!facts.ProcessReleaseProven) unproved.Add("Excel process release");
                 if (!facts.DispatcherRetired) unproved.Add("STA retirement");
                 if (!facts.ComReferenceReleaseProven) unproved.Add("COM reference release");
-                var retainedPaths = scratchPaths.Concat(new[] { inputWorkspace?.WorkspacePath }.OfType<string>())
+                var retainedPaths = scratchPaths.Concat(new[] { snapshotInput?.WorkspacePath }.OfType<string>())
                     .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
                 var retentionMessage = retainedPaths.Length == 0
                     ? $"{string.Join(" and ", unproved)} is unproved. No import or recovery staging was allocated."

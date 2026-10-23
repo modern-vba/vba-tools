@@ -52,7 +52,7 @@ public sealed class SourceWorkbookTestCommandTests
         var composition = ToolingCompositionRoot.CreateApplicationComposition(fixture.Root,
             sourceWorkbookAutomation: fixture.Automation,
             projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty);
-        var command = CommandLineTestFactory.CreateSourceTestCommand(fixture.Automation, new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+        var command = CommandLineTestFactory.CreateSourceTestCommand(fixture.Automation, new SnapshotTestInputFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(), scratch));
         var context = new ProjectContextResolver(new JsonProjectManifestStore())
             .Resolve(new ProjectResolutionRequest(fixture.Root, null, fixture.Root));

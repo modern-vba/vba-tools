@@ -360,7 +360,7 @@ public sealed class TestTerminalFactsTests
             workbookGenerationAutomation: selectedGeneration,
             projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             sourceWorkbookAutomation: new SourceWorkbookTestAutomation(selectedGeneration, runner));
-        var command = CommandLineTestFactory.CreateSourceTestCommand(new SourceWorkbookTestAutomation(selectedGeneration, runner), new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratch,
+        var command = CommandLineTestFactory.CreateSourceTestCommand(new SourceWorkbookTestAutomation(selectedGeneration, runner), new SnapshotTestInputFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratch,
                 sourceCaptureFactory: sourceCapture, afterWorkspaceCreated: cleanupFileSystem is null ? null : cleanupFileSystem.AddForeignContent), selectedGeneration);
         var context = composition.ProjectContextResolver.Resolve(new ProjectResolutionRequest(root, null, root));
         return new(VbaDevCommandLine.Create(composition with { TestCommand = command }), command, context, snapshot, scratch, legacyBinPath);

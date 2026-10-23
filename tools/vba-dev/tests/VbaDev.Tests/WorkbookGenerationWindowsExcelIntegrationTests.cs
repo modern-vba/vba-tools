@@ -2165,7 +2165,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                     sourceSet => Assert.NotNull(sourceSet.Admission)),
                 semanticInputProvider: FakeProjectSemanticInputProvider.Empty);
             var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
-            var command = new SourceWorkbookTestCommand(materializer, ExcelComSourceWorkbookAutomation.CreateForTestExecution(), referenceNormalizer, ownershipFactory, new SnapshotTestExecutionWorkspaceFactory(ownershipFactory,
+            var command = new SourceWorkbookTestCommand(materializer, ExcelComSourceWorkbookAutomation.CreateForTestExecution(), referenceNormalizer, ownershipFactory, new SnapshotTestInputFactory(ownershipFactory,
                     pathIdentityResolver, scratchRoot));
 
             var result = await command.RunAsync(fixture.Context,
