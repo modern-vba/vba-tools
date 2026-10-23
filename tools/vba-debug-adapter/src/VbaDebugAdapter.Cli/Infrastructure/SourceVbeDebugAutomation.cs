@@ -300,30 +300,8 @@ public sealed class SourceVbeDebugAutomation : ISourceVbeDebugSessionFactory
                     vbeObject = excel.VBE;
                     dynamic vbe = vbeObject;
                     var vbeVersion = (string)vbe.Version;
-                    var architecture = binding.ProcessArchitecture;
-                    var processBits = architecture switch
-                    {
-                        DebugExcelProcessArchitecture.X86 => 32,
-                        DebugExcelProcessArchitecture.X64 or DebugExcelProcessArchitecture.Arm64 => 64,
-                        _ => 0
-                    };
-                    var osBits = operatingSystem.StartsWith("Windows (64-bit)", StringComparison.OrdinalIgnoreCase)
-                        ? 64 : operatingSystem.StartsWith("Windows (32-bit)", StringComparison.OrdinalIgnoreCase) ? 32 : 0;
-                    var excelGeneration = Version.TryParse(excelVersion, out var excelParsed)
-                        ? excelParsed.Major switch { >= 9 and <= 12 => 6, >= 14 => 7, _ => 0 } : 0;
-                    var vbeGeneration = Version.TryParse(vbeVersion, out var vbeParsed)
-                        ? vbeParsed.Major switch { 6 => 6, 7 => 7, _ => 0 } : 0;
-                    if (processBits == 0 || osBits == 0 || excelGeneration == 0 || vbeGeneration == 0)
-                        return new DebugCompilationHostFacts(excelVersion, vbeVersion, operatingSystem, architecture,
-                            DebugCompilationHostFactsStatus.Unknown, null,
-                            "The exact live Excel architecture, Windows bitness or VBA generation could not be verified.");
-                    if ((processBits == 64 && osBits == 32) || excelGeneration != vbeGeneration)
-                        return new DebugCompilationHostFacts(excelVersion, vbeVersion, operatingSystem, architecture,
-                            DebugCompilationHostFactsStatus.Mismatch, null,
-                            "Live Excel/VBE version or bitness contradicts the exact bound process.");
-                    return new DebugCompilationHostFacts(excelVersion, vbeVersion, operatingSystem, architecture,
-                        DebugCompilationHostFactsStatus.Verified,
-                        new DebugCompilerBuiltInConstants(true, vbeGeneration == 7, false, true, processBits == 64, false), null);
+                    return DebugCompilationHostClassifier.Classify(
+                        excelVersion, vbeVersion, operatingSystem, binding.ProcessArchitecture);
                     // Project-level custom constants intentionally have no authority
                     // here. Dirty saved package bytes are not the live project.
                 }

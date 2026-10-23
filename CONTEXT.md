@@ -667,6 +667,12 @@ can contain a `DebugTargetProcedure` or `VbeBreakpoint`; the launch
 configuration does not override its constants. Unavailable live custom constants
 are not inferred from an older saved package or assumed zero; unsafe conditional
 participants are rejected with an explanation before code replacement.
+Source and retained legacy launch host facts use one evidence classifier. A
+known incompatible Excel/VBE generation pair or 64-bit process on 32-bit Windows
+is `Mismatch`, even when another required fact is unknown. Without a known
+contradiction, insufficient evidence is `Unknown`. X86 Excel on 64-bit Windows
+is valid; `Win64` follows process architecture (X64/Arm64), not OS bitness.
+Acquisition and custom-constant authority remain local to each launch path.
 _Avoid_: parser-inferred branch, launch-specific compiler constants, active-branch fallback
 
 **DebugTargetProcedure**:
