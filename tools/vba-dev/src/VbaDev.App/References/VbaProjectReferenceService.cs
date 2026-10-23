@@ -99,55 +99,21 @@ public sealed class VbaProjectReferenceService
         }
 
         var document = ProjectManifestEditor.GetDocument(context.Manifest, context.DocumentName);
-        var invocationStartPresentNames = normalizedNames
-            .Where(referenceName => document.References.Any(reference =>
-                reference.Name.Equals(referenceName, StringComparison.OrdinalIgnoreCase)))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var missingNames = normalizedNames
-            .Where(referenceName => !invocationStartPresentNames.Contains(referenceName))
-            .ToArray();
-        var invocationStartTemplateIdentity = missingNames.Length == 0
-            ? null
-            : pathIdentityResolver.Resolve(context.TemplateDocumentPath);
-        var resolutionWarnings = Array.Empty<VbaProjectReferenceWarningOutput>();
-        var resolvedByRequestedName = new Dictionary<string, ResolvedVbaProjectReference>(
-            StringComparer.OrdinalIgnoreCase);
-        if (missingNames.Length > 0)
+        VbaProjectReferenceAddition evidence;
+        try
         {
-            try
-            {
-                var resolutionBatch = await referencePlanner.ResolveReferencesAsync(
-                        context,
-                        missingNames,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    return CommandResult.Cancelled(
-                        "Reference add was cancelled before the manifest update.");
-                }
-
-                var resolvedReferences = referencePlanner.SelectManifestInputReferences(
-                    resolutionBatch,
-                    missingNames);
-                resolvedByRequestedName = missingNames
-                    .Zip(resolvedReferences)
-                    .ToDictionary(
-                        pair => pair.First,
-                        pair => pair.Second,
-                        StringComparer.OrdinalIgnoreCase);
-                resolutionWarnings = resolutionBatch.Warnings
-                    .Select(warning => new VbaProjectReferenceWarningOutput(
-                        warning.Code,
-                        warning.Message))
-                    .ToArray();
-            }
-            catch (InvalidOperationException ex)
-            {
-                return CommandResult.UsageError(ex.Message);
-            }
+            evidence = await VbaProjectReferenceAddition.PrepareEvidenceAsync(
+                context.DocumentName, document, context.TemplateDocumentPath, normalizedNames,
+                referencePlanner, pathIdentityResolver, cancellationToken).ConfigureAwait(false);
         }
-
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return CommandResult.Cancelled("Reference add was cancelled before the manifest update.");
+        }
+        catch (InvalidOperationException ex)
+        {
+            return CommandResult.UsageError(ex.Message);
+        }
         ProjectManifestMutationOutcome<IReadOnlyList<VbaProjectReferenceMutationEntryOutput>> outcome;
         try
         {
@@ -158,10 +124,7 @@ public sealed class VbaProjectReferenceService
                         snapshot,
                         context.DocumentName,
                         normalizedNames,
-                        invocationStartPresentNames,
-                        resolvedByRequestedName,
-                        invocationStartTemplateIdentity,
-                        pathIdentityResolver),
+                        evidence),
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -175,7 +138,8 @@ public sealed class VbaProjectReferenceService
             return CommandResult.UsageError($"[{ex.Code}] {ex.Message}");
         }
 
-        var warnings = resolutionWarnings
+        var warnings = evidence.Warnings.Select(warning =>
+                new VbaProjectReferenceWarningOutput(warning.Code, warning.Message))
             .Concat(outcome.Warnings.Select(warning =>
                 new VbaProjectReferenceWarningOutput(warning.Code, warning.Message)))
             .ToArray();
@@ -678,10 +642,7 @@ public sealed class VbaProjectReferenceService
         ProjectManifestMutationSnapshot snapshot,
         string documentName,
         IReadOnlyList<string> normalizedNames,
-        IReadOnlySet<string> invocationStartPresentNames,
-        IReadOnlyDictionary<string, ResolvedVbaProjectReference> resolvedByRequestedName,
-        FileSystemPathIdentity? invocationStartTemplateIdentity,
-        IFileSystemPathIdentityResolver pathIdentityResolver)
+        VbaProjectReferenceAddition evidence)
     {
         if (!snapshot.Manifest.Documents.Keys.Any(name =>
                 name.Equals(documentName, StringComparison.OrdinalIgnoreCase)))
@@ -692,79 +653,28 @@ public sealed class VbaProjectReferenceService
 
         var plannedManifest = ProjectManifestEditor.Clone(snapshot.Manifest);
         var document = ProjectManifestEditor.GetDocument(plannedManifest, documentName);
-        var results = new List<VbaProjectReferenceMutationEntryOutput>();
-        var changed = false;
-        foreach (var requestedName in normalizedNames)
+        VbaProjectReferenceAddition.Plan plan;
+        try
         {
-            var storedIndex = document.References.FindIndex(reference =>
-                reference.Name.Equals(requestedName, StringComparison.OrdinalIgnoreCase));
-            if (storedIndex >= 0)
-            {
-                var storedReference = document.References[storedIndex];
-                if (!storedReference.Requested)
-                {
-                    document.References[storedIndex] = storedReference with
-                    {
-                        Requested = true
-                    };
-                    changed = true;
-                    results.Add(new VbaProjectReferenceMutationEntryOutput(
-                        requestedName,
-                        storedReference.Name,
-                        "promoted"));
-                }
-                else
-                {
-                    results.Add(new VbaProjectReferenceMutationEntryOutput(
-                        requestedName,
-                        storedReference.Name,
-                        "alreadyPresent"));
-                }
-
-                continue;
-            }
-
-            if (invocationStartPresentNames.Contains(requestedName))
-            {
-                throw new ProjectManifestMutationException(
-                    "referenceSelectionChanged",
-                    $"Reference '{requestedName}' was removed after reference add began.");
-            }
-
-            var resolvedReference = resolvedByRequestedName[requestedName];
-            document.References.Add(new VbaProjectReference(resolvedReference.Name));
-            changed = true;
-            results.Add(new VbaProjectReferenceMutationEntryOutput(
-                requestedName,
-                resolvedReference.Name,
-                "added"));
+            plan = evidence.PlanAddition(documentName, document, snapshot.ProjectRoot, normalizedNames,
+                VbaProjectReferenceAddition.Intent.Explicit);
+        }
+        catch (VbaProjectReferenceAddition.PlanException ex)
+        {
+            throw new ProjectManifestMutationException(
+                ex.FailureReason == VbaProjectReferenceAddition.Reason.TemplateChanged
+                    ? "referenceSourceTemplateChanged" : "referenceSelectionChanged", ex.Message);
         }
 
-        if (results.Any(result => result.Status == "added"))
-        {
-            var latestTemplatePath = Path.IsPathRooted(document.TemplatePath)
-                ? Path.GetFullPath(document.TemplatePath)
-                : Path.GetFullPath(document.TemplatePath, snapshot.ProjectRoot);
-            var latestTemplateIdentity = pathIdentityResolver.Resolve(latestTemplatePath);
-            if (invocationStartTemplateIdentity is null
-                || !FileSystemPathIdentityRelations.Same(
-                    invocationStartTemplateIdentity,
-                    latestTemplateIdentity))
-            {
-                throw new ProjectManifestMutationException(
-                    "referenceSourceTemplateChanged",
-                    $"Document '{documentName}' selected a different source template after reference add began.");
-            }
-        }
-
-        return changed
-            ? ProjectManifestMutationPlan<IReadOnlyList<VbaProjectReferenceMutationEntryOutput>>.Commit(
-                plannedManifest,
-                results)
-            : ProjectManifestMutationPlan<IReadOnlyList<VbaProjectReferenceMutationEntryOutput>>.NoOp(
-                results);
+        document.References.Clear();
+        document.References.AddRange(plan.Selection);
+        IReadOnlyList<VbaProjectReferenceMutationEntryOutput> results = plan.Changes
+            .Select(change => new VbaProjectReferenceMutationEntryOutput(
+                change.RequestedName, change.StoredName, change.Status)).ToArray();
+        return plan.Changed
+            ? ProjectManifestMutationPlan<IReadOnlyList<VbaProjectReferenceMutationEntryOutput>>.Commit(plannedManifest, results)
+            : ProjectManifestMutationPlan<IReadOnlyList<VbaProjectReferenceMutationEntryOutput>>.NoOp(results);
     }
-
     private static string[] NormalizeNames(IReadOnlyList<string> referenceNames)
         => referenceNames
             .Select(referenceName => referenceName.Trim())

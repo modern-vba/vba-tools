@@ -14,6 +14,48 @@ namespace VbaDev.Tests;
 public sealed class ReferenceCommandTests
 {
     [Fact]
+    public void ResolutionAndProbeCompleteBeforeMutationLeaseAndNeverRunInsideIt()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var selected = new ResolvedVbaProjectReference("Library", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", 1, 0);
+        var resolver = new FakeVbaProjectReferenceResolver(selected,
+            new ResolvedVbaProjectReference("Library", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", 1, 0));
+        var probe = new RecordingReferenceAmbiguityProbe(selected);
+        var coordinator = new AssertResolutionCompleteCoordinator(() =>
+        {
+            Assert.Single(resolver.RequestedNames);
+            Assert.Single(probe.Baselines);
+        });
+        var application = CommandLineTestFactory.Create(root, vbaProjectReferenceResolver: resolver,
+            vbaProjectReferenceAmbiguityProbe: probe, projectManifestMutationCoordinator: coordinator);
+        var result = application.Run(["reference", "add", "Library"]);
+        Assert.Equal(0, result.ExitCode);
+        Assert.True(coordinator.Planned);
+    }
+    [Fact]
+    public void ConcurrentSelectionMakesResolvedTemplateEvidenceUnnecessary()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        File.WriteAllText(Path.Combine(root, "src", "Book1", "Other.xlsm"), "other");
+        var store = new MutateAfterFirstLoadManifestStore(root, latest =>
+        {
+            latest.Documents["Book1"] = latest.Documents["Book1"] with { TemplatePath = "src/Book1/Other.xlsm" };
+            latest.Documents["Book1"].References.Add(new("concurrent library", false));
+        });
+        var application = CommandLineTestFactory.Create(root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
+                new ResolvedVbaProjectReference("Concurrent Library", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", 1, 0)),
+            projectManifestStore: store);
+        var result = application.Run(["reference", "add", "Concurrent Library", "--format", "json"]);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("promoted", result.StandardOutput);
+        var document = new JsonProjectManifestStore().Load(Path.Combine(root, ProjectManifest.ManifestFileName)).Documents["Book1"];
+        Assert.Equal("concurrent library", Assert.Single(document.References).Name);
+        Assert.True(Assert.Single(document.References).Requested);
+    }
+    [Fact]
     public async Task AddStoresMultipleTrimmedReferencesWithoutDuplicates()
     {
         using var temp = TempDirectory.Create();
@@ -2871,6 +2913,25 @@ public sealed class ReferenceCommandTests
             => inner.Save(root, manifest);
     }
 
+    private sealed class AssertResolutionCompleteCoordinator(Action assertComplete) : IProjectManifestMutationCoordinator
+    {
+        public bool Planned { get; private set; }
+        public Task<ProjectManifestMutationOutcome<TResult>> ExecuteAsync<TResult>(string projectRoot,
+            ProjectManifestMutationCommand command,
+            Func<ProjectManifestMutationSnapshot, ProjectManifestMutationPlan<TResult>> rebase,
+            CancellationToken cancellationToken)
+        {
+            assertComplete();
+            return new ProjectManifestMutationCoordinator().ExecuteAsync(projectRoot, command, snapshot =>
+            {
+                assertComplete();
+                var plan = rebase(snapshot);
+                assertComplete();
+                Planned = true;
+                return plan;
+            }, cancellationToken);
+        }
+    }
     private sealed class WarningMutationCoordinator : IProjectManifestMutationCoordinator
     {
         private readonly ProjectManifestMutationCoordinator inner = new();
