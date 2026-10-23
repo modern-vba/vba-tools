@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using VbaLanguageServer.Lsp;
+using VbaLanguageServer.Rename;
 using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Workspace;
 using VbaTools.Syntax;

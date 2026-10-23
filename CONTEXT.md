@@ -5325,6 +5325,30 @@ the same entry is not a destination collision. No automatic save, Excel launch,
 workbook mutation, declaration merge or background retry is part of this mode.
 _Avoid_: always-ignore setting, unchecked retry flag, merged-target edit discovery
 
+**RenameModule**:
+The session-owned boundary for Rename planning, capture generations, one pending
+confirmation and capture-lease transfer. Ordered Capture accepts decoded input
+and a capability snapshot; bounded Execute works on pinned evidence and returns
+Ready, NoChange, Challenge, Rejected or InvalidParameters. LSP decoding and
+WorkspaceEdit/error projection remain in the Adapter.
+
+A Rename reaching Capture invalidates unconsumed pending consent and older
+unpublished offers, even for invalid parameters or names. Cancellation before
+Capture and malformed envelopes do not. Before challenge bytes are published,
+pending state already owns the complete plan and lease. Matching confirmation
+Capture consumes pending once for Continue or Cancel and transfers the lease to
+that operation. Later Rename, shutdown of pending state and original-response
+callbacks cannot dispose an already consumed operation; existing scheduler
+cancellation/drain owns its remaining lifetime.
+
+Delivery failure/cancellation matches exact confirmation ID and internal
+generation, affecting only that unconsumed offer. A delayed success never creates
+or revives pending state; successful ordinary challenge completion leaves it
+pending. Failed offers, invalidation, consumption, rejection, cancellation and
+shutdown release each owned lease once. Confirmed execution reuses the common
+policy and returns only the stored complete plan, without retry or replanning.
+See ADR 0073.
+
 **RenameEvidencePolicy**:
 The shared ordinary/confirmed validation order: participating source revisions,
 project/catalog authority, required template identity, captured path/source-unit
@@ -5338,8 +5362,8 @@ Before an offer, the retained-path alternative may be finalized against the
 same captured snapshot. After confirmation, validate the stored complete plan;
 changed meaning or closure rejects without replanning, retry or expansion.
 Repeated form preflight preserves each already materialized sidecar operation
-exactly once. Capture and pending ownership remain unchanged in this slice.
-See ADR 0072, refining ADRs 0029 and 0050.
+exactly once. Capture and pending ownership belong to the session RenameModule.
+See ADRs 0072/0073, refining ADRs 0029 and 0050.
 
 **RenameFailure**:
 An actionable LSP `RequestFailed` response with code `-32803` for a

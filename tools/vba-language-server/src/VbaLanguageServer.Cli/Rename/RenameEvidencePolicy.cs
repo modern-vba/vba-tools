@@ -1,7 +1,7 @@
 using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Workspace;
 
-namespace VbaLanguageServer.Lsp;
+namespace VbaLanguageServer.Rename;
 
 // One evidence ordering for ordinary results and retained confirmed plans.
 // Acquisition, leases and pending ownership remain with their existing owners.

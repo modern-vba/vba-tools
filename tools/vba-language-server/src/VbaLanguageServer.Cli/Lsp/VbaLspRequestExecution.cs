@@ -4,6 +4,7 @@ using VbaLanguageServer.BlockSkeletonInsertion;
 using VbaLanguageServer.SourceModel;
 using VbaTools.Syntax;
 using VbaLanguageServer.Workspace;
+using VbaLanguageServer.Rename;
 
 namespace VbaLanguageServer.Lsp;
 
@@ -39,9 +40,7 @@ internal sealed class VbaLspRequestExecution : IDisposable
     private readonly IVbaLspRequestExecutionGate executionGate;
     private readonly VbaLspClientCapabilityState clientCapabilities;
     private int shutdownRequested;
-    private readonly object renameConfirmationSync = new();
-    private long renameGeneration;
-    private PendingRename? pendingRename;
+    private readonly RenameModule rename;
 
     /// <summary>
     /// Creates a request executor over the transport and workspace boundaries.
@@ -56,6 +55,7 @@ internal sealed class VbaLspRequestExecution : IDisposable
     {
         this.transport = transport;
         this.workspace = workspace;
+        rename = new RenameModule(workspace);
         this.executionGate = executionGate ?? ImmediateVbaLspRequestExecutionGate.Instance;
         this.clientCapabilities = clientCapabilities ?? new VbaLspClientCapabilityState();
     }
@@ -152,15 +152,18 @@ internal sealed class VbaLspRequestExecution : IDisposable
             when (requestCancellationToken.IsCancellationRequested
                 && !responseCancellationToken.IsCancellationRequested)
         {
+            captured.ResponseFailure?.Invoke();
             outcome = RequestOutcome.Error(-32800, "Request cancelled");
         }
         catch (OperationCanceledException)
             when (responseCancellationToken.IsCancellationRequested)
         {
+            captured.ResponseFailure?.Invoke();
             throw;
         }
         catch (Exception)
         {
+            captured.ResponseFailure?.Invoke();
             outcome = RequestOutcome.Error(-32603, "Internal error");
         }
         finally
@@ -168,22 +171,30 @@ internal sealed class VbaLspRequestExecution : IDisposable
             captured.Dispose();
         }
 
-        releaseCancellationOwnership?.Invoke();
-        if (outcome.ErrorCode is int errorCode)
+        try
         {
-            await transport.WriteErrorResponseAsync(
-                captured.ResponseId,
-                errorCode,
-                outcome.ErrorMessage!,
-                outcome.ErrorData,
-                responseCancellationToken);
-            return;
+            using var responseRevocation = captured.ResponseFailure is { } failed
+                ? responseCancellationToken.Register(failed) : default;
+            responseCancellationToken.ThrowIfCancellationRequested();
+            releaseCancellationOwnership?.Invoke();
+            if (outcome.ErrorCode is int errorCode)
+            {
+                await transport.WriteErrorResponseAsync(captured.ResponseId, errorCode,
+                    outcome.ErrorMessage!, outcome.ErrorData, responseCancellationToken);
+            }
+            else await transport.WriteResponseAsync(captured.ResponseId, outcome.Result, responseCancellationToken);
+            // Framing intentionally finishes an in-flight frame without
+            // cancellation. Revocation above is immediate; surface cancellation
+            // after that atomic write, without changing framing ownership.
+            responseCancellationToken.ThrowIfCancellationRequested();
+            // Pending ownership was established before bytes were published.
+            // Successful delivery neither creates nor revives confirmation state.
         }
-
-        await transport.WriteResponseAsync(
-            captured.ResponseId,
-            outcome.Result,
-            responseCancellationToken);
+        catch
+        {
+            captured.ResponseFailure?.Invoke();
+            throw;
+        }
     }
 
     private CapturedRequest CaptureRequest(
@@ -300,13 +311,9 @@ internal sealed class VbaLspRequestExecution : IDisposable
                     Captured,
                     Direct),
             "textDocument/rename" =>
-                CaptureRenameRequest(
-                    parameters,
-                    cancellationToken,
-                    Captured,
-                    Direct),
+                CaptureRenameRequest(parameters, cancellationToken, Captured),
             "vba/confirmRename" =>
-                CaptureRenameConfirmation(parameters, Captured, Direct),
+                CaptureRenameConfirmation(parameters, cancellationToken, Captured),
             "textDocument/formatting" =>
                 CaptureFormattingRequest(
                     parameters,
@@ -507,168 +514,56 @@ internal sealed class VbaLspRequestExecution : IDisposable
     private CapturedRequest CaptureRenameRequest(
         JsonNode? parameters,
         CancellationToken cancellationToken,
-        Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured,
-        Func<RequestOutcome, CapturedRequest> direct)
+        Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured)
     {
-        var generation = BeginRename();
-        if (!TryCreateRenameRequest(parameters, out var request))
+        var valid = TryCreateRenameRequest(parameters, out var request);
+        var operation = rename.CaptureRename(valid
+            ? new RenameInput(request.Uri, request.Line, request.Character, request.NewName) : null,
+            RenameCapabilitySnapshot(), cancellationToken);
+        return CaptureRenameOperation(operation, captured);
+    }
+
+    private RenameCapabilities RenameCapabilitySnapshot()
+    {
+        var snapshot = clientCapabilities.Snapshot;
+        return new(snapshot.RenameConfirmation, snapshot.WorkspaceEdit.SupportsRenameFile);
+    }
+
+    private static CapturedRequest CaptureRenameOperation(RenameModule.Operation operation,
+        Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured)
+        => captured(token => ProjectRenameResult(operation.Execute(token))) with
         {
-            return direct(RequestOutcome.InvalidParams());
-        }
-
-        var nameFailure = VbaSemanticInventory.ValidateRenameName(
-            request.NewName);
-        if (nameFailure is not null)
-        {
-            return direct(RequestOutcome.Error(
-                -32803,
-                nameFailure.Message,
-                CreateRenameFailureData(nameFailure)));
-        }
-
-        var renameCapture = workspace.CaptureRenameProjectSnapshot(
-            request.Uri,
-            cancellationToken);
-        var captureOwner = new RenameCaptureOwner(renameCapture);
-        var capabilitySnapshot = clientCapabilities.Snapshot;
-        var canConfirm = capabilitySnapshot.RenameConfirmation;
-        string? offeredConfirmationId = null;
-        return captured(executionToken =>
-        {
-            using (captureOwner)
-            {
-                executionToken.ThrowIfCancellationRequested();
-                var requiresSourceTemplateIdentityFence =
-                    renameCapture.SemanticInventory
-                        .RequiresSourceTemplateIdentityFence(
-                            request.Uri,
-                            request.Line,
-                            request.Character,
-                            request.NewName,
-                            renameCapture.ProjectIdentityRead);
-
-                var evidence = new RenameEvidencePolicy(renameCapture,
-                    requiresSourceTemplateIdentityFence, capabilitySnapshot.WorkspaceEdit.SupportsRenameFile);
-                if (evidence.ValidateEvidence() is { } initialFailure)
-                    return RenameFailed(initialFailure);
-
-                var rename = renameCapture.SemanticInventory.CreateRenameResult(
-                    request.Uri,
-                    request.Line,
-                    request.Character,
-                    request.NewName,
-                    executionToken,
-                    renameCapture.ProjectIdentityRead,
-                    canConfirm
-                        ? VbaRenameCollisionMode.PrepareConfirmation
-                        : VbaRenameCollisionMode.Reject);
-                executionToken.ThrowIfCancellationRequested();
-                if (evidence.ValidateEvidence() is { } semanticEvidenceFailure)
-                    return RenameFailed(semanticEvidenceFailure);
-                if (rename.Failure is not null) return RenameFailed(rename.Failure);
-                if (rename.Plan is null) return RequestOutcome.Success(null);
-
-                VbaRenamePathDecision? pathDecision = null;
-                if (canConfirm)
-                {
-                    var decision = evidence.PreparePaths(rename.Plan!);
-                    if (decision.Failure is { } pathFailure)
-                    {
-                        return RenameFailed(pathFailure);
-                    }
-                    pathDecision = decision.Decision;
-                    if (pathDecision?.RetainOriginalPaths == true)
-                    {
-                        rename = renameCapture.SemanticInventory.CreateRenameResult(
-                            request.Uri, request.Line, request.Character,
-                            request.NewName, executionToken,
-                            renameCapture.ProjectIdentityRead,
-                            VbaRenameCollisionMode.PrepareConfirmation,
-                            retainOriginalPaths: true);
-                        if (evidence.ValidateEvidence(pathDecision) is { } retainedEvidenceFailure)
-                            return RenameFailed(retainedEvidenceFailure);
-                        if (rename.Failure is { } retainedFailure)
-                        {
-                            return RenameFailed(retainedFailure);
-                        }
-                        if (rename.Plan is null)
-                        {
-                            return RenameFailed(new VbaRenameFailure(
-                                "analysisIncomplete", "The captured Rename target is unavailable."));
-                        }
-                    }
-                }
-
-                if (evidence.ValidateEvidence(pathDecision) is { } plannedEvidenceFailure)
-                    return RenameFailed(plannedEvidenceFailure);
-                if (renameCapture.AnalysisFailureMessage is { } analysisFailure)
-                    return RenameFailed(new VbaRenameFailure("analysisIncomplete", analysisFailure));
-
-                var fileRenamePreflight = evidence.ValidatePlan(rename.Plan!, pathDecision);
-                if (fileRenamePreflight.Failure is { } preflightFailure)
-                    return RenameFailed(preflightFailure);
-
-                if (canConfirm && (rename.CollisionReview is not null
-                    || pathDecision?.RetainOriginalPaths == true))
-                {
-                    var finalPlan = fileRenamePreflight.Plan;
-                    var originalName = rename.CollisionReview?.OriginalName
-                        ?? renameCapture.SemanticInventory.PrepareRename(
-                            request.Uri, request.Line, request.Character)?.Placeholder;
-                    if (originalName is null)
-                    {
-                        return RenameFailed(new VbaRenameFailure(
-                            "analysisIncomplete", "The original Rename identity is unavailable."));
-                    }
-
-                    VbaRenameFailure? ValidateConfirmedEvidence()
-                        => evidence.ValidatePlan(finalPlan, pathDecision, retainCompletePlan: true).Failure;
-
-                    var pending = new PendingRename(
-                        Guid.NewGuid().ToString("N"), finalPlan,
-                        captureOwner.Take(), ValidateConfirmedEvidence);
-                    if (!TryOfferRename(generation, pending))
-                    {
-                        pending.Dispose();
-                        return ExpiredRenameConfirmation();
-                    }
-                    offeredConfirmationId = pending.Id;
-                    var conflicts = (rename.CollisionReview?.Conflicts ?? [])
-                        .Concat(pathDecision?.Conflicts ?? []).ToArray();
-                    var data = new Dictionary<string, object?>(CreateRenameFailureData(
-                        new VbaRenameFailure("confirmationRequired", "", conflicts)))
-                    {
-                        ["kind"] = "vbaRenameConfirmationRequired",
-                        ["protocolVersion"] = 1,
-                        ["confirmationId"] = pending.Id,
-                        ["originalName"] = originalName,
-                        ["newName"] = request.NewName,
-                        ["concerns"] = (rename.CollisionReview?.Impacts ?? [])
-                            .Select(DescribeRenameImpact)
-                            .OfType<string>()
-                            .Distinct(StringComparer.Ordinal).ToArray(),
-                        ["retainedPaths"] = pathDecision?.RetainedPaths ?? []
-                    };
-                    return RequestOutcome.Error(-32803,
-                        "This Rename requires explicit confirmation for this operation.", data);
-                }
-
-                return RequestOutcome.Success(
-                    VbaLspFeatureProjection.CreateWorkspaceEdit(
-                        fileRenamePreflight.Plan));
-            }
-        }) with
-        {
-            Cleanup = () =>
-            {
-                captureOwner.Dispose();
-                if (cancellationToken.IsCancellationRequested
-                    && offeredConfirmationId is not null)
-                {
-                    DiscardRename(offeredConfirmationId);
-                }
-            }
+            Cleanup = operation.Dispose,
+            ResponseFailure = operation.ResponseFailed
         };
+
+    private static RequestOutcome ProjectRenameResult(RenameResult result)
+        => result switch
+        {
+            RenameResult.Ready ready => RequestOutcome.Success(VbaLspFeatureProjection.CreateWorkspaceEdit(ready.Plan)),
+            RenameResult.NoChange => RequestOutcome.Success(null),
+            RenameResult.InvalidParameters => RequestOutcome.InvalidParams(),
+            RenameResult.Rejected rejected => RenameFailed(rejected.Failure),
+            RenameResult.Challenge challenge => ProjectRenameChallenge(challenge.Details),
+            _ => throw new ArgumentOutOfRangeException(nameof(result))
+        };
+
+    private static RequestOutcome ProjectRenameChallenge(RenameChallenge challenge)
+    {
+        var data = new Dictionary<string, object?>(CreateRenameFailureData(
+            new VbaRenameFailure("confirmationRequired", "", challenge.Conflicts)))
+        {
+            ["kind"] = "vbaRenameConfirmationRequired",
+            ["protocolVersion"] = 1,
+            ["confirmationId"] = challenge.Id,
+            ["originalName"] = challenge.OriginalName,
+            ["newName"] = challenge.NewName,
+            ["concerns"] = challenge.Impacts.Select(DescribeRenameImpact).OfType<string>()
+                .Distinct(StringComparer.Ordinal).ToArray(),
+            ["retainedPaths"] = challenge.RetainedPaths
+        };
+        return RequestOutcome.Error(-32803,
+            "This Rename requires explicit confirmation for this operation.", data);
     }
 
     private static RequestOutcome RenameFailed(VbaRenameFailure failure)
@@ -694,122 +589,19 @@ internal sealed class VbaLspRequestExecution : IDisposable
 
     private CapturedRequest CaptureRenameConfirmation(
         JsonNode? parameters,
-        Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured,
-        Func<RequestOutcome, CapturedRequest> direct)
+        CancellationToken cancellationToken,
+        Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured)
     {
-        if (!clientCapabilities.Snapshot.RenameConfirmation
-            || parameters is not JsonObject confirmationParameters
-            || confirmationParameters["confirmationId"] is not JsonValue idValue
-            || !idValue.TryGetValue<string>(out var id)
-            || confirmationParameters["decision"] is not JsonValue decisionValue
-            || !decisionValue.TryGetValue<string>(out var decision)
-            || decision is not ("continue" or "cancel"))
-        {
-            return direct(RequestOutcome.InvalidParams());
-        }
-        PendingRename? approved;
-        lock (renameConfirmationSync)
-        {
-            approved = pendingRename?.Id == id ? pendingRename : null;
-            if (approved is not null)
-            {
-                pendingRename = null;
-            }
-        }
-        if (approved is null)
-        {
-            return direct(ExpiredRenameConfirmation());
-        }
-        return captured(token =>
-        {
-            using (approved)
-            {
-                token.ThrowIfCancellationRequested();
-                if (decision == "cancel")
-                {
-                    return RequestOutcome.Success(null);
-                }
-                if (approved.GetChangeFailure() is { } failure)
-                {
-                    return RenameFailed(failure);
-                }
-                token.ThrowIfCancellationRequested();
-                return RequestOutcome.Success(
-                    VbaLspFeatureProjection.CreateWorkspaceEdit(approved.Plan));
-            }
-        }) with { Cleanup = approved.Dispose };
+        RenameConfirmationInput? input = null;
+        if (parameters is JsonObject values
+            && TryGetString(values["confirmationId"], out var id)
+            && TryGetString(values["decision"], out var decision)
+            && decision is "continue" or "cancel")
+            input = new(id, decision == "continue" ? RenameDecision.Continue : RenameDecision.Cancel);
+        return CaptureRenameOperation(rename.CaptureConfirmation(input, RenameCapabilitySnapshot(), cancellationToken), captured);
     }
 
-    private static RequestOutcome ExpiredRenameConfirmation()
-        => RenameFailed(new VbaRenameFailure("confirmationExpired",
-            "This Rename confirmation is no longer current. Start a fresh Rename operation."));
-
-    private long BeginRename()
-    {
-        PendingRename? previous;
-        long generation;
-        lock (renameConfirmationSync)
-        {
-            generation = ++renameGeneration;
-            previous = pendingRename;
-            pendingRename = null;
-        }
-        previous?.Dispose();
-        return generation;
-    }
-
-    private bool TryOfferRename(long generation, PendingRename pending)
-    {
-        lock (renameConfirmationSync)
-        {
-            if (generation != renameGeneration)
-            {
-                return false;
-            }
-            pendingRename = pending;
-            return true;
-        }
-    }
-
-    private void DiscardRename(string confirmationId)
-    {
-        PendingRename? discarded;
-        lock (renameConfirmationSync)
-        {
-            discarded = pendingRename?.Id == confirmationId ? pendingRename : null;
-            if (discarded is not null)
-            {
-                pendingRename = null;
-            }
-        }
-        discarded?.Dispose();
-    }
-
-    public void Dispose() => BeginRename();
-
-    private sealed class RenameCaptureOwner(VbaRenameProjectSnapshotCapture capture) : IDisposable
-    {
-        private VbaRenameProjectSnapshotCapture? ownedCapture = capture;
-
-        public VbaRenameProjectSnapshotCapture Take()
-            => Interlocked.Exchange(ref ownedCapture, null)
-                ?? throw new InvalidOperationException("Rename capture has already been transferred.");
-
-        public void Dispose() => Interlocked.Exchange(ref ownedCapture, null)?.Dispose();
-    }
-
-    private sealed class PendingRename(
-        string id,
-        VbaRenamePlan plan,
-        VbaRenameProjectSnapshotCapture capture,
-        Func<VbaRenameFailure?> getChangeFailure) : IDisposable
-    {
-        private VbaRenameProjectSnapshotCapture? ownedCapture = capture;
-        public string Id { get; } = id;
-        public VbaRenamePlan Plan { get; } = plan;
-        public VbaRenameFailure? GetChangeFailure() => getChangeFailure();
-        public void Dispose() => Interlocked.Exchange(ref ownedCapture, null)?.Dispose();
-    }
+    public void Dispose() => rename.Dispose();
 
     private static IReadOnlyDictionary<string, object?> CreateRenameFailureData(
         VbaRenameFailure failure)
@@ -1415,6 +1207,8 @@ internal sealed class VbaLspRequestExecution : IDisposable
         bool UseExecutionGate) : IDisposable
     {
         private Action? cleanup;
+
+        internal Action? ResponseFailure { get; init; }
 
         public Action? Cleanup
         {

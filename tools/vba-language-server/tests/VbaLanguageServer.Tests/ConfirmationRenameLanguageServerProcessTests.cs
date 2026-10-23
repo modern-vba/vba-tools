@@ -5,6 +5,43 @@ namespace VbaLanguageServer.Tests;
 
 public sealed class ConfirmationRenameLanguageServerProcessTests
 {
+    [Theory]
+    [InlineData("params", true)]
+    [InlineData("name", true)]
+    [InlineData("other-method", false)]
+    public async Task RenameCaptureInvalidatesConsentForInvalidInputButOtherMethodsDoNot(string kind, bool invalidates)
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync(new { experimental = new { vbaRenameConfirmation = new { protocolVersion = 1 } } });
+        const string uri = "file:///C:/work/CaptureConsent.bas";
+        const string text = "Attribute VB_Name = \"CaptureConsent\"\nPublic Sub Run()\nDim original As Long\nDim existing As Long\noriginal = 1\nEnd Sub";
+        await process.SendNotificationAsync("textDocument/didOpen", new
+        {
+            textDocument = new { uri, languageId = "vba", version = 1, text }
+        });
+        await process.WaitForDiagnosticsAsync(uri);
+        var offered = await process.SendRequestAsync(2, "textDocument/rename", new
+        {
+            textDocument = new { uri }, position = new { line = 2, character = 5 }, newName = "existing"
+        });
+        var id = offered.GetProperty("error").GetProperty("data").GetProperty("confirmationId").GetString();
+        var invalid = kind switch
+        {
+            "params" => await process.SendRequestAsync(3, "textDocument/rename", new object[] { }),
+            "name" => await process.SendRequestAsync(3, "textDocument/rename", new
+            {
+                textDocument = new { uri }, position = new { line = 2, character = 5 }, newName = "not valid"
+            }),
+            _ => await process.SendRequestAsync(3, "vba/unknownRenameMethod", new { })
+        };
+        Assert.True(invalid.TryGetProperty("error", out _), invalid.ToString());
+        var confirmed = await process.SendRequestAsync(4, "vba/confirmRename", new { confirmationId = id, decision = "continue" });
+        if (invalidates)
+            Assert.Equal("confirmationExpired", confirmed.GetProperty("error").GetProperty("data").GetProperty("reason").GetString());
+        else Assert.False(confirmed.TryGetProperty("error", out _), confirmed.ToString());
+        await process.ShutdownAsync(5);
+    }
+
     [Fact]
     public async Task Confirmation_with_positional_parameters_is_invalid_params_without_an_internal_error()
     {

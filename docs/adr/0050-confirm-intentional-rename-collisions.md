@@ -4,6 +4,11 @@ status: accepted
 
 # Confirm intentional Rename collisions
 
+[ADR 0073](0073-own-rename-confirmation-and-response-lifetimes.md) specifies
+capture-generation invalidation, one-shot consumption and response-delivery
+ownership. The public version-1 protocol and complete pre-edit closure below
+remain unchanged.
+
 ## Context
 
 Consolidation can require temporarily giving an existing declaration another
