@@ -48,6 +48,11 @@ CLI history.
 - Native debugging remains limited to its existing supported targets and
   requires an available, correctly bound VBE command context.
 - User VBA can still save or cause other effects during Test and Debug.
+- Standard VS Code F5 and Restart can save dirty source and unrelated editors
+  before VBA Tools runs when a non-VBA editor, including `launch.json`, is active.
+  Set workspace `debug.saveBeforeStart` to `"none"` and avoid conflicting
+  language overrides to preserve dirty buffers. This affects other debug types
+  in that workspace; VBA Tools does not apply the setting automatically.
 
 ### Source-workbook Compatibility
 
@@ -57,8 +62,9 @@ CLI history.
 - Test uses that same source workbook without initiating Save. A borrowed
   workbook stays open; an owned hidden workbook closes without saving.
 - Debug F5 and Restart reuse it without dirty-workbook confirmation or Save.
-  Source editors are not automatically saved. Stop resets native execution
-  while leaving the workbook open.
+  VBA Tools does not initiate source-editor saves; VS Code's pre-debug save
+  requires the setting described above. Stop resets native execution while
+  leaving the workbook open.
 - Legacy `binPath` remains optional and deprecated; it does not select the
   ordinary Build, Test, or Debug execution workbook.
 

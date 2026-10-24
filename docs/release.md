@@ -586,7 +586,14 @@ Excel installed and without a separately installed .NET runtime.
     edit. Launch F5 again, then Restart after a further edit. Confirm both reuse
     the same Excel PID and workbook window without a dirty-workbook confirmation,
     import fresh dirty editor content, and preserve the existing cell change.
-    Repeat with a saved `launch.json` target. Debug skips only its independent
+    Before repeating with a saved `launch.json` target, explicitly set
+    `debug.saveBeforeStart` to `none` in the disposable workspace settings and
+    ensure no active-language override conflicts. This setting affects other
+    debug types in the workspace; the extension does not apply it automatically.
+    Leave `launch.json` active during both F5 and Restart, keep the target VBA
+    source and an unrelated file dirty, and confirm all remain dirty with their
+    disk bytes unchanged. Without this setting, VS Code can save editors before
+    VBA Tools runs. Debug skips only its independent
     source-analysis gate; native VBE compile/runtime errors still apply.
 20. Stop, then manually close only the disposable sample without saving. Confirm
     the baseline source workbook disk hash and exported source files are unchanged,
