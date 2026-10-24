@@ -51,9 +51,15 @@ the quality gates of other commands.
 
 `DebugSourceSnapshot` remains immutable, complete and generation-bound: selected
 document dirty file-backed editors supply their unsaved text, other sources and
-form sidecars supply saved bytes. No editor is automatically saved. Parsing for
-module identity, target eligibility and exact breakpoint projection is not the
-independent syntax/type/argument diagnostics gate, which Debug no longer runs.
+form sidecars supply saved bytes. The extension does not initiate editor saves.
+VS Code's standard F5/Restart can save before invoking it: a non-VBA active
+editor requires workspace `debug.saveBeforeStart: "none"` without a conflicting
+language override. The extension's `[vba]` default covers only an active VBA
+editor; the workspace setting also affects other debug types and is not applied
+automatically. Workbook no-Save behavior is independent of this host limitation.
+Parsing for module identity, target eligibility and exact breakpoint projection
+is not the independent syntax/type/argument diagnostics gate, which Debug no
+longer runs.
 
 The CLI resolves the manifest-selected `SourceWorkbook` through read-only
 `prepare-debug --describe`. The adapter independently checks that absolute path

@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  ConfigurationTarget,
   Location,
   Position,
   Selection,
@@ -160,5 +161,64 @@ export async function runDebugConfigurationIntegrationTests(): Promise<void> {
   } finally {
     observer.dispose();
     debug.removeBreakpoints([sourceBreakpoint]);
+  }
+
+  const folder = workspace.getWorkspaceFolder(Uri.file(sourcePath));
+  assert.ok(folder);
+  const pinnedConfiguration = {
+    type: 'vba',
+    request: 'launch',
+    name: 'Pinned unsaved-source regression',
+    project: fixtureRoot,
+    document: 'Book1',
+    module: 'DebugModule',
+    procedure: 'DebugMe'
+  };
+  const launch = workspace.getConfiguration('launch', folder.uri);
+  const previousConfigurations = launch.inspect('configurations')?.workspaceFolderValue;
+  const debugSettings = workspace.getConfiguration('debug', folder.uri);
+  const previousSaveBeforeStart = debugSettings.inspect('saveBeforeStart')?.workspaceFolderValue;
+  await launch.update('configurations', [pinnedConfiguration], ConfigurationTarget.WorkspaceFolder);
+  // Standard F5 saves before invoking the extension. The workspace setting is
+  // required when a non-VBA editor is active, including for a pinned target.
+  await debugSettings.update('saveBeforeStart', 'none', ConfigurationTarget.WorkspaceFolder);
+  const launchDocument = await workspace.openTextDocument(
+    Uri.joinPath(folder.uri, '.vscode', 'launch.json')
+  );
+  await window.showTextDocument(launchDocument);
+  assert.equal(window.activeTextEditor?.document, launchDocument);
+  assert.equal(sourceDocument.isDirty, true);
+  const saveEvents: string[] = [];
+  const saves = workspace.onDidSaveTextDocument(document => saveEvents.push(document.uri.toString()));
+  let capturePinned: ((configuration: VbaDebugConfiguration) => void) | undefined;
+  const pinnedCaptured = new Promise<VbaDebugConfiguration>(resolve => { capturePinned = resolve; });
+  const pinnedObserver = useVbaDebugConfigurationObserverForTest(configuration => {
+    capturePinned?.(configuration);
+  });
+  try {
+    assert.equal(launchDocument.languageId, 'jsonc');
+    assert.equal(workspace.getConfiguration('debug', launchDocument).get('saveBeforeStart'), 'none');
+    await commands.executeCommand('workbench.action.debug.start', { config: pinnedConfiguration });
+    const configuration = await Promise.race([
+      pinnedCaptured,
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error('Pinned F5 did not resolve a VBA debug configuration.')), 10_000);
+      })
+    ]);
+    assert.equal(configuration.module, 'DebugModule');
+    assert.equal(configuration.procedure, 'DebugMe');
+    assert.deepEqual(await readFile(sourcePath), savedSourceBytes,
+      'F5 with launch.json active must not save the dirty VBA source.');
+    assert.deepEqual(await readFile(outsidePath), savedOutsideBytes,
+      'VBA F5 must not save unrelated dirty editors.');
+    assert.equal(sourceDocument.isDirty, true);
+    assert.equal(outsideDocument.isDirty, true);
+    assert.deepEqual(saveEvents, []);
+    console.log('PASS pinned F5 with launch.json active preserves dirty editor and disk bytes');
+  } finally {
+    pinnedObserver.dispose();
+    saves.dispose();
+    await launch.update('configurations', previousConfigurations, ConfigurationTarget.WorkspaceFolder);
+    await debugSettings.update('saveBeforeStart', previousSaveBeforeStart, ConfigurationTarget.WorkspaceFolder);
   }
 }

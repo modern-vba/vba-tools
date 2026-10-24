@@ -667,6 +667,26 @@ with the captured source, including replacement of unsaved VBE-direct edits.
 Existing cell changes remain; VBA Tools does not save the workbook or source
 editors before or after debugging. Build and Test retain their separate
 dirty-workbook confirmation rules.
+
+VS Code itself can save editors **before VBA Tools runs**. The extension supplies
+`debug.saveBeforeStart: "none"` only while a VBA editor is active. Before using
+F5 or Restart with another editor active, including `launch.json`, set this in
+the workspace's `.vscode/settings.json`:
+
+```json
+{
+  "debug.saveBeforeStart": "none"
+}
+```
+
+This setting also disables save-before-debug for other languages in that
+workspace. VBA Tools does not change it automatically. Remove or align any
+language-specific override that changes its effective value for the active
+editor. Without this setting, standard VS Code F5 and Restart can save both
+the target VBA source and unrelated dirty editors before snapshot capture;
+VBA Tools cannot undo those saves. This editor limitation does not change
+Debug's workbook no-Save behavior.
+
 Before replacement, modules, UserForms with their `.frx` data and references are
 captured for attempted code/reference recovery during replacement/verification.
 Failed capture prevents replacement; incomplete recovery is reported with
@@ -732,8 +752,9 @@ The opened workbook is the selected source workbook, not a disposable execution
 copy. VBA Tools does not initiate Save; imported VBA and execution changes remain
 in the live workbook for you to save or discard explicitly in Excel. VBA itself can save
 or cause other irreversible effects, which Debug does not suppress or roll back.
-Exported source editors are never automatically saved. Debug does not write bin
-or publish output.
+VBA Tools does not save exported source editors; preventing VS Code's own
+pre-debug save requires the setting above. Debug does not write bin or publish
+output.
 
 When Debug opens a closed source workbook, open-time events such as
 `Workbook_Open` do not run automatically. Reusing an already-open workbook does

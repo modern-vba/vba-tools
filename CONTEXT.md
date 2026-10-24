@@ -752,6 +752,10 @@ extension captures its `SnapshotSourceInventory` without saving or rewriting
 the `DocumentSourceSet`; text entries carry persistent source identity and
 `SnapshotSourceEncoding`, while the adapter alone materializes and owns the
 transported bytes.
+The extension never initiates editor saves. Standard VS Code F5/Restart can save
+before capture, however: preventing that with a non-VBA editor active requires
+workspace `debug.saveBeforeStart: "none"` without a conflicting language override.
+The contributed VBA-language default alone does not cover an active `launch.json`.
 _Avoid_: mutable editor state, stale build input, workspace-wide snapshot
 
 **DebugSourceAdmission**:
@@ -5787,7 +5791,7 @@ Dev: "Does a `BreakpointSourceMap` compare `VERSION 1.0 CLASS`, its `BEGIN`/`END
 Domain Expert: "No. Those are export-only serialization records. The map projects each exported source kind onto its VBE code lines, models only the known UserForm leading blank, and requires the projected code to match exactly."
 
 Dev: "Can a `VbeDebugLaunch` use unsaved editor source without changing project files?"
-Domain Expert: "Yes. Dirty file-backed selected-document editors contribute unsaved bytes to the immutable snapshot; other sources use saved disk bytes. The adapter prepares that source in the actual workbook through `prepare-debug`, never autosaving editors or workbook."
+Domain Expert: "Yes, with VS Code's pre-debug editor save suppressed. Dirty file-backed selected-document editors contribute unsaved bytes to the immutable snapshot; other sources use saved disk bytes. The adapter prepares that source in the actual workbook through `prepare-debug`, never initiating editor or workbook saves. With a non-VBA editor active, explicitly set workspace debug.saveBeforeStart to none and avoid a conflicting language override; otherwise VS Code can save before the extension runs."
 
 Dev: "Should the extension create a temporary source directory and let `VbaDebugAdapter` delete it?"
 Domain Expert: "No. The extension sends losslessly encoded source and sidecar bytes through DAP. The adapter validates them, materializes its own session directory, and alone owns that directory's lifecycle."

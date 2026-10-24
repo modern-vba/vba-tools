@@ -351,6 +351,15 @@ specify:
 configuration exists, F5 synthesizes a transient configuration from the active
 VBA editor without writing `launch.json`.
 
+Standard VS Code F5 and Restart consult `debug.saveBeforeStart` using the active
+editor's language before invoking the extension's configuration/snapshot code.
+The contributed `[vba]` default suppresses that host save only with VBA active.
+For a saved target launched or restarted with another editor active, the
+workspace must explicitly set `debug.saveBeforeStart` to `none`, with no
+conflicting active-language override. This affects all debug types in that
+workspace. The extension neither changes the setting nor intercepts standard
+debug commands, and cannot reverse a save already performed by the host.
+
 Before resolving the final target or breakpoints, the extension captures one
 complete `DebugSourceSnapshot` for the selected project document without saving
 editor buffers. Every in-scope dirty file-backed editor contributes its
@@ -771,7 +780,9 @@ notification interfaces. Client tests pin selection, scoped snapshot capture, re
 identity, missing or mismatched restart-marker rejection, lifecycle
 cancellation, configuration contributions, and CLI compatibility. Extension
 Host tests prove production F5 resolution, dirty-text snapshot capture, and the
-absence of project-file saves.
+absence of project-file saves with an active VBA editor or with an active
+`launch.json` and the documented workspace save suppression. They also retain
+an unrelated dirty editor and compare both persistent files with their baselines.
 
 Source Debug isolates read-only manifest resolution behind
 `VbaDevSourceWorkbookResolver`, cooperative preparation behind

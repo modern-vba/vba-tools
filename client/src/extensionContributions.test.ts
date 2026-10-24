@@ -462,7 +462,7 @@ test('extension contributes optional VBA debug selectors with an atomic procedur
   assert.ok(packageJson.activationEvents?.includes('onDebugResolve:vba'));
 });
 
-test('VBA debug activation disables VS Code save-before-start', () => {
+test('VBA debug activation supplies the VBA-editor save-before-start default', () => {
   const packageJson = readPackageJson<{
     activationEvents?: string[];
     contributes?: {
