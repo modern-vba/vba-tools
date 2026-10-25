@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<TestRun id="0fdb8bf2-523b-467c-97b0-f0e0fec60818" name="tkmra@VJS1278 2026-09-08 00:47:10" runUser="VJS1278\tkmra" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+<TestRun id="0fdb8bf2-523b-467c-97b0-f0e0fec60818" name="benchmark@TEST-HOST 2026-09-08 00:47:10" runUser="TEST-HOST\benchmark" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
   <Times creation="2026-09-08T00:47:10.3317784+09:00" queuing="2026-09-08T00:47:10.3317788+09:00" start="2026-09-08T00:46:56.5283897+09:00" finish="2026-09-08T00:47:10.3381549+09:00" />
   <TestSettings name="default" id="bfad909b-6f2b-4701-885b-ec9f583f2d63">
-    <Deployment runDeploymentRoot="tkmra_VJS1278_2026-09-08_00_47_10" />
+    <Deployment runDeploymentRoot="benchmark_TEST-HOST_2026-09-08_00_47_10" />
   </TestSettings>
   <Results>
-    <UnitTestResult executionId="5de87433-120d-4951-9cc1-72720c4a0a01" testId="7774cb7b-3daa-e763-5170-71840eb79ae6" testName="VbaLanguageServer.Tests.VbaInteractiveSemanticReadinessPerformanceTests.Release_CommonModules_cold_interactive_semantic_readiness_is_within_budget" computerName="VJS1278" duration="00:00:09.7280944" startTime="2026-09-08T00:47:00.5394111+09:00" endTime="2026-09-08T00:47:10.2457174+09:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="5de87433-120d-4951-9cc1-72720c4a0a01">
+    <UnitTestResult executionId="5de87433-120d-4951-9cc1-72720c4a0a01" testId="7774cb7b-3daa-e763-5170-71840eb79ae6" testName="VbaLanguageServer.Tests.VbaInteractiveSemanticReadinessPerformanceTests.Release_CommonModules_cold_interactive_semantic_readiness_is_within_budget" computerName="TEST-HOST" duration="00:00:09.7280944" startTime="2026-09-08T00:47:00.5394111+09:00" endTime="2026-09-08T00:47:10.2457174+09:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="5de87433-120d-4951-9cc1-72720c4a0a01">
       <Output>
-        <StdOut>activeSource=C:\Users\tkmra\source\repos\excel-macros-workspace\xls-common-modules\CommonModules\src\CommonModules\Lib_Common.bas&#xD;
+        <StdOut>activeSource=C:\workspace\xls-common-modules\CommonModules\src\CommonModules\Lib_Common.bas&#xD;
 source commit=not measured, worktree=not measured, corpusRevision=not measured&#xD;
 command=dotnet test VbaLanguageServer.Tests.csproj -c Release -m:1 --filter FullyQualifiedName~VbaInteractiveSemanticReadinessPerformanceTests&#xD;
 os=Microsoft Windows 10.0.26200&#xD;
@@ -34,9 +34,9 @@ correctness activeSourceRevision=exact-open-text, semanticTokenContent=nonempty-
     </UnitTestResult>
   </Results>
   <TestDefinitions>
-    <UnitTest name="VbaLanguageServer.Tests.VbaInteractiveSemanticReadinessPerformanceTests.Release_CommonModules_cold_interactive_semantic_readiness_is_within_budget" storage="c:\users\tkmra\source\repos\excel-macros-workspace\vba-tools\.tmp\issue-365-baseline\tools\vba-language-server\tests\vbalanguageserver.tests\bin\release\net10.0\vbalanguageserver.tests.dll" id="7774cb7b-3daa-e763-5170-71840eb79ae6">
+    <UnitTest name="VbaLanguageServer.Tests.VbaInteractiveSemanticReadinessPerformanceTests.Release_CommonModules_cold_interactive_semantic_readiness_is_within_budget" storage="C:\workspace\vba-tools\.tmp\issue-365-baseline\tools\vba-language-server\tests\vbalanguageserver.tests\bin\release\net10.0\vbalanguageserver.tests.dll" id="7774cb7b-3daa-e763-5170-71840eb79ae6">
       <Execution id="5de87433-120d-4951-9cc1-72720c4a0a01" />
-      <TestMethod codeBase="C:\Users\tkmra\source\repos\excel-macros-workspace\vba-tools\.tmp\issue-365-baseline\tools\vba-language-server\tests\VbaLanguageServer.Tests\bin\Release\net10.0\VbaLanguageServer.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner3/netcore/" className="VbaLanguageServer.Tests.VbaInteractiveSemanticReadinessPerformanceTests" name="Release_CommonModules_cold_interactive_semantic_readiness_is_within_budget" />
+      <TestMethod codeBase="C:\workspace\vba-tools\.tmp\issue-365-baseline\tools\vba-language-server\tests\VbaLanguageServer.Tests\bin\Release\net10.0\VbaLanguageServer.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner3/netcore/" className="VbaLanguageServer.Tests.VbaInteractiveSemanticReadinessPerformanceTests" name="Release_CommonModules_cold_interactive_semantic_readiness_is_within_budget" />
     </UnitTest>
   </TestDefinitions>
   <TestEntries>

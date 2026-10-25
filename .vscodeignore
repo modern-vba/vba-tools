@@ -35,3 +35,8 @@ bin/**/*.dll
 bin/**/*.pdb
 bin/**/*.runtimeconfig.json
 *.vsix
+docs/measurements/**
+**/AGENTS.md
+docs/agents/**
+tools/**
+**/*.log
